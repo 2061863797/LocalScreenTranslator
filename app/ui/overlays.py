@@ -142,8 +142,8 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
     _PAD = 10
     _SCROLL_W = 14
     _GRIP = 18
-    _MIN_W = 200
-    _MIN_H = 80
+    _MIN_W = 100
+    _MIN_H = 32
     _DEFAULT_H = 100
     _DEFAULT_FONT_SIZE = 16
 
@@ -168,18 +168,35 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         self._grip = _SubtitleResizeGrip(self)
         self.resize(self._MIN_W, self._DEFAULT_H)
         self._layer_owner: int | None = None
+        self._capture_visible = True
 
     def layer_widgets(self) -> list[QWidget]:
         """字幕主层 + 可点附属窗（控制条/滚动条/缩放把手）。"""
         return [self, self._ctrl, self._vscroll, self._grip]
+
+    def set_capture_visible(self, visible: bool) -> None:
+        """字幕浮层是否参与屏幕捕获（区域翻译覆盖时防干扰 OCR）。"""
+        self._capture_visible = bool(visible)
+        self._apply_capture_affinity()
+
+    def _apply_capture_affinity(self) -> None:
+        for w in self.layer_widgets():
+            if self._capture_visible:
+                _allow_capture(w)
+            else:
+                _exclude_from_capture(w)
+
+    def showEvent(self, event: QShowEvent):
+        super().showEvent(event)
+        self._apply_capture_affinity()
 
     def set_layer_owner(self, owner_hwnd: int | None) -> None:
         """窗口翻译：跟目标窗同层；None=恢复全局置顶（区域翻译）。"""
         self._layer_owner = int(owner_hwnd) if owner_hwnd else None
         for w in self.layer_widgets():
             set_overlay_layer(w, self._layer_owner)
-            if w.isVisible():
-                _allow_capture(w)
+        if self.isVisible():
+            self._apply_capture_affinity()
 
     def restack_layer(self) -> None:
         """窗口模式贴回 owner；区域模式重新置于 TOPMOST 层最前。"""
@@ -226,7 +243,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         if self.isVisible():
             self._place_chrome()
             self._show_chrome()
-            _allow_capture(self)
+            self._apply_capture_affinity()
 
     def set_mode(self, mode: str, emit: bool = False):
         self.mode = mode
@@ -239,12 +256,20 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         win_rect: tuple[int, int, int, int],
         *,
         outside: bool = False,
+        match_target_size: bool = False,
     ):
-        """跟随模式下吸附到目标下缘；其他模式不动。框体大小不随译文变。"""
+        """跟随模式下吸附到目标下缘；其他模式不动。框体大小不随译文变。
+
+        match_target_size: 区域翻译时开启，宽高完全同步为区域选区尺寸。
+        """
         if self.mode != "follow":
             return
         x, y, w, h = win_rect
-        if self._user_size:
+        if match_target_size:
+            bar_w = max(w, self._MIN_W)
+            bar_h = max(h, self._MIN_H)
+            self._user_size = None
+        elif self._user_size:
             bar_w, bar_h = self._user_size
         else:
             bar_w, bar_h = max(w, 280), self._DEFAULT_H
@@ -297,11 +322,17 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             if g.width() != uw or g.height() != uh:
                 super().setGeometry(g.x(), g.y(), uw, uh)
 
+    def _effective_pads(self) -> tuple[int, int]:
+        pad_x = min(self._PAD, max(4, self.width() // 10))
+        pad_y = min(self._PAD, max(2, self.height() // 8))
+        return pad_x, pad_y
+
     def _text_rect_size(self) -> QSize:
         """正文可用区域（为滚动条留出右边距）。"""
+        px, py = self._effective_pads()
         return QSize(
-            max(40, self.width() - self._PAD * 2 - self._SCROLL_W),
-            max(20, self.height() - self._PAD * 2),
+            max(20, self.width() - px * 2 - self._SCROLL_W),
+            max(10, self.height() - py * 2),
         )
 
     def _reflow_text(self):
@@ -368,23 +399,15 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             _show_once(self._vscroll)
             need = self._content_h > self._text_rect_size().height()
             self._vscroll.set_enabled(need)
-            if not getattr(self._vscroll, "_capture_allowed", False):
-                _allow_capture(self._vscroll)
-                self._vscroll._capture_allowed = True  # type: ignore[attr-defined]
         else:
             if self._vscroll.isVisible():
                 self._vscroll.hide()
         if self._interactive:
             _show_once(self._grip)
-            if not getattr(self._grip, "_capture_allowed", False):
-                _allow_capture(self._grip)
-                self._grip._capture_allowed = True  # type: ignore[attr-defined]
         else:
             if self._grip.isVisible():
                 self._grip.hide()
-        if not getattr(self._ctrl, "_capture_allowed", False):
-            _allow_capture(self._ctrl)
-            self._ctrl._capture_allowed = True  # type: ignore[attr-defined]
+        self._apply_capture_affinity()
 
     def set_text(self, text: str):
         """更新译文：框大小不变，过长用滚动条。已显示时只重绘，不反复 raise。
@@ -398,10 +421,10 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         if first:
             if self._user_size:
                 self.resize(*self._user_size)
-            elif self.width() < self._MIN_W:
-                self.resize(max(self.width(), 280), self._DEFAULT_H)
+            elif self.width() < self._MIN_W or self.height() < self._MIN_H:
+                self.resize(max(self.width(), self._MIN_W), max(self.height(), self._MIN_H))
             self.show()
-            _allow_capture(self)
+            self._apply_capture_affinity()
             # 新建原生窗后重新挂到目标层
             if self._layer_owner:
                 self.set_layer_owner(self._layer_owner)
@@ -419,14 +442,14 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
 
         if not self._text:
             return
-        tr = self._text_rect_size()
-        text_rect = self.rect().adjusted(self._PAD, self._PAD, -self._PAD - self._SCROLL_W, -self._PAD)
+        px, py = self._effective_pads()
+        text_rect = self.rect().adjusted(px, py, -px - self._SCROLL_W, -py)
         painter.setFont(self._font)
         painter.setPen(TEXT_QCOLOR)
         painter.setClipRect(text_rect)
         # 内容整体上移实现滚动
         draw_rect = text_rect.translated(0, -self._scroll)
-        draw_rect.setHeight(max(self._content_h + self._PAD, text_rect.height()))
+        draw_rect.setHeight(max(self._content_h + py, text_rect.height()))
         painter.drawText(
             draw_rect,
             int(Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop),
@@ -606,12 +629,14 @@ class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
 
     def mouseMoveEvent(self, event):
         if (
-            self._bar.mode == "free"
-            and self._drag_offset is not None
+            self._drag_offset is not None
             and event.buttons() & Qt.MouseButton.LeftButton
         ):
-            p = event.globalPosition().toPoint() - self._drag_offset
-            self._bar.move_to(p.x(), p.y())
+            if self._bar.mode == "follow":
+                self._bar.set_mode("free", emit=True)
+            if self._bar.mode == "free":
+                p = event.globalPosition().toPoint() - self._drag_offset
+                self._bar.move_to(p.x(), p.y())
 
     def mouseReleaseEvent(self, event):
         self._drag_offset = None

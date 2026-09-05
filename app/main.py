@@ -687,6 +687,7 @@ class App:
             self.subtitle.set_paused(False)
             self.subtitle.set_interactive(False)
             self.subtitle.hide()
+            self.subtitle.set_capture_visible(True)
         except Exception:
             pass
         try:
@@ -998,7 +999,7 @@ class App:
         self._sync_annotation_mask()
         # 跟随模式才重贴；自由/固定保持用户拖好的字幕位置
         if self.subtitle.mode == "follow":
-            self.subtitle.attach_below(rect, outside=True)
+            self.subtitle.attach_below(rect, outside=True, match_target_size=True)
         if self.annotate_ctrl.isVisible():
             self.annotate_ctrl.place_above(rect)
         self.log.info("区域识别框更新 %s", rect)
@@ -1083,7 +1084,11 @@ class App:
             self.subtitle.set_mode(
                 mode if mode in ("follow", "free", "pinned") else "follow"
             )
-            self.subtitle.attach_below(rect, outside=True)
+            is_region = self._watch_region is not None or self._watch_profile == "region"
+            self.subtitle.set_capture_visible(
+                not is_region or bool(self.cfg.get("annotate_capture_visible"))
+            )
+            self.subtitle.attach_below(rect, outside=True, match_target_size=is_region)
             self.subtitle.set_text(
                 _t("watch_start") if announce else _t("watch_switched_sub")
             )
@@ -1171,7 +1176,9 @@ class App:
                 capture.get_window_rect(self._watch_hwnd), outside=True
             )
         elif self._watch_region is not None:
-            self.subtitle.attach_below(self._watch_region, outside=True)
+            self.subtitle.attach_below(
+                self._watch_region, outside=True, match_target_size=True
+            )
 
     def _follow_target_window(self) -> None:
         """高频跟随目标窗口位置；变化时才更新浮层，不动 OCR 节奏。"""

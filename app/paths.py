@@ -13,10 +13,16 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-# app/ 的上一级 = 软件根目录
-ROOT = Path(__file__).resolve().parent.parent
+# 源码运行时 app/ 的上一级是软件根目录；PyInstaller 打包后以 exe
+# 所在目录为根，确保 runtime、配置、日志和数据库仍位于便携软件目录。
+ROOT = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent.parent
+)
 
 CONFIG_PATH = ROOT / "config.json"
 LOG_PATH = ROOT / "app.log"

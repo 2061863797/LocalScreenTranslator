@@ -193,6 +193,64 @@ class QualityOfLifeTests(unittest.TestCase):
         self.assertEqual(cfg["region_watch_interval_ms"], 1700)
         save_cfg.assert_called_once_with(cfg)
 
+    def test_region_watch_subtitle_matches_region_size(self):
+        """区域翻译下字幕条尺寸直接匹配区域尺寸，并贴在正下方。"""
+        from app.ui.overlays import SubtitleBar
+
+        bar = SubtitleBar()
+        try:
+            # 预设一个旧的记忆尺寸
+            bar._user_size = (500, 200)
+            region_rect = (100, 150, 320, 60)
+            bar.attach_below(region_rect, outside=True, match_target_size=True)
+            self.assertEqual(bar.width(), 320)
+            self.assertEqual(bar.height(), 60)
+            self.assertEqual(bar.x(), 100)
+            self.assertEqual(bar.y(), 150 + 60 + 4)
+            self.assertIsNone(bar._user_size)
+
+            # 缩放区域后再次同步
+            smaller_region = (50, 80, 160, 40)
+            bar.attach_below(smaller_region, outside=True, match_target_size=True)
+            self.assertEqual(bar.width(), 160)
+            self.assertEqual(bar.height(), 40)
+            self.assertEqual(bar.x(), 50)
+            self.assertEqual(bar.y(), 80 + 40 + 4)
+        finally:
+            bar.close()
+            bar.deleteLater()
+
+    def test_subtitle_ctrl_drag_auto_switches_to_free_mode(self):
+        """跟随模式下拖动控制条把手时自动切换为自由模式。"""
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtGui import QMouseEvent
+        from app.ui.overlays import SubtitleBar
+
+        bar = SubtitleBar()
+        try:
+            bar.attach_below((100, 100, 200, 80), outside=True)
+            self.assertEqual(bar.mode, "follow")
+            ctrl = bar._ctrl
+
+            # 模拟按下把手
+            ctrl._drag_offset = QPoint(10, 10)
+            # 模拟移动事件
+            event = QMouseEvent(
+                QMouseEvent.Type.MouseMove,
+                QPoint(30, 40),
+                QPoint(130, 140),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            ctrl.mouseMoveEvent(event)
+            self.assertEqual(bar.mode, "free")
+            self.assertTrue(ctrl._btns["free"].isChecked())
+            self.assertFalse(ctrl._btns["follow"].isChecked())
+        finally:
+            bar.close()
+            bar.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()
