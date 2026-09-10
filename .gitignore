@@ -25,6 +25,7 @@ error.log
 build/
 dist/
 *.spec
+!package.spec
 *.exe
 翻译.exe
 

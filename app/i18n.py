@@ -88,8 +88,8 @@ _STRINGS: dict[str, dict[str, str]] = {
         "card_advanced": "模型与生成",
         "card_advanced_hint": "从本机 models 目录选择翻译模型，并调整单次生成上限。",
         "model_file": "翻译模型",
-        "model_file_tip": "只列出 {directory} 顶层且文件头有效的 .gguf 文件",
-        "model_file_note": "请自行下载兼容 llama.cpp 的 GGUF，直接放入 {directory}；重新打开设置可刷新列表，保存后重启软件生效。",
+        "model_file_tip": "只列出程序目录下 runtime/models 顶层且文件头有效的 .gguf 文件",
+        "model_file_note": "请自行下载兼容 llama.cpp 的 GGUF，直接放入程序目录下的 runtime/models 文件夹；重新打开设置可刷新列表，保存后重启软件生效。",
         "llama_device": "翻译设备",
         "llama_device_auto": "自动（推荐）",
         "llama_device_gpu": "GPU（NVIDIA CUDA）",
@@ -304,9 +304,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "card_advanced": "Model & generation",
         "card_advanced_hint": "Choose a translation model from the local models folder and set the generation limit.",
         "model_file": "Translation model",
-        "model_file_tip": "Lists valid .gguf files directly under {directory}",
+        "model_file_tip": "Lists valid .gguf files directly under runtime/models in the program folder",
         "model_file_note": (
-            "Download a llama.cpp-compatible GGUF yourself and place it directly in {directory}. "
+            "Download a llama.cpp-compatible GGUF yourself and place it directly into the runtime/models folder under the program directory. "
             "Reopen Settings to refresh the list; restart the app after saving."
         ),
         "runtime_status": "Runtime status",

@@ -154,6 +154,16 @@ venv\Scripts\pythonw.exe run.py
 
 更详细的 runtime 目录说明见 [runtime/README.md](./runtime/README.md)。
 
+## 独立安装包构建
+
+若需要将软件（含 Python 运行环境与离线模型资源）打包为单文件安装包（`LocalScreenTranslator-Setup.exe`），在满足已安装 Inno Setup 6 与完整 `runtime\` 资源的前提下执行：
+
+```powershell
+.\package.ps1
+```
+
+脚本将自动执行 PATH 环境净化、PyInstaller onedir 编译、QtCore 依赖兼容性冒烟检测以及 Inno Setup 封装，生成安装包至 `dist\LocalScreenTranslator-Setup.exe`。
+
 ## 其它
 
 模型等第三方许可见 [NOTICE](./NOTICE)。

@@ -627,10 +627,10 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._card_adv_hint.setText(tr("card_advanced_hint"))
         self._lab_model_file.setText(tr("model_file"))
         self._model_file.setToolTip(
-            tr("model_file_tip", directory=str(RUNTIME_MODELS))
+            tr("model_file_tip", directory=to_portable_path(RUNTIME_MODELS))
         )
         self._model_note.setText(
-            tr("model_file_note", directory=str(RUNTIME_MODELS))
+            tr("model_file_note", directory=to_portable_path(RUNTIME_MODELS))
         )
         self._lab_llama_device.setText(tr("llama_device"))
         for index, key in enumerate(("llama_device_auto", "llama_device_gpu", "llama_device_cpu")):
