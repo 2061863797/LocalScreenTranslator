@@ -381,8 +381,7 @@ class OcrEngine:
         batch = np.zeros((len(crops), channels, height, width), np.float32)
         for index, (crop, ratio) in enumerate(zip(crops, ratios)):
             resized_w = min(width, max(1, int(math.ceil(height * ratio))))
-            value = cv2.resize(crop, (resized_w, height)).astype(np.float32) / 255.0
-            value = (value - 0.5) / 0.5
+            value = cv2.resize(crop, (resized_w, height)).astype(np.float32) * (2.0 / 255.0) - 1.0
             batch[index, :, :, :resized_w] = np.transpose(value, (2, 0, 1))
         return batch
 

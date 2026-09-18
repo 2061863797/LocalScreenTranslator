@@ -26,22 +26,31 @@ def _dilate_mask(mask: np.ndarray, radius: int = 2) -> np.ndarray:
     active = np.asarray(mask, dtype=bool)
     if not active.any() or radius <= 0:
         return active.copy()
-    height, width = active.shape
-    expanded = active.copy()
-    for dy in range(-radius, radius + 1):
-        src_y1 = max(0, -dy)
-        src_y2 = min(height, height - dy)
-        dst_y1 = max(0, dy)
-        dst_y2 = min(height, height + dy)
-        for dx in range(-radius, radius + 1):
-            src_x1 = max(0, -dx)
-            src_x2 = min(width, width - dx)
-            dst_x1 = max(0, dx)
-            dst_x2 = min(width, width + dx)
-            expanded[dst_y1:dst_y2, dst_x1:dst_x2] |= active[
-                src_y1:src_y2, src_x1:src_x2
-            ]
-    return expanded
+    try:
+        import cv2
+
+        ksize = 2 * radius + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ksize, ksize))
+        m_u8 = active.view(np.uint8) if active.dtype == bool else active.astype(np.uint8)
+        dilated = cv2.dilate(m_u8, kernel)
+        return dilated > 0
+    except Exception:
+        height, width = active.shape
+        expanded = active.copy()
+        for dy in range(-radius, radius + 1):
+            src_y1 = max(0, -dy)
+            src_y2 = min(height, height - dy)
+            dst_y1 = max(0, dy)
+            dst_y2 = min(height, height + dy)
+            for dx in range(-radius, radius + 1):
+                src_x1 = max(0, -dx)
+                src_x2 = min(width, width - dx)
+                dst_x1 = max(0, dx)
+                dst_x2 = min(width, width + dx)
+                expanded[dst_y1:dst_y2, dst_x1:dst_x2] |= active[
+                    src_y1:src_y2, src_x1:src_x2
+                ]
+        return expanded
 
 
 def _is_invalid_window_handle_error(exc: BaseException) -> bool:

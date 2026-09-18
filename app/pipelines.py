@@ -77,6 +77,12 @@ class LiveTranslationState:
         self.empty_frames = 0
         if text == self.last_text:
             return "none", text
+        l1, l2 = len(self.last_text), len(text)
+        # 数学理论上限短路：ratio <= 2 * min(l1, l2) / (l1 + l2)。
+        # 当理论上限小于阈值时，必定不满足匹配，跳过昂贵的 LCS 动态规划
+        if (l1 + l2 > 0) and (2.0 * min(l1, l2) / (l1 + l2) < threshold):
+            self.last_text = text
+            return "change", text
         if SequenceMatcher(None, self.last_text, text).ratio() >= threshold:
             return "none", text
         self.last_text = text

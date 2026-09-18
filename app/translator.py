@@ -11,6 +11,7 @@ import time
 from collections import OrderedDict
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from .applog import get_logger
 
@@ -91,11 +92,14 @@ class Translator:
         # 共享配置引用，设置改 max_tokens 后立即生效
         self._cfg = cfg if cfg is not None else {}
         self._session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10, max_retries=1)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
         # llama-server 默认单 slot；同时也保护 Session 与 LRU 缓存。
         self._lock = threading.RLock()
         # 单行译文 LRU：备注模式增量翻译时命中率高
         self._line_cache: OrderedDict[tuple[str, str], str] = OrderedDict()
-        self._line_cache_max = 256
+        self._line_cache_max = 2048
 
     def _cache_get(self, text: str, target: str) -> str | None:
         key = (text, target)
