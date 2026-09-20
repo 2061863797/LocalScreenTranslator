@@ -183,19 +183,7 @@ class TranslationCache:
 
     def _check_eviction(self) -> None:
         """检查并执行 L2 LRU 淘汰。"""
-        cur = self._conn.execute("SELECT count(*) FROM translation_cache")
-        total = cur.fetchone()[0]
-        if total > self.l2_max_entries:
-            if self.l2_max_entries >= 1000:
-                excess = max(1000, total - self.l2_max_entries)
-            else:
-                excess = total - self.l2_max_entries
-            excess = min(excess, total)
-            self._conn.execute(
-                f"""DELETE FROM translation_cache WHERE cache_key IN (
-                    SELECT cache_key FROM translation_cache ORDER BY last_accessed_at ASC LIMIT {excess}
-                )"""
-            )
+        self._storage.evict_cache_if_needed(max_entries=self.l2_max_entries)
 
     def clear(self) -> None:
         """清空 L1 与 L2 缓存。"""

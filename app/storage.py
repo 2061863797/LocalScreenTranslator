@@ -344,9 +344,10 @@ class Storage:
                     excess = total - max_entries
                 excess = min(excess, total)
                 self._conn.execute(
-                    f"""DELETE FROM translation_cache WHERE cache_key IN (
-                        SELECT cache_key FROM translation_cache ORDER BY last_accessed_at ASC LIMIT {excess}
-                    )"""
+                    """DELETE FROM translation_cache WHERE cache_key IN (
+                        SELECT cache_key FROM translation_cache ORDER BY last_accessed_at ASC LIMIT ?
+                    )""",
+                    (excess,),
                 )
                 self._conn.commit()
                 return excess

@@ -29,6 +29,7 @@ from .frame_detector import FrameChangeDetector
 from .latest_frame_buffer import LatestFrameBuffer
 from .ocr_engine import OcrEngine
 from .ocr_service import OcrService
+from .ocr_stabilizer import OcrStabilizer
 from .pipelines import GenerationTracker, WatchCycleContext
 from .result_manager import ResultManager
 from .text_change_detector import TextChangeDetector
@@ -158,6 +159,7 @@ class WindowWatcher(QThread):
         self._frame_detector = FrameChangeDetector()
         self._polling_controller = AdaptivePollingController()
         self._ocr_service = OcrService(ocr_engine=self._ocr)
+        self._ocr_stabilizer = OcrStabilizer()
         self._text_change_detector = TextChangeDetector()
         self._translation_manager = TranslationManager(translator=self._translator)
         self._result_manager = ResultManager(generation_tracker=self._generation_tracker)
@@ -206,6 +208,10 @@ class WindowWatcher(QThread):
     @property
     def ocr_service(self) -> OcrService:
         return self._ocr_service
+
+    @property
+    def ocr_stabilizer(self) -> OcrStabilizer:
+        return self._ocr_stabilizer
 
     @property
     def frame_detector(self) -> FrameChangeDetector:
@@ -284,6 +290,7 @@ class WindowWatcher(QThread):
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=True)
         self._translation_manager.clear_cache()
+        self._ocr_stabilizer.reset()
         self._last_skip_target = None
         self._last_frame = None
         self._skipped_frames = 0
@@ -298,6 +305,7 @@ class WindowWatcher(QThread):
         self._frame_buffer.clear()
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=False)
+        self._ocr_stabilizer.reset()
         self._last_frame = None
         self._skipped_frames = 0
         self.set_annotation_mask(None, reset_reference=True)
@@ -530,10 +538,11 @@ class WindowWatcher(QThread):
             ):
                 img = self._remove_annotation_overlay(img)
 
-            # 7. OCR 识别（ROI 局部加速与兜底），内部异常隔离防护
+            # 7. OCR 识别（ROI 局部加速与兜底）与防抖过滤，内部异常隔离防护
             lines: list[Any] = []
             try:
                 lines = self._ocr_service.recognize_frame(img, roi_box=diff_result.roi_box)
+                _, lines = self._ocr_stabilizer.process(lines)
             except Exception as e:
                 _log.warning("OCR 识别异常 (gen=%s): %s", frame_gen_id, e)
                 if not self._running and self._frame_buffer.is_empty:
@@ -578,6 +587,9 @@ class WindowWatcher(QThread):
                                     self._result_manager.dispatch_history(text, translation, mode_tag, frame_gen_id)
                 except Exception as e:
                     _log.warning("翻译处理异常 (gen=%s): %s", frame_gen_id, e)
+                    with self._state_lock:
+                        self._text_change_detector.last_text = ""
+                    self._ocr_stabilizer.reset()
                     if not self._running and self._frame_buffer.is_empty:
                         break
                     continue
