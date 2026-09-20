@@ -208,19 +208,15 @@ class TranslationManager:
             return ""
 
         if isinstance(text_or_lines, str):
+            raw_text = text_or_lines.strip()
+            if not raw_text:
+                return ""
+            # 持续字幕模式下输入为视觉段落，优先保证跨行自然语意连贯性与两级持久化缓存
+            if self.translator is not None and hasattr(self.translator, "translate"):
+                return str(self.translator.translate(raw_text, target_language))
             lines = [line.strip() for line in text_or_lines.splitlines() if line.strip()]
-            if len(lines) <= 1:
-                raw_text = lines[0] if lines else text_or_lines.strip()
-                if not raw_text:
-                    return ""
-                # 单行优先使用缓存，若未命中直接调用底层 translator
-                if self.translator is not None and hasattr(self.translator, "translate"):
-                    return str(self.translator.translate(raw_text, target_language))
-                sub, _ = self.subtitle_translator.translate_subtitle_lines([raw_text], target_language)
-                return sub
-            else:
-                sub, _ = self.subtitle_translator.translate_subtitle_lines(lines, target_language)
-                return sub
+            sub, _ = self.subtitle_translator.translate_subtitle_lines(lines, target_language)
+            return sub
         elif isinstance(text_or_lines, list):
             clean_lines = [
                 ln.text.strip() if hasattr(ln, "text") else str(ln).strip()

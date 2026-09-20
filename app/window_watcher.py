@@ -490,7 +490,7 @@ class WindowWatcher(QThread):
     def _inference_loop(self) -> None:
         """后台推理工作循环: 从 LatestFrameBuffer 消费最新帧并执行 OCR 与翻译 (PR 11)."""
         _log.debug("推理消费线程启动")
-        threshold = float(self._cfg.get(f"{self._profile}_watch_diff_threshold", 0.5))
+        threshold = float(self._cfg.get(f"{self._profile}_watch_diff_threshold", 0.9))
 
         while not self._consumer_stop_event.is_set():
             # 1. 尝试从缓冲中拉取最新帧（带超时，超时后循环检查 stop_event）
@@ -538,7 +538,13 @@ class WindowWatcher(QThread):
             # 7. OCR 识别（ROI 局部加速与兜底）与防抖过滤，内部异常隔离防护
             lines: list[Any] = []
             try:
-                lines = self._ocr_service.recognize_frame(img, roi_box=diff_result.roi_box)
+                # 区域监视小图与字幕模式保证全图完整性，避免局部差分 ROI 造成丢行吞字
+                roi_box = (
+                    diff_result.roi_box
+                    if (self._profile != "region" and self._display_mode != "subtitle")
+                    else None
+                )
+                lines = self._ocr_service.recognize_frame(img, roi_box=roi_box)
                 _, lines = self._ocr_stabilizer.process(lines)
             except Exception as e:
                 _log.warning("OCR 识别异常 (gen=%s): %s", frame_gen_id, e)

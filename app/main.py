@@ -1212,7 +1212,7 @@ class App:
         rect = (x, y, w, h)
         self._watch_rect = rect
         # 跟随模式才重贴；自由/固定保持用户位置
-        if self.subtitle.isVisible() and self.subtitle.mode == "follow":
+        if self.subtitle.mode == "follow":
             self.subtitle.attach_below(rect, outside=True)
         if self.annotation.isVisible():
             self.annotation.update_geometry(rect)

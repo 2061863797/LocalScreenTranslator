@@ -11,11 +11,12 @@ import ctypes
 from ctypes import wintypes
 import numpy as np
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QGuiApplication,
     QImage,
     QPainter,
     QPen,
@@ -320,7 +321,8 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         x, y, w, h = win_rect
         if match_target_size:
             bar_w = max(w, self._MIN_W)
-            bar_h = max(h, self._MIN_H)
+            # 适度字幕高度：小选区（<=120）完全匹配，大选区限制为默认字幕高度，防止撑爆屏幕导致无法跟随
+            bar_h = max(h, self._MIN_H) if h <= 120 else max(self._DEFAULT_H, self._MIN_H)
             self._user_size = None
         elif self._user_size:
             bar_w, bar_h = self._user_size
@@ -330,6 +332,26 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             nx, ny, nw, nh = x, y + h + 4, bar_w, bar_h
         else:
             nx, ny, nw, nh = x, y + h - bar_h - 10, max(w, 200), bar_h
+
+        # 屏幕边界安全夹紧与防出界翻转（仅在屏幕内常规窗口时生效）
+        try:
+            center_pt = QPoint(x + w // 2, y + h // 2)
+            screen = QGuiApplication.screenAt(center_pt)
+            if screen:
+                avail = screen.availableGeometry()
+                if avail.contains(center_pt):
+                    # 若 outside=True 且底部放不下，自动翻转吸附到目标选区上方（避开区域控制条）
+                    if outside and (ny + nh > avail.bottom()):
+                        alt_y = y - nh - 34
+                        if alt_y >= avail.top():
+                            ny = alt_y
+                        else:
+                            ny = min(ny, avail.bottom() - nh)
+                    # 限制在屏幕可见工作区内
+                    nx = max(avail.left(), min(nx, avail.right() - nw))
+        except Exception:
+            pass
+
         changed = _set_geo_if_changed(self, nx, ny, nw, nh)
         if changed:
             self._reflow_text()
@@ -380,12 +402,20 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         pad_y = min(self._PAD, max(2, self.height() // 8))
         return pad_x, pad_y
 
+    def _pad_top(self) -> int:
+        _, py = self._effective_pads()
+        ctrl_h = self._ctrl.height() if hasattr(self, "_ctrl") and self._ctrl.isVisible() else 0
+        if self.height() > 50:
+            return max(py, ctrl_h + 4)
+        return py
+
     def _text_rect_size(self) -> QSize:
-        """正文可用区域（为滚动条留出右边距）。"""
+        """正文可用区域（为滚动条留出右边距，为顶部控制条留出空间）。"""
         px, py = self._effective_pads()
+        pt = self._pad_top()
         return QSize(
             max(20, self.width() - px * 2 - self._SCROLL_W),
-            max(10, self.height() - py * 2),
+            max(10, self.height() - pt - py),
         )
 
     def _reflow_text(self):
@@ -425,11 +455,14 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         self._ctrl.adjustSize()
         ctrl_w = self._ctrl.width()
         ctrl_h = self._ctrl.height()
-        _move_if_changed(
+        _set_geo_if_changed(
             self._ctrl,
             max(0, self.width() - ctrl_w - 4),
             4,
+            ctrl_w,
+            ctrl_h,
         )
+        self._ctrl.raise_()
         sw = max(self._SCROLL_W, 16)
         vscroll_y = ctrl_h + 4
         vscroll_h = max(10, self.height() - vscroll_y - self._GRIP - 4)
@@ -440,11 +473,13 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             sw,
             vscroll_h,
         )
+        self._vscroll.raise_()
         _move_if_changed(
             self._grip,
             max(0, self.width() - self._GRIP),
             max(0, self.height() - self._GRIP),
         )
+        self._grip.raise_()
 
     def _show_chrome(self):
         """统一显示附属窗：仅在需要时 show，避免每轮 raise 闪烁。"""
@@ -517,7 +552,13 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         if not self._text:
             return
         px, py = self._effective_pads()
-        text_rect = self.rect().adjusted(px, py, -px - self._SCROLL_W, -py)
+        pt = self._pad_top()
+        text_rect = QRect(
+            px,
+            pt,
+            max(20, self.width() - px * 2 - self._SCROLL_W),
+            max(10, self.height() - pt - py),
+        )
         painter.setFont(self._font)
         painter.setPen(TEXT_QCOLOR)
         painter.setClipRect(text_rect)
