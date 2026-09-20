@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
@@ -17,7 +18,7 @@ _qt_handler: "QtLogHandler | None" = None
 
 # 内存环形缓冲，设置页打开时能看到最近日志
 _RING_MAX = 800
-_ring: list[str] = []
+_ring: deque = deque(maxlen=_RING_MAX)
 
 
 class LogEmitter(QObject):
@@ -40,8 +41,6 @@ class QtLogHandler(logging.Handler):
             if len(msg) > 2000:
                 msg = msg[:2000] + "…"
             _ring.append(msg)
-            if len(_ring) > _RING_MAX:
-                del _ring[: len(_ring) - _RING_MAX]
             self._emitter.line.emit(msg)
         except Exception:
             self.handleError(record)
@@ -58,7 +57,7 @@ def get_log_emitter() -> LogEmitter:
 def recent_lines(max_lines: int = 400) -> list[str]:
     """内存中最近日志；不足时再从文件尾部补。"""
     if _ring:
-        return _ring[-max_lines:]
+        return list(_ring)[-max_lines:]
     return tail_file(max_lines)
 
 

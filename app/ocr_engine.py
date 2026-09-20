@@ -17,6 +17,13 @@ from .paths import RUNTIME_OCR
 
 _log = get_logger("ocr")
 
+# 识别分批：目标桶容量与同批宽高比跨度上限。
+# ONNX 每次调用有固定开销（本机实测约 30ms/轮），桶太碎会把开销放大；
+# 同批比例差太大则 padding 浪费，故跨度设上限。manifest 的 batch_size
+# 只当下限用：拆得太碎比多 padding 更慢。
+_REC_TARGET_BATCH = 16
+_REC_MAX_RATIO_SPREAD = 1.6
+
 
 @dataclass
 class OcrLine:
@@ -364,6 +371,25 @@ class OcrEngine:
                     break
         return ordered
 
+    @staticmethod
+    def _rec_groups(ratios: list[float], *, target: int, spread: float) -> list[list[int]]:
+        """把 OCR 行按宽高比分桶：同批比例接近可减少 padding，桶容量摊薄单次调用开销。"""
+        order = sorted(range(len(ratios)), key=lambda i: ratios[i])
+        groups: list[list[int]] = []
+        current: list[int] = []
+        for index in order:
+            ratio = max(ratios[index], 1e-6)
+            if current and (
+                len(current) >= target
+                or ratio / max(ratios[current[0]], 1e-6) > spread
+            ):
+                groups.append(current)
+                current = []
+            current.append(index)
+        if current:
+            groups.append(current)
+        return groups
+
     def _rec_batch(self, crops: list[np.ndarray]) -> np.ndarray:
         import cv2
 
@@ -404,16 +430,14 @@ class OcrEngine:
         boxes = self._detect(image)
         boxes = self._sort_boxes(boxes)
         crops = [self._crop(image, box) for box in boxes]
-        batch_size = int(self._manifest["rec"].get("batch_size", 8))
         rec = self._manifest["rec"]
-        # 按宽高比排序分批：同批宽度接近，避免一个长行把整批 padding 拉满
-        order = sorted(
-            range(len(crops)),
-            key=lambda i: crops[i].shape[1] / max(crops[i].shape[0], 1),
-        )
+        # 按宽高比分桶：同批比例接近可减少 padding，桶容量保证请求次数少
         decoded_by_index: dict[int, tuple[str, float]] = {}
-        for start in range(0, len(order), batch_size):
-            chunk = order[start : start + batch_size]
+        for chunk in self._rec_groups(
+            [crop.shape[1] / max(crop.shape[0], 1) for crop in crops],
+            target=max(int(rec.get("batch_size", 8)), _REC_TARGET_BATCH),
+            spread=_REC_MAX_RATIO_SPREAD,
+        ):
             inp = self._rec_batch([crops[i] for i in chunk])
             logits = self._rec_session.run([rec["output_name"]], {rec["input_name"]: inp})[0]
             for i, item in zip(chunk, self._decode(logits)):

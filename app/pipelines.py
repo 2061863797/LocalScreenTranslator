@@ -5,12 +5,75 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Callable
+import threading
+import time
+from typing import Any, Callable
 
 import numpy as np
 
 from .ocr_engine import OcrEngine, OcrLine
 from .translator import Translator
+
+
+@dataclass(frozen=True)
+class WatchCycleContext:
+    generation_id: int
+    timestamp: float
+    target_language: str
+
+
+class GenerationTracker:
+    """Thread-safe monotonic generation tracker for async OCR and translation cycles.
+
+    Guarantees:
+    - next_generation(): Monotonically increments and returns new active generation ID.
+    - is_active(gen_id): Returns True if gen_id matches current active generation.
+    - reset(): Advances the active generation to invalidate all in-flight generations.
+    - dispatch_if_active(): Invokes callback only if generation ID is still active.
+    """
+
+    def __init__(self, initial_generation: int = 0):
+        self._lock = threading.Lock()
+        self._current_gen: int = initial_generation
+
+    def next_generation(self) -> int:
+        """Monotonically increments and returns new generation ID."""
+        with self._lock:
+            self._current_gen += 1
+            return self._current_gen
+
+    def is_active(self, gen_id: int) -> bool:
+        """Returns True if gen_id matches current active generation."""
+        with self._lock:
+            return gen_id == self._current_gen
+
+    def reset(self, value: int | None = None) -> int:
+        """Resets and returns new active generation.
+        If value is specified, sets to that value; otherwise increments to invalidate prior gens.
+        """
+        with self._lock:
+            if value is not None:
+                self._current_gen = value
+            else:
+                self._current_gen += 1
+            return self._current_gen
+
+    @property
+    def current_generation(self) -> int:
+        with self._lock:
+            return self._current_gen
+
+    def dispatch_if_active(
+        self, gen_id: int, callback: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> bool:
+        """Execute callback only if gen_id matches current active generation.
+        Returns True if executed, False if dropped.
+        """
+        if self.is_active(gen_id):
+            callback(*args, **kwargs)
+            return True
+        return False
+
 
 
 @dataclass(frozen=True)

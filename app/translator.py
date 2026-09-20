@@ -14,6 +14,8 @@ import requests
 from requests.adapters import HTTPAdapter
 
 from .applog import get_logger
+from .storage import Storage
+from .translation_cache import TranslationCache
 
 _log = get_logger("translate")
 
@@ -86,7 +88,15 @@ _FOOTER_LINE_RE = re.compile(
 
 
 class Translator:
-    def __init__(self, base_url: str, cfg: dict | None = None, timeout: float = 120.0):
+    def __init__(
+        self,
+        base_url: str,
+        cfg: dict | None = None,
+        timeout: float = 120.0,
+        *,
+        cache: TranslationCache | None = None,
+        storage: Storage | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         # 共享配置引用，设置改 max_tokens 后立即生效
@@ -97,15 +107,38 @@ class Translator:
         self._session.mount("https://", adapter)
         # llama-server 默认单 slot；同时也保护 Session 与 LRU 缓存。
         self._lock = threading.RLock()
-        # 单行译文 LRU：备注模式增量翻译时命中率高
+        # 单行译文 LRU：保持向后兼容（测试与局部短期复用）
         self._line_cache: OrderedDict[tuple[str, str], str] = OrderedDict()
         self._line_cache_max = 2048
+        # 整段缓存上限字符数：避免一次几千字的截屏把 LRU 撑爆
+        self._text_cache_max_chars = 4000
+
+        # 两级持久化缓存 (PR 8: L1 内存 LRU + L2 SQLite)
+        self.model_id = str(self._cfg.get("model_id") or self._cfg.get("model_path") or "default_model")
+        self.prompt_version = str(self._cfg.get("prompt_version") or "v1")
+        if cache is not None:
+            self.cache: TranslationCache | None = cache
+        elif storage is not None:
+            self.cache = TranslationCache(storage=storage)
+        elif self._cfg.get("db_path"):
+            self.cache = TranslationCache(db_path=self._cfg.get("db_path"))
+        elif "server_port" in self._cfg or "model_path" in self._cfg or not self._cfg:
+            self.cache = TranslationCache()
+        else:
+            # 针对仅传入简单字典的隔离单测，使用独立的内存缓存避免污染全局数据库
+            self.cache = TranslationCache(db_path=":memory:")
 
     def _cache_get(self, text: str, target: str) -> str | None:
         key = (text, target)
         if key in self._line_cache:
             self._line_cache.move_to_end(key)
             return self._line_cache[key]
+        if self.cache is not None:
+            cached = self.cache.get(text, target, self.model_id, self.prompt_version)
+            if cached is not None:
+                self._line_cache[key] = cached
+                self._line_cache.move_to_end(key)
+                return cached
         return None
 
     def _cache_put(self, text: str, target: str, tr: str) -> None:
@@ -116,6 +149,8 @@ class Translator:
         self._line_cache.move_to_end(key)
         while len(self._line_cache) > self._line_cache_max:
             self._line_cache.popitem(last=False)
+        if self.cache is not None:
+            self.cache.put(text, target, self.model_id, self.prompt_version, tr)
 
     @staticmethod
     def _sanitize(text: str) -> str:
@@ -217,6 +252,10 @@ class Translator:
             text = self._sanitize(text)
             if not text:
                 return ""
+            # 字幕模式同一画面反复出现同一段文字时直接复用，不打模型
+            cached = self._cache_get(text, target_language)
+            if cached is not None:
+                return cached
             template = _PROMPT_ZH if "中文" in target_language else _PROMPT_EN
             target = (
                 target_language if "中文" in target_language
@@ -228,9 +267,12 @@ class Translator:
             chunks = self._split_text_for_ctx(text, overhead)
             if len(chunks) > 1:
                 _log.info("长文本分块翻译 chars=%d chunks=%d", len(text), len(chunks))
-            return "\n".join(
+            translation = "\n".join(
                 self._translate_complete(chunk, target_language) for chunk in chunks
             )
+            if len(text) <= self._text_cache_max_chars:
+                self._cache_put(text, target_language, translation)
+            return translation
 
     @staticmethod
     def _is_context_error(exc: BaseException) -> bool:
@@ -528,6 +570,8 @@ class Translator:
         return results
 
     def close(self) -> None:
-        """所有翻译任务结束后释放 HTTP 连接池。"""
+        """所有翻译任务结束后释放 HTTP 连接池与两级缓存资源。"""
         with self._lock:
             self._session.close()
+            if self.cache is not None:
+                self.cache.close()

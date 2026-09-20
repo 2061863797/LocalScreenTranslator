@@ -88,6 +88,75 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(row, ("keep",))
             storage.close()
 
+    def test_history_stays_bounded_and_newest_wins(self):
+        """持续翻译每轮都写历史：必须只留最新 N 条，且最新一条排在最前。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "data.db"
+            storage = Storage(db)
+            try:
+                for index in range(400):
+                    storage.add_history(f"源{index}", f"译{index}", "window_subtitle")
+                rows = storage.recent_history(1000)
+                self.assertEqual(len(rows), 50)
+                self.assertEqual(rows[0][1], "源399")
+            finally:
+                storage.close()
+
+    def test_compaction_actually_shrinks_the_file_on_disk(self):
+        """VACUUM 只写 WAL：不 checkpoint 的话页数降了、文件却不变小。
+
+        空闲页要「先长大再删光」才积得起来：稳态下删一行腾出的页会被下一行
+        立刻复用，本机那个 950KB 的库是长期大文本历史删空后留下的。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "data.db"
+            storage = Storage(db)
+            try:
+                for index in range(100):
+                    storage.add_history("源" * 20000, "译" * 20000, "window_subtitle")
+                storage.clear_history()
+                idle_pages = storage._conn.execute("PRAGMA freelist_count").fetchone()[0]
+                self.assertGreater(idle_pages, 0)
+                before = db.stat().st_size
+                storage._compact()
+                self.assertEqual(
+                    storage._conn.execute("PRAGMA freelist_count").fetchone()[0], 0
+                )
+                self.assertLess(db.stat().st_size, before)
+            finally:
+                storage.close()
+
+    def test_compaction_keeps_history_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "data.db"
+            storage = Storage(db)
+            try:
+                for index in range(400):
+                    storage.add_history(f"源{index}", f"译{index}", "window_subtitle")
+                before = storage.recent_history()
+                storage._compact()
+                self.assertEqual(storage.recent_history(), before)
+            finally:
+                storage.close()
+
+    def test_under_limit_writes_do_not_delete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "data.db"
+            storage = Storage(db)
+            try:
+                storage.add_history("a", "1", "test")
+                statements = []
+                storage._conn.set_trace_callback(statements.append)
+                try:
+                    storage.add_history("b", "2", "test")
+                finally:
+                    storage._conn.set_trace_callback(None)
+                # 未超上限时不该出现清理语句，避免每条插入都制造页面垃圾
+                self.assertFalse([sql for sql in statements if "NOT IN" in sql.upper()])
+                self.assertEqual(len(storage.recent_history()), 2)
+            finally:
+                storage.close()
+
 
 if __name__ == "__main__":
     unittest.main()

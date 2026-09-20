@@ -34,6 +34,7 @@ from .ui.windows import (
     InputTranslateWindow,
     SettingsWindow,
 )
+from .pipelines import GenerationTracker
 from .window_watcher import WindowWatcher
 from .workers import OcrTranslateWorker
 
@@ -98,6 +99,7 @@ class App:
         self.server = self.resources.server
         self.translator = self.resources.translator
         self.ocr = self.resources.ocr
+        self.generation_tracker = GenerationTracker()
 
         # UI 组件（区域/窗口持续翻译：字幕条 + 备注；区域另有可拖/固定识别框）
         self.selector = RegionSelector()
@@ -803,6 +805,7 @@ class App:
         # 0) 若还在选窗/框选，一并取消
         self._cancel_continuous_select()
         # 1) 先藏 UI，翻译卡在后台时用户也能马上关掉浮层
+        self.generation_tracker.reset()
         self._hide_watch_ui()
         w = self._watcher
         self._watcher = None
@@ -958,10 +961,12 @@ class App:
             self._region_topmost_timer.stop()
             self._window_follow_timer.start()
         display = "annotate" if annotate else "subtitle"
+        self.generation_tracker.reset()
         self._watcher = WindowWatcher(
             self.ocr, self.translator, self.cfg,
             hwnd=hwnd, region=region, display_mode=display,
             profile=profile,
+            generation_tracker=self.generation_tracker,
         )
         self._watcher.subtitle_ready.connect(self.subtitle.set_text)
         self._watcher.annotations_ready.connect(self._on_watch_annotations)
@@ -1036,13 +1041,18 @@ class App:
             self.subtitle.set_text("")
 
     def _on_watch_history(self, source: str, translation: str, mode: str):
-        """持续翻译有实质新译文时写入历史。"""
+        """持续翻译有实质新译文时异步写入历史，避免磁盘 I/O 阻塞 UI 渲染循环 (PR 12)。"""
         if not self.cfg.get("history_enabled", True) or self._quitting:
             return
         try:
-            self.storage.add_history(source, translation, mode)
+            if hasattr(self.storage, "add_history_async"):
+                self.storage.add_history_async(source, translation, mode)
+            else:
+                self.storage.add_history(source, translation, mode)
         except Exception:
             self.log.exception("持续翻译历史写入失败")
+
+    _on_window_translated = _on_watch_history
 
     def _apply_watch_font_size(self, profile: str | None = None) -> None:
         """把当前窗口或区域翻译的独立字号应用到两种显示模式。"""
@@ -1089,9 +1099,8 @@ class App:
                 not is_region or bool(self.cfg.get("annotate_capture_visible"))
             )
             self.subtitle.attach_below(rect, outside=True, match_target_size=is_region)
-            self.subtitle.set_text(
-                _t("watch_start") if announce else _t("watch_switched_sub")
-            )
+            # PR 1 零闪烁：不在启动时注入占位文本，保持隐藏直到第一帧有效翻译到达
+            self.subtitle.hide()
 
     def _switch_watch_display(self, annotate: bool):
         """运行中切换字幕 ↔ 备注（不停止监视线程）。"""
@@ -1122,6 +1131,7 @@ class App:
         except Exception:
             pass
         mode = "annotate" if annotate else "subtitle"
+        self.generation_tracker.reset()
         try:
             self._watcher.set_display_mode(mode)
         except Exception:

@@ -7,6 +7,8 @@
 - RegionWatchFrame：区域翻译识别框（可拖动 / 固定）
 """
 
+import ctypes
+from ctypes import wintypes
 import numpy as np
 
 from PySide6.QtCore import QPoint, QSize, Qt, Signal
@@ -50,6 +52,17 @@ _FLAGS_TOP = (
     | Qt.WindowType.WindowStaysOnTopHint
     | Qt.WindowType.Tool
 )
+
+
+class MSG(ctypes.Structure):
+    _fields_ = [
+        ("hwnd", wintypes.HWND),
+        ("message", wintypes.UINT),
+        ("wParam", wintypes.WPARAM),
+        ("lParam", wintypes.LPARAM),
+        ("time", wintypes.DWORD),
+        ("pt", wintypes.POINT),
+    ]
 
 
 def _exclude_from_capture(widget: QWidget) -> None:
@@ -150,29 +163,69 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
     def __init__(self):
         super().__init__()
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.mode = "follow"
-        self._interactive = False
+        self._interactive = True
         self._user_size: tuple[int, int] | None = None
         self._text = ""
         self._scroll = 0
         self._content_h = 0
+        self._layout_calculated_before_show = False
         self._font = QFont()
         self._font.setPixelSize(self._DEFAULT_FONT_SIZE)
-        # 译文层始终点击穿透
-        self.setWindowFlags(_FLAGS_TOP | Qt.WindowType.WindowTransparentForInput)
+        # 单一顶层 HWND：通过 WM_NCHITTEST 实现动态穿透与控件可交互 (PR 10)
+        self.setWindowFlags(_FLAGS_TOP)
 
         self._ctrl = _SubtitleCtrl(self)
         self._vscroll = _SubtitleVScroll(self)
         self._grip = _SubtitleResizeGrip(self)
+        self._ctrl.hide()
+        self._vscroll.hide()
+        self._grip.hide()
         self.resize(self._MIN_W, self._DEFAULT_H)
         self._layer_owner: int | None = None
         self._capture_visible = True
 
+    def is_single_hwnd(self) -> bool:
+        """Returns True if self is top-level window and all controls are child widgets."""
+        return (
+            self.isWindow()
+            and not self._ctrl.isWindow()
+            and self._ctrl.parent() is self
+            and not self._vscroll.isWindow()
+            and self._vscroll.parent() is self
+            and not self._grip.isWindow()
+            and self._grip.parent() is self
+        )
+
+    def nativeEvent(self, event_type, message):
+        """处理 Windows WM_NCHITTEST (0x0084)：子控件返回 HTCLIENT(1)，背景返回 HTTRANSPARENT(-1)。"""
+        try:
+            msg_val = None
+            lparam = 0
+            if hasattr(message, "message") and hasattr(message, "lParam"):
+                msg_val = message.message
+                lparam = message.lParam
+            elif event_type in (b"windows_generic_MSG", "windows_generic_MSG"):
+                msg = MSG.from_address(int(message))
+                msg_val = msg.message
+                lparam = msg.lParam
+
+            if msg_val == 0x0084:  # WM_NCHITTEST
+                x = ctypes.c_short(lparam & 0xFFFF).value
+                y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+                local_pt = self.mapFromGlobal(QPoint(x, y))
+                child = self.childAt(local_pt)
+                if child is not None:
+                    return True, 1  # HTCLIENT: 可交互子部件
+                return True, -1  # HTTRANSPARENT: 穿透到底层应用
+        except Exception:
+            pass
+        return super().nativeEvent(event_type, message)
+
     def layer_widgets(self) -> list[QWidget]:
-        """字幕主层 + 可点附属窗（控制条/滚动条/缩放把手）。"""
-        return [self, self._ctrl, self._vscroll, self._grip]
+        """单一原生 HWND：仅返回主窗口自身，消除多 HWND 竞争与 Win32 1400 报错。"""
+        return [self]
 
     def set_capture_visible(self, visible: bool) -> None:
         """字幕浮层是否参与屏幕捕获（区域翻译覆盖时防干扰 OCR）。"""
@@ -368,26 +421,29 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         self.update()
 
     def _place_chrome(self):
-        """控制条 / 滚动条 / 缩放把手贴在文字层周围（几何未变则不动）。"""
-        g = self.geometry()
+        """控制条 / 滚动条 / 缩放把手贴在文字层周围（client 相对坐标）。"""
         self._ctrl.adjustSize()
+        ctrl_w = self._ctrl.width()
+        ctrl_h = self._ctrl.height()
         _move_if_changed(
             self._ctrl,
-            g.right() - self._ctrl.width(),
-            g.top() - self._ctrl.height() - 2,
+            max(0, self.width() - ctrl_w - 4),
+            4,
         )
         sw = max(self._SCROLL_W, 16)
+        vscroll_y = ctrl_h + 4
+        vscroll_h = max(10, self.height() - vscroll_y - self._GRIP - 4)
         _set_geo_if_changed(
             self._vscroll,
-            g.right() - sw + 1,
-            g.top(),
+            max(0, self.width() - sw),
+            vscroll_y,
             sw,
-            max(self._MIN_H, g.height()),
+            vscroll_h,
         )
         _move_if_changed(
             self._grip,
-            g.right() - self._GRIP + 2,
-            g.bottom() - self._GRIP + 2,
+            max(0, self.width() - self._GRIP),
+            max(0, self.height() - self._GRIP),
         )
 
     def _show_chrome(self):
@@ -409,29 +465,47 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
                 self._grip.hide()
         self._apply_capture_affinity()
 
-    def set_text(self, text: str):
+    def prepare_layout(self, text: str = "") -> None:
+        """在向 DWM 呈现前执行完整的预排版与布局计算，杜绝脏矩形与二次重排闪烁。"""
+        if text:
+            self._text = text.strip()
+        if self._user_size:
+            self.resize(*self._user_size)
+        elif self.width() < self._MIN_W or self.height() < self._MIN_H:
+            self.resize(max(self.width(), self._MIN_W), max(self.height(), self._MIN_H))
+        self._reflow_text()
+        self._place_chrome()
+        self._layout_calculated_before_show = True
+
+    def set_text(self, text: str | None):
         """更新译文：框大小不变，过长用滚动条。已显示时只重绘，不反复 raise。
 
         滚动位置跨轮次译文刷新保持（持续翻译改文时不把滑块打回顶部）；
         仅在 hide 结束会话或正文被清空时归零。_reflow_text 会夹紧到新范围。
+        未显示前严格保持隐藏；首次显示前完成完整排版与布局计算，避免脏矩形闪烁。
         """
-        text = text or ""
-        self._text = text
+        valid_text = (text or "").strip()
+        if not valid_text:
+            self._text = ""
+            if self.isVisible():
+                self.hide()
+            return
+
+        self._text = valid_text
         first = not self.isVisible()
         if first:
-            if self._user_size:
-                self.resize(*self._user_size)
-            elif self.width() < self._MIN_W or self.height() < self._MIN_H:
-                self.resize(max(self.width(), self._MIN_W), max(self.height(), self._MIN_H))
-            self.show()
-            self._apply_capture_affinity()
-            # 新建原生窗后重新挂到目标层
+            self.prepare_layout(valid_text)
             if self._layer_owner:
                 self.set_layer_owner(self._layer_owner)
-        self._reflow_text()
-        self._place_chrome()
+            self.show()
+            self._apply_capture_affinity()
+        else:
+            self._reflow_text()
+            self._place_chrome()
+
         self._show_chrome()
         self.restack_layer()
+        self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -466,18 +540,17 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
 
 
 class _SubtitleVScroll(_CaptureAllowedMixin, QWidget):
-    """字幕条右侧纵向滚动条（独立顶层窗，可点）。
+    """字幕条右侧纵向滚动条（子部件，可点）。
 
     显隐只由 SubtitleBar._show_chrome 控制；set_range 绝不 hide，
     避免跟随/缩放路径漏 show 导致滑条突然消失。
     """
 
     def __init__(self, bar: SubtitleBar):
-        super().__init__()
-        self.setWindowFlags(_FLAGS_TOP)
+        super().__init__(bar)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._bar = bar
-        self._bar_widget = QScrollBar(Qt.Orientation.Vertical)
+        self._bar_widget = QScrollBar(Qt.Orientation.Vertical, self)
         # 与翻译结果窗同系：深底 + 浅色滑块（非高饱和蓝）
         self._bar_widget.setStyleSheet(SCROLLBAR_STYLE)
         self._bar_widget.valueChanged.connect(self._bar.set_scroll)
@@ -503,11 +576,10 @@ class _SubtitleVScroll(_CaptureAllowedMixin, QWidget):
 
 
 class _SubtitleResizeGrip(_CaptureAllowedMixin, QWidget):
-    """右下角缩放把手：独立窗口 + grabMouse，拖出按钮外仍跟手。"""
+    """右下角缩放把手：子部件 + grabMouse，拖出按钮外仍跟手。"""
 
     def __init__(self, bar: SubtitleBar):
-        super().__init__()
-        self.setWindowFlags(_FLAGS_TOP)
+        super().__init__(bar)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedSize(bar._GRIP, bar._GRIP)
         self.setCursor(Qt.CursorShape.SizeFDiagCursor)
@@ -550,17 +622,16 @@ class _SubtitleResizeGrip(_CaptureAllowedMixin, QWidget):
 
 
 class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
-    """字幕条控制小条：拖动把手 + 模式按钮 + 关闭（可点）。"""
+    """字幕条控制小条：拖动把手 + 模式按钮 + 关闭（子部件，可点）。"""
 
     def __init__(self, bar: SubtitleBar):
-        super().__init__()
-        self.setWindowFlags(_FLAGS_TOP)
+        super().__init__(bar)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._bar = bar
         self._drag_offset = None
 
         self._btns: dict[str, QPushButton] = {}
-        container = QWidget()
+        container = QWidget(self)
         container.setObjectName("ctrl")
         lay = QHBoxLayout(container)
         lay.setContentsMargins(6, 3, 6, 3)

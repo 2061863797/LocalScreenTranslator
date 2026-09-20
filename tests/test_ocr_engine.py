@@ -30,6 +30,28 @@ class OcrEngineTests(unittest.TestCase):
         self.assertAlmostEqual(float(batch[0, 0, 0, 0]), 1.0)
         self.assertAlmostEqual(float(batch[0, 0, 0, -1]), 0.0)
 
+    def test_rec_groups_cover_every_line_without_dropping_any(self):
+        """分桶绝不能丢行：每一行必须恰好出现在一个桶里，否则译文会整行消失。"""
+        ratios = [0.9, 1.0, 22.1, 1.05, 3.2, 3.4, 1.1, 0.95, 40.0, 1.2]
+        groups = OcrEngine._rec_groups(ratios, target=4, spread=1.6)
+        merged = [index for group in groups for index in group]
+        self.assertEqual(sorted(merged), list(range(len(ratios))))
+        self.assertTrue(all(group for group in groups))
+        for group in groups:
+            span = ratios[group[-1]] / max(ratios[group[0]], 1e-6)
+            # 超出跨度只可能是桶内只有一行，或已到目标容量被强制切开
+            self.assertTrue(span <= 1.6 + 1e-9 or len(group) < 4)
+
+    def test_rec_groups_pack_toward_target_batch_size(self):
+        ratios = [1.0 + i * 0.01 for i in range(40)]
+        groups = OcrEngine._rec_groups(ratios, target=16, spread=1.6)
+        self.assertEqual(len(groups), 3)
+        self.assertEqual([len(group) for group in groups], [16, 16, 8])
+
+    def test_rec_groups_handles_empty_and_single_line(self):
+        self.assertEqual(OcrEngine._rec_groups([], target=16, spread=1.6), [])
+        self.assertEqual(OcrEngine._rec_groups([2.0], target=16, spread=1.6), [[0]])
+
     def test_manifest_rejects_changed_model_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

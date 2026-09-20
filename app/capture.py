@@ -3,6 +3,7 @@
 
 import ctypes
 import threading
+from abc import ABC, abstractmethod
 from ctypes import wintypes
 
 import numpy as np
@@ -23,6 +24,35 @@ _user32 = ctypes.WinDLL("user32", use_last_error=True)
 _SetWindowDisplayAffinity = _user32.SetWindowDisplayAffinity
 _SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
 _SetWindowDisplayAffinity.restype = wintypes.BOOL
+
+# mss 实例按线程缓存：持续监视每轮都要抓屏，反复创建实例会重复申请
+# 桌面 DC / 兼容 DC / DIB（本机实测每次多花约 1ms），且句柄反复开关。
+# mss 实例非线程安全，故按线程隔离；抓屏只用绝对坐标、不读它的 monitors，
+# 显示器拓扑变化不影响抓屏正确性。线程退出前由调用方 release_mss() 释放。
+_mss_local = threading.local()
+
+
+def _get_mss():
+    """取本线程的 mss 实例（首次使用时创建）。"""
+    import mss
+
+    instance = getattr(_mss_local, "instance", None)
+    if instance is None:
+        instance = mss.MSS()
+        _mss_local.instance = instance
+    return instance
+
+
+def release_mss() -> None:
+    """释放本线程缓存的 mss 实例（线程退出前调用，避免 DC 泄漏）。"""
+    instance = getattr(_mss_local, "instance", None)
+    if instance is None:
+        return
+    _mss_local.instance = None
+    try:
+        instance.close()
+    except Exception:
+        pass
 
 
 def set_window_capture_excluded(hwnd: int, excluded: bool) -> bool:
@@ -109,19 +139,21 @@ def _native_rect_to_logical(
 
 def grab_region(x: int, y: int, width: int, height: int) -> np.ndarray:
     """按 Qt 逻辑坐标截屏；混合 DPI 时分屏抓取并归一到逻辑像素。"""
-    import mss
-
     if width <= 0 or height <= 0:
         return np.empty((0, 0, 3), dtype=np.uint8)
     with _LAYOUT_LOCK:
         layout = list(_SCREEN_LAYOUT)
     if not layout:
+        # 布局未知（尚未 configure_qt_screens）：单次探测，直接按原坐标抓
+        import mss
+
         with mss.MSS() as sct:
             shot = sct.grab({"left": x, "top": y, "width": width, "height": height})
             return np.asarray(shot)[:, :, :3].copy()
 
     canvas = np.zeros((height, width, 3), dtype=np.uint8)
-    with mss.MSS() as sct:
+    sct = _get_mss()
+    try:
         for lx, ly, lw, lh, nx, ny, nw, nh in layout:
             ix1, iy1 = max(x, lx), max(y, ly)
             ix2, iy2 = min(x + width, lx + lw), min(y + height, ly + lh)
@@ -139,6 +171,12 @@ def grab_region(x: int, y: int, width: int, height: int) -> np.ndarray:
             part = np.asarray(shot)[:, :, :3].copy()
             part = _resize_bgr(part, ix2 - ix1, iy2 - iy1)
             canvas[iy1 - y:iy2 - y, ix1 - x:ix2 - x] = part
+    except Exception:
+        # 实例可能已失效（显示器拓扑变化等）：丢弃以便下次重建。注意只有会
+        # 继续调用 grab_region 的调用方才谈得上自愈——监视线程遇到抓屏失败
+        # 会直接结束会话，走不到这里说的「下次抓屏」。
+        release_mss()
+        raise
     return canvas
 
 
@@ -202,3 +240,90 @@ def get_window_rect(hwnd: int) -> tuple[int, int, int, int]:
     left, top, right, bottom = win32gui.GetClientRect(hwnd)
     x, y = win32gui.ClientToScreen(hwnd, (left, top))
     return _native_rect_to_logical(x, y, right - left, bottom - top)
+
+
+class CaptureBackend(ABC):
+    """屏幕与窗口捕获后端抽象基类 (PR 12)."""
+
+    @abstractmethod
+    def grab_region(self, x: int, y: int, width: int, height: int) -> np.ndarray:
+        """根据屏幕坐标捕获区域画面 (BGR uint8 格式)."""
+        pass
+
+    @abstractmethod
+    def grab_window(self, hwnd: int) -> np.ndarray | None:
+        """根据窗口句柄捕获指定窗口客户区画面 (含遮挡区域). 失败返回 None."""
+        pass
+
+    @abstractmethod
+    def release(self) -> None:
+        """释放后端所持有的显存、线程局部 DC 或 COM 句柄."""
+        pass
+
+    def is_supported(self) -> bool:
+        """探针：检查当前环境是否支持该后端."""
+        return True
+
+
+class MssCaptureBackend(CaptureBackend):
+    """基于 MSS 的多显示器 DPI 归一化屏幕捕获后端 (PR 12)."""
+
+    def grab_region(self, x: int, y: int, width: int, height: int) -> np.ndarray:
+        return grab_region(x, y, width, height)
+
+    def grab_window(self, hwnd: int) -> np.ndarray | None:
+        try:
+            x, y, w, h = get_window_rect(hwnd)
+            if w <= 0 or h <= 0:
+                return None
+            return self.grab_region(x, y, w, h)
+        except Exception:
+            return None
+
+    def release(self) -> None:
+        release_mss()
+
+
+class Win32PrintWindowBackend(CaptureBackend):
+    """基于 Win32 PrintWindow (PW_RENDERFULLCONTENT) 的窗口捕获后端 (PR 12)."""
+
+    def grab_region(self, x: int, y: int, width: int, height: int) -> np.ndarray:
+        return grab_region(x, y, width, height)
+
+    def grab_window(self, hwnd: int) -> np.ndarray | None:
+        return grab_window(hwnd)
+
+    def release(self) -> None:
+        release_mss()
+
+
+class DxgiCaptureBackend(CaptureBackend):
+    """基于 DirectX 11 / DXGI Desktop Duplication 的硬件级高速捕获后端桩 (PR 12)."""
+
+    def is_supported(self) -> bool:
+        return False
+
+    def grab_region(self, x: int, y: int, width: int, height: int) -> np.ndarray:
+        raise NotImplementedError("DxgiCaptureBackend is not yet supported in current environment")
+
+    def grab_window(self, hwnd: int) -> np.ndarray | None:
+        raise NotImplementedError("DxgiCaptureBackend is not yet supported in current environment")
+
+    def release(self) -> None:
+        pass
+
+
+class WgcCaptureBackend(CaptureBackend):
+    """基于 Windows Graphics Capture (Windows.Graphics.Capture) 的现代低延迟捕获后端桩 (PR 12)."""
+
+    def is_supported(self) -> bool:
+        return False
+
+    def grab_region(self, x: int, y: int, width: int, height: int) -> np.ndarray:
+        raise NotImplementedError("WgcCaptureBackend is not yet supported in current environment")
+
+    def grab_window(self, hwnd: int) -> np.ndarray | None:
+        raise NotImplementedError("WgcCaptureBackend is not yet supported in current environment")
+
+    def release(self) -> None:
+        pass

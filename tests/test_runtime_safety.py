@@ -18,7 +18,7 @@ from app.main import (
     _clone_mime_data,
 )
 from app.ui.overlays import AnnotationOverlay
-from app.window_watcher import WindowWatcher
+from app.window_watcher import WindowWatcher, _frame_changed
 
 
 class _FakeProcess:
@@ -145,6 +145,8 @@ class RuntimeSafetyTests(unittest.TestCase):
                 (0, 0, 100, 100, 0, 0, 100, 100),
                 (100, 0, 100, 100, 100, 0, 200, 200),
             ]
+            # 抓屏实例按线程缓存：先清掉，确保这段用被测的假 mss
+            capture.release_mss()
             with patch("mss.MSS", return_value=_FakeMss()):
                 image = capture.grab_region(50, 0, 100, 50)
             self.assertEqual(image.shape, (50, 100, 3))
@@ -152,6 +154,17 @@ class RuntimeSafetyTests(unittest.TestCase):
             self.assertTrue(np.all(image[:, 50:, 0] == 20))
         finally:
             capture._SCREEN_LAYOUT[:] = old
+            capture.release_mss()
+
+    def test_capture_instance_is_reused_within_a_thread(self):
+        capture.release_mss()
+        try:
+            first = capture._get_mss()
+            self.assertIs(first, capture._get_mss())
+            capture.release_mss()
+            self.assertIsNot(first, capture._get_mss())
+        finally:
+            capture.release_mss()
 
     def test_region_annotation_mask_restores_previous_clean_pixels(self):
         watcher = WindowWatcher(
@@ -256,6 +269,67 @@ class RuntimeSafetyTests(unittest.TestCase):
         watcher.run()
 
         # 第 1 帧与内容变化的第 3 帧各识别一次；相同的第 2 帧被跳过
+        self.assertEqual(ocr.recognize.call_count, 2)
+
+    def test_frame_gate_ignores_noise_but_detects_text_changes(self):
+        base = np.zeros((40, 60, 3), dtype=np.uint8)
+        self.assertFalse(_frame_changed(base, base.copy()))
+
+        # 容差内的抖动（即使正好落在采样网格上）不应触发整轮 OCR
+        dimmed = base.copy()
+        for y in range(0, base.shape[0], 4):
+            for x in range(0, base.shape[1], 4):
+                dimmed[y, x] = np.clip(base[y, x].astype(np.int16) + 8, 0, 255)
+        self.assertFalse(_frame_changed(base, dimmed))
+
+        # 落在网格上的大幅变化必须触发（防止容差/采样被写坏后静默失效）
+        hot = base.copy()
+        hot[4, 8] = 255
+        hot[8, 12] = 255
+        self.assertTrue(_frame_changed(base, hot))
+
+        # 真正的文字变化：一小片反色必须被识别
+        text_changed = base.copy()
+        text_changed[10:26, 12:50] = 255 - text_changed[10:26, 12:50]
+        self.assertTrue(_frame_changed(base, text_changed))
+
+        # 整体亮度微变在容差内；尺寸变化一律算有变化
+        dimmer = np.clip(base.astype(np.int16) + 8, 0, 255).astype(np.uint8)
+        self.assertFalse(_frame_changed(base, dimmer))
+        self.assertTrue(_frame_changed(base, base[:20]))
+
+    def test_small_text_change_breaks_static_skip(self):
+        """静止画面跳过 OCR 后，小片文字变化必须立刻恢复识别。"""
+        ocr = Mock()
+        ocr.recognize.return_value = []
+        watcher = WindowWatcher(
+            ocr,
+            Mock(),
+            {
+                "window_watch_interval_ms": 20,
+                "window_watch_diff_threshold": 0.8,
+                "window_annotate_skip_target_lang": False,
+                "target_language": "简体中文",
+            },
+            hwnd=404,
+            profile="window",
+        )
+        still = np.zeros((40, 60, 3), dtype=np.uint8)
+        with_text = still.copy()
+        with_text[10:24, 12:48] = 255 - with_text[10:24, 12:48]
+        frames = 0
+
+        def _grab():
+            nonlocal frames
+            frames += 1
+            if frames >= 4:
+                watcher._running = False
+                return ((0, 0, 60, 40), with_text)
+            return ((0, 0, 60, 40), still)
+
+        watcher._grab = _grab
+        watcher.run()
+        # 第 1 帧识别；第 2、3 帧画面未变被跳过；第 4 帧出现文字立即识别
         self.assertEqual(ocr.recognize.call_count, 2)
 
     def test_annotation_mask_sync_is_limited_to_active_region_notes(self):

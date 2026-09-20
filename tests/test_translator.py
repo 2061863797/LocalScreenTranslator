@@ -53,6 +53,37 @@ class TranslatorTests(unittest.TestCase):
         )
         self.assertEqual(translator.translate("Hello, world"), "你好，世界")
 
+    def test_same_source_text_is_translated_once(self):
+        """字幕模式同一段文字反复出现时应命中缓存，不再打扰模型。"""
+        translator = self.make_translator()
+        prompts = []
+
+        def fake_chat(prompt, _max_tokens):
+            prompts.append(prompt)
+            return "你好"
+
+        translator._chat = fake_chat
+        self.assertEqual(translator.translate("hello", "简体中文"), "你好")
+        self.assertEqual(translator.translate("hello", "简体中文"), "你好")
+        self.assertEqual(len(prompts), 1)
+        # 换目标语言必须重新翻译，不能串味
+        self.assertEqual(translator.translate("hello", "英语"), "你好")
+        self.assertEqual(len(prompts), 2)
+
+    def test_empty_translation_is_not_cached(self):
+        """模型偶发返回空串时下次仍要重试，不能把失败固化进缓存。"""
+        translator = self.make_translator()
+        translator._chat = Mock(return_value="")
+        self.assertEqual(translator.translate("hello"), "")
+        self.assertNotIn(("hello", "简体中文"), translator._line_cache)
+
+    def test_oversized_source_text_is_not_cached(self):
+        translator = self.make_translator()
+        translator._chat = Mock(return_value="译文")
+        long_source = "甲" * (translator._text_cache_max_chars + 1)
+        translator.translate(long_source)
+        self.assertNotIn((long_source, "简体中文"), translator._line_cache)
+
     def test_numbered_translation_ignores_unrelated_ai_lines(self):
         raw = (
             "<analysis>internal</analysis>\n"

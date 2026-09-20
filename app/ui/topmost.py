@@ -43,6 +43,15 @@ except AttributeError:  # 极少数 32 位环境
 
 _SetWindowLongPtr.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
 _SetWindowLongPtr.restype = ctypes.c_ssize_t
+
+try:
+    _GetWindowLongPtr = _user32.GetWindowLongPtrW
+except AttributeError:  # 极少数 32 位环境
+    _GetWindowLongPtr = _user32.GetWindowLongW  # type: ignore[misc, assignment]
+
+_GetWindowLongPtr.argtypes = [wintypes.HWND, ctypes.c_int]
+_GetWindowLongPtr.restype = ctypes.c_ssize_t
+
 _SetWindowPos = _user32.SetWindowPos
 _SetWindowPos.argtypes = [
     wintypes.HWND,
@@ -75,14 +84,23 @@ def _insert_after_above(hwnd: int, target_hwnd: int) -> int:
 
 def _set_window_owner(hwnd: int, owner_hwnd: int) -> bool:
     """设置顶层窗 owner；返回 False 时保留 Win32 错误日志。"""
+    owner = int(owner_hwnd or 0)
+    if owner == 0:
+        ctypes.set_last_error(0)
+        curr = _GetWindowLongPtr(hwnd, _GWLP_HWNDPARENT)
+        if curr == 0:
+            return True
+
     ctypes.set_last_error(0)
-    previous = _SetWindowLongPtr(hwnd, _GWLP_HWNDPARENT, owner_hwnd)
+    previous = _SetWindowLongPtr(hwnd, _GWLP_HWNDPARENT, owner)
     error = ctypes.get_last_error()
     if previous == 0 and error:
+        if owner == 0 and error == 1400:
+            return True
         _log.warning(
             "设置浮层 owner 失败 hwnd=%#x owner=%#x error=%d",
             hwnd,
-            owner_hwnd,
+            owner,
             error,
         )
         return False
