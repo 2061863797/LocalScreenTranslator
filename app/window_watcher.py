@@ -430,7 +430,6 @@ class WindowWatcher(QThread):
                         self._translation_manager.clear_cache()
 
                 t0 = time.time()
-                gen_id = self._generation_tracker.next_generation()
 
                 # 阶段 1: 画面捕获与窗口验证
                 try:
@@ -452,7 +451,7 @@ class WindowWatcher(QThread):
                     self._result_manager.dispatch_moved(*rect)
 
                 # 阶段 3: 压入 LatestFrameBuffer（削峰解耦，异步投递至推理消费线程）
-                self._frame_buffer.put(img, gen_id)
+                self._frame_buffer.put(img)
 
                 # 自适应轮询间隔休眠
                 dynamic_delay = (
@@ -501,11 +500,9 @@ class WindowWatcher(QThread):
                     break
                 continue
 
-            img, frame_gen_id = pulled
-
-            # 2. 世代有效性验证（丢弃已被重置或过期的帧）
-            if not self._generation_tracker.is_active(frame_gen_id):
-                continue
+            img, _ = pulled
+            # 2. 开启当前推理世代，确保异步结果与会话状态同步
+            frame_gen_id = self._generation_tracker.next_generation()
 
             # 3. 画面两阶段轻量差分检测 (<1.5ms)
             diff_result = self._frame_detector.detect(self._last_frame, img)
