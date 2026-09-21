@@ -549,6 +549,38 @@ class TestProductionSubtitleBar(unittest.TestCase):
         # 执行绘制事件不抛出任何异常
         self.bar.paintEvent(ev)
 
+    def test_window_watch_apply_display_attaches_outside(self):
+        """验证无论是区域翻译还是窗口翻译，字幕条均严格 outside=True 吸附于目标外侧，绝不遮盖画面。"""
+        from app.main import App
+        from app.ui.overlays import SubtitleBar
+        app = MagicMock()
+        app.cfg = {}
+        app.subtitle = SubtitleBar()
+        app._watch_paused = False
+        app._watch_region = None
+        app._watch_profile = "window"
+
+        try:
+            # 窗口监视模式下调用 _apply_watch_display
+            App._apply_watch_display(app, annotate=False, rect=(50, 50, 400, 150), announce=False)
+            # 字幕条 Y 坐标必须严格位于目标窗口底边缘下方 (50 + 150 + 4 = 204)
+            self.assertEqual(app.subtitle.y(), 50 + 150 + 4)
+            self.assertGreaterEqual(app.subtitle.y(), 50 + 150)
+        finally:
+            app.subtitle.close()
+            app.subtitle.deleteLater()
+
+    def test_compact_control_bar_prevents_overflow_and_occlusion(self):
+        """验证紧凑化控制栏在常见窗口宽度下不溢出父窗口，且在 60px 高度时保留完整文本垂直空间。"""
+        self.bar.resize(270, 60)
+        self.bar._place_chrome()
+        # 1. 控制条宽度由 322px 收敛至 <= 265px，在 270px 宽度下不溢出父窗口
+        self.assertLessEqual(self.bar._ctrl.width(), 265)
+        self.assertLessEqual(self.bar._ctrl.x() + self.bar._ctrl.width(), self.bar.width())
+        # 2. 高度 60px 时，pad_y 紧凑优化为 2px，可用正文高度 >= 24px，保证 16px 字号文本（行高 20~22px）下边缘不被裁切
+        text_rect = self.bar._text_rect_size()
+        self.assertGreaterEqual(text_rect.height(), 24)
+
 
 if __name__ == "__main__":
     unittest.main()

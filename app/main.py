@@ -1232,7 +1232,7 @@ class App:
             if is_region:
                 self.subtitle.attach_below(rect, outside=True, match_target_size=True)
             else:
-                self.subtitle.attach_below(rect, outside=False, match_target_size=False)
+                self.subtitle.attach_below(rect, outside=True, match_target_size=False)
             # PR 1 零闪烁：不在启动时注入占位文本，保持隐藏直到第一帧有效翻译到达
             self.subtitle.hide()
 

@@ -314,7 +314,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         self,
         win_rect: tuple[int, int, int, int],
         *,
-        outside: bool = False,
+        outside: bool = True,
         match_target_size: bool = True,
     ):
         """跟随模式下吸附到目标下缘；其他模式不动。默认与翻译框保持相同窗口比例。
@@ -367,7 +367,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             if screen and avail and avail.contains(center_pt):
                 # 若 outside=True 且底部放不下，自动翻转吸附到目标选区上方（避开区域控制条）
                 if outside and (ny + nh > avail.bottom()):
-                    alt_y = y - nh - 34
+                    alt_y = y - nh - 36
                     if alt_y >= avail.top():
                         ny = alt_y
                     else:
@@ -425,14 +425,14 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
 
     def _effective_pads(self) -> tuple[int, int]:
         pad_x = min(self._PAD, max(4, self.width() // 10))
-        pad_y = min(self._PAD, max(2, self.height() // 8))
+        pad_y = 2 if self.height() <= 70 else min(self._PAD, max(2, self.height() // 8))
         return pad_x, pad_y
 
     def _pad_top(self) -> int:
-        ctrl_h = 28
-        ctrl_bottom = 32
+        ctrl_h = 24
+        ctrl_bottom = 28
         if hasattr(self, "_ctrl") and self._ctrl is not None:
-            ctrl_h = self._ctrl.height() if self._ctrl.height() > 0 else 28
+            ctrl_h = self._ctrl.height() if self._ctrl.height() > 0 else 24
             ctrl_bottom = self._ctrl.y() + ctrl_h
         return max(34, ctrl_bottom + 2)
 
@@ -441,7 +441,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         px, py = self._effective_pads()
         pt = self._pad_top()
         return QSize(
-            max(20, self.width() - px * 2 - self._SCROLL_W),
+            max(20, self.width() - px * 2 - self._SCROLL_W - 4),
             max(10, self.height() - pt - py),
         )
 
@@ -503,11 +503,14 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         self._vscroll.raise_()
         changed |= _move_if_changed(
             self._grip,
-            max(0, self.width() - self._GRIP),
-            max(0, self.height() - self._GRIP),
+            max(0, self.width() - self._GRIP - 2),
+            max(0, self.height() - self._GRIP - 2),
         )
         self._grip.raise_()
         if changed and self.isVisible():
+            self._ctrl.update()
+            self._vscroll.update()
+            self._grip.update()
             self.update()
 
     def _show_chrome(self):
@@ -592,7 +595,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         text_rect = QRect(
             px,
             pt,
-            max(20, self.width() - px * 2 - self._SCROLL_W),
+            max(20, self.width() - px * 2 - self._SCROLL_W - 4),
             max(10, self.height() - pt - py),
         )
         painter.setFont(self._font)
@@ -711,11 +714,11 @@ class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
         container = QWidget(self)
         container.setObjectName("ctrl")
         lay = QHBoxLayout(container)
-        lay.setContentsMargins(6, 3, 6, 3)
-        lay.setSpacing(4)
+        lay.setContentsMargins(5, 2, 5, 2)
+        lay.setSpacing(3)
         self._handle = QLabel("⠿")
         self._handle.setStyleSheet(
-            "color:#fff;font-size:14px;padding:0 2px;background:transparent;"
+            "color:#fff;font-size:13px;padding:0 1px;background:transparent;"
         )
         lay.addWidget(self._handle)
         for key in ("follow", "free", "pinned"):
@@ -743,14 +746,14 @@ class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(container)
-        self.setFixedHeight(26)
+        self.setFixedHeight(24)
         self.setStyleSheet(CTRL_STYLE)
         self.sync_checked(bar.mode)
         self.apply_ui_language()
 
     def sizeHint(self) -> QSize:
-        w = self.layout().sizeHint().width() if self.layout() else 320
-        return QSize(max(260, w), 26)
+        w = self.layout().sizeHint().width() if self.layout() else 240
+        return QSize(max(240, w), 24)
 
     def apply_ui_language(self):
         self._handle.setToolTip(_t("sub_drag_tip"))
