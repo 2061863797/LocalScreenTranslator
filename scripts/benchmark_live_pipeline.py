@@ -58,7 +58,7 @@ def run_benchmark(
     metrics = PipelineMetrics()
     frame_detector = FrameChangeDetector(step=4, pixel_threshold=16, min_changed_pixels=40, min_changed_ratio=0.0002)
     text_detector = TextChangeDetector()
-    cache = TranslationCache()
+    cache = TranslationCache(db_path=":memory:")
 
     t_start = time.perf_counter()
 
@@ -239,6 +239,10 @@ def run_benchmark(
             json.dump(stats, f, indent=2, ensure_ascii=False)
         print(f"[BENCHMARK] JSON report saved to: {out_file.resolve()}\n")
 
+    try:
+        cache.close()
+    except Exception:
+        pass
     return 0
 
 

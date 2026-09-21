@@ -992,13 +992,26 @@ class App:
         )
         self._watcher = watcher
 
-        # 会话双重守卫：仅当信号来自当前活跃 watcher 且 session 匹配时才执行 UI 操作
-        watcher.subtitle_ready.connect(
-            lambda text, s=current_session, w=watcher: self._on_watch_subtitle_guarded(text, s, w)
-        )
-        watcher.annotations_ready.connect(
-            lambda items, s=current_session, w=watcher: self._on_watch_annotations_guarded(items, s, w)
-        )
+        # 会话多重守卫：仅当信号来自当前活跃 watcher 且 session 匹配，
+        # 且 generation 和 content_revision 仍然有效时才渲染 UI，杜绝 Qt 队列排队滞留信号
+        try:
+            watcher.subtitle_ready[str, int, int].connect(
+                lambda text, gen_id, rev, s=current_session, w=watcher: self._on_watch_subtitle_guarded(text, s, w, gen_id, rev)
+            )
+        except Exception:
+            watcher.subtitle_ready.connect(
+                lambda text, s=current_session, w=watcher: self._on_watch_subtitle_guarded(text, s, w)
+            )
+
+        try:
+            watcher.annotations_ready[list, int, int].connect(
+                lambda items, gen_id, rev, s=current_session, w=watcher: self._on_watch_annotations_guarded(items, s, w, gen_id, rev)
+            )
+        except Exception:
+            watcher.annotations_ready.connect(
+                lambda items, s=current_session, w=watcher: self._on_watch_annotations_guarded(items, s, w)
+            )
+
         watcher.history_ready.connect(
             lambda src, tr, m, s=current_session, w=watcher: self._on_watch_history_guarded(src, tr, m, s, w)
         )
@@ -1053,20 +1066,58 @@ class App:
             and self._watcher is watcher
         )
 
-    def _on_watch_subtitle_guarded(self, text: str, session_id: int, watcher: Any) -> None:
+    def _on_watch_subtitle_guarded(
+        self,
+        text: str,
+        session_id: int,
+        watcher: Any,
+        gen_id: int | None = None,
+        content_rev: int | None = None,
+    ) -> None:
         if not self._is_active_watch_session(session_id, watcher):
             return
         if self._watch_paused or (hasattr(watcher, "_paused") and watcher._paused.is_set()):
             self.log.debug("持续翻译已暂停，丢弃排队晚到的字幕刷新信号")
             return
+        if gen_id is not None and hasattr(watcher, "generation_tracker"):
+            if not watcher.generation_tracker.is_active(gen_id):
+                self.log.debug("丢弃过时 generation 的字幕刷新信号: gen=%s", gen_id)
+                return
+        if content_rev is not None and hasattr(watcher, "content_revision"):
+            if watcher.content_revision != content_rev:
+                self.log.debug(
+                    "丢弃过时 content_revision 的字幕刷新信号: rev=%s current=%s",
+                    content_rev,
+                    watcher.content_revision,
+                )
+                return
         self.subtitle.set_text(text)
 
-    def _on_watch_annotations_guarded(self, items: list, session_id: int, watcher: Any) -> None:
+    def _on_watch_annotations_guarded(
+        self,
+        items: list,
+        session_id: int,
+        watcher: Any,
+        gen_id: int | None = None,
+        content_rev: int | None = None,
+    ) -> None:
         if not self._is_active_watch_session(session_id, watcher):
             return
         if self._watch_paused or (hasattr(watcher, "_paused") and watcher._paused.is_set()):
             self.log.debug("持续翻译已暂停，丢弃排队晚到的逐行备注信号")
             return
+        if gen_id is not None and hasattr(watcher, "generation_tracker"):
+            if not watcher.generation_tracker.is_active(gen_id):
+                self.log.debug("丢弃过时 generation 的逐行备注信号: gen=%s", gen_id)
+                return
+        if content_rev is not None and hasattr(watcher, "content_revision"):
+            if watcher.content_revision != content_rev:
+                self.log.debug(
+                    "丢弃过时 content_revision 的逐行备注信号: rev=%s current=%s",
+                    content_rev,
+                    watcher.content_revision,
+                )
+                return
         self._on_watch_annotations(items)
 
     def _on_watch_history_guarded(self, src: str, tr: str, mode: str, session_id: int, watcher: Any) -> None:

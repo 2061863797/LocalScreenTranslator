@@ -196,6 +196,20 @@ class TranslatorTests(unittest.TestCase):
             thread.join()
         self.assertEqual(max_active, 1)
 
+    def test_abort_inflight_and_release_session(self):
+        translator = self.make_translator()
+        tag = "test_tag"
+        s = translator._get_session(tag)
+        self.assertIn(tag, translator._sessions)
+
+        translator.abort_inflight(tag)
+        self.assertIn(tag, translator._cancelled_tags)
+
+        translator.release_session(tag)
+        self.assertNotIn(tag, translator._sessions)
+        self.assertNotIn(tag, translator._cancelled_tags)
+        self.assertNotIn(tag, translator._cancel_events)
+
 
 if __name__ == "__main__":
     unittest.main()

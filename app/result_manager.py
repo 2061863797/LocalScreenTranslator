@@ -25,6 +25,9 @@ except ImportError:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self._slots: list[Callable[..., Any]] = []
 
+        def __getitem__(self, item: Any) -> Any:
+            return self
+
         def connect(self, slot: Callable[..., Any]) -> None:
             self._slots.append(slot)
 
@@ -55,8 +58,8 @@ class ResultManager(QObject):
     对于过期结果自动记录 debug 日志并安全丢弃。
     """
 
-    subtitle_ready = Signal(str)
-    annotations_ready = Signal(list)
+    subtitle_ready = Signal((str,), (str, int, int))
+    annotations_ready = Signal((list,), (list, int, int))
     history_ready = Signal(str, str, str)
     window_moved = Signal(int, int, int, int)
     content_cleared = Signal()
@@ -101,7 +104,7 @@ class ResultManager(QObject):
     def tracker(self, value: GenerationTracker) -> None:
         self.generation_tracker = value
 
-    def dispatch_subtitle(self, text: str, gen_id: int) -> bool:
+    def dispatch_subtitle(self, text: str, gen_id: int, content_rev: int = 0) -> bool:
         """派发字幕译文。若 gen_id 非当前活跃世代则丢弃。"""
         with self._lock:
             if not self.generation_tracker.is_active(gen_id):
@@ -116,6 +119,10 @@ class ResultManager(QObject):
             self.latest_dispatched = text
             self.dispatched_history.append((gen_id, text))
 
+        try:
+            self.subtitle_ready[str, int, int].emit(text, gen_id, content_rev)
+        except Exception:
+            pass
         self.subtitle_ready.emit(text)
         if self._on_subtitle is not None:
             try:
@@ -124,7 +131,7 @@ class ResultManager(QObject):
                 pass
         return True
 
-    def dispatch_annotations(self, items: list[Any], gen_id: int) -> bool:
+    def dispatch_annotations(self, items: list[Any], gen_id: int, content_rev: int = 0) -> bool:
         """派发逐行标注译文。若 gen_id 非当前活跃世代则丢弃。"""
         with self._lock:
             if not self.generation_tracker.is_active(gen_id):
@@ -136,6 +143,10 @@ class ResultManager(QObject):
                 )
                 return False
 
+        try:
+            self.annotations_ready[list, int, int].emit(items, gen_id, content_rev)
+        except Exception:
+            pass
         self.annotations_ready.emit(items)
         if self._on_annotations is not None:
             try:

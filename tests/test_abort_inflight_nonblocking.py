@@ -14,7 +14,8 @@ from app.translator import Translator
 class TestAbortInflightNonBlocking(unittest.TestCase):
     def test_abort_inflight_returns_immediately_while_translate_is_hung(self):
         """P0 核心验证：当 translate() 阻塞在慢网络时，UI 线程调用 abort_inflight() 必须在毫秒级返回且打破阻塞。"""
-        translator = Translator(base_url="http://127.0.0.1:18080", timeout=10.0)
+        translator = Translator(base_url="http://127.0.0.1:18080", timeout=10.0, cfg={"db_path": ":memory:"})
+        translator._cache_get = lambda *args, **kwargs: None
 
         hung_event = threading.Event()
         request_interrupted = threading.Event()
@@ -44,7 +45,7 @@ class TestAbortInflightNonBlocking(unittest.TestCase):
 
         def run_translation():
             try:
-                translator.translate("Hello world", target_language="简体中文", session_tag="watcher")
+                translator.translate(f"Hung test text {time.time()}", target_language="简体中文", session_tag="watcher")
             except Exception:
                 pass
             finally:

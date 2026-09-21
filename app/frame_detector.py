@@ -29,18 +29,33 @@ class FrameDiffResult:
     diff_mask: np.ndarray | None = None  # 降采样变动掩码 (h//s, w//s)
 
     def has_change_in_boxes(
-        self, boxes: list[Any], step: int = 4, min_changed_pixels: int = 3
+        self,
+        boxes: list[Any],
+        step: int = 4,
+        min_changed_pixels: int = 3,
+        expand_bottom_ratio: float = 0.0,
+        margin_bottom_px: int = 0,
     ) -> bool:
         """精确判定指定的各个文本框内部是否存在实质像素改动。
 
         消除所有变动像素的总外接矩形（bounding box）造成的虚假大面积相交，彻底根除 Result Starvation。
+        支持 expand_bottom_ratio 与 margin_bottom_px 向下扩展（例如字幕模式向下扩展一行），精准捕捉新增下一行字幕。
         """
         if not boxes:
             return False
         if self.diff_mask is None:
             if self.roi_box is not None:
                 from .scene_text_state import _boxes_intersect
-                return any(_boxes_intersect(getattr(b, "box", b), self.roi_box, margin=6) for b in boxes)
+                for b in boxes:
+                    raw_box = getattr(b, "box", b)
+                    if not raw_box or len(raw_box) < 4:
+                        continue
+                    bx1, by1, bx2, by2 = raw_box[:4]
+                    line_h = max(0, by2 - by1)
+                    extra_b = margin_bottom_px + int(line_h * expand_bottom_ratio)
+                    if _boxes_intersect((bx1, by1, bx2, by2 + extra_b), self.roi_box, margin=6):
+                        return True
+                return False
             return False
         mh, mw = self.diff_mask.shape[:2]
         for b in boxes:
@@ -48,10 +63,13 @@ class FrameDiffResult:
             if not box or len(box) < 4:
                 continue
             bx1, by1, bx2, by2 = box[:4]
+            line_h = max(0, by2 - by1)
+            extra_b = margin_bottom_px + int(line_h * expand_bottom_ratio)
+            by2_exp = by2 + extra_b
             sx1 = max(0, min(mw, int(bx1 // step)))
             sy1 = max(0, min(mh, int(by1 // step)))
             sx2 = max(0, min(mw, int((bx2 + step - 1) // step)))
-            sy2 = max(0, min(mh, int((by2 + step - 1) // step)))
+            sy2 = max(0, min(mh, int((by2_exp + step - 1) // step)))
             if sx2 <= sx1 or sy2 <= sy1:
                 continue
             sub_mask = self.diff_mask[sy1:sy2, sx1:sx2]

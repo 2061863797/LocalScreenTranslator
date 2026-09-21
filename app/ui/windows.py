@@ -336,7 +336,7 @@ def _set_combo_data(combo: QComboBox, value, fallback=0) -> None:
 class ModelCopyWorker(QThread):
     """大模型文件后台异步复制工作线程，避免 UI 主线程发生数秒至数十秒假死。"""
     progress = Signal(int)
-    finished = Signal(bool, str, str)  # success, target_path_str, error_msg
+    copy_finished = Signal(bool, str, str)  # success, target_path_str, error_msg
 
     def __init__(self, src_path: Path, dest_path: Path, parent=None):
         super().__init__(parent)
@@ -353,6 +353,8 @@ class ModelCopyWorker(QThread):
             chunk_size = 4 * 1024 * 1024  # 4MB 分块
             with open(self.src_path, "rb") as fsrc, open(temp_dest, "wb") as fdst:
                 while True:
+                    if self.isInterruptionRequested():
+                        break
                     buf = fsrc.read(chunk_size)
                     if not buf:
                         break
@@ -361,10 +363,19 @@ class ModelCopyWorker(QThread):
                     if total_bytes > 0:
                         self.progress.emit(int(copied_bytes * 100 / total_bytes))
 
+            if self.isInterruptionRequested():
+                if temp_dest.exists():
+                    try:
+                        temp_dest.unlink()
+                    except Exception:
+                        pass
+                self.copy_finished.emit(False, "", "复制已被取消")
+                return
+
             if not is_gguf_model(temp_dest):
                 if temp_dest.exists():
                     temp_dest.unlink()
-                self.finished.emit(False, "", "拷贝后模型文件头校验失败（非合法 GGUF）")
+                self.copy_finished.emit(False, "", "拷贝后模型文件头校验失败（非合法 GGUF）")
                 return
 
             if self.dest_path.exists():
@@ -373,14 +384,14 @@ class ModelCopyWorker(QThread):
                 except Exception:
                     pass
             os.replace(temp_dest, self.dest_path)
-            self.finished.emit(True, str(self.dest_path), "")
+            self.copy_finished.emit(True, str(self.dest_path), "")
         except Exception as e:
             try:
                 if temp_dest.exists():
                     temp_dest.unlink()
             except Exception:
                 pass
-            self.finished.emit(False, "", str(e))
+            self.copy_finished.emit(False, "", str(e))
 
 
 class SettingsWindow(_DraggableMixin, QWidget):
@@ -1184,7 +1195,7 @@ class SettingsWindow(_DraggableMixin, QWidget):
                         parent=self,
                     )
 
-            worker.finished.connect(on_copy_finished)
+            worker.copy_finished.connect(on_copy_finished)
             self._model_copy_worker = worker
             worker.start()
 
@@ -1293,6 +1304,13 @@ class SettingsWindow(_DraggableMixin, QWidget):
         )
         self.hide()
         show_toast(toast_msg, at_rect=geo, msec=1500)
+
+    def closeEvent(self, event):
+        worker = getattr(self, "_model_copy_worker", None)
+        if worker is not None and worker.isRunning():
+            worker.requestInterruption()
+            worker.wait(500)
+        super().closeEvent(event)
 
 
 class HistoryWindow(_DraggableMixin, QWidget):

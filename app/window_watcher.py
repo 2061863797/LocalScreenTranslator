@@ -111,8 +111,8 @@ class WindowWatcher(QThread):
     - stopped(reason)                            监视结束
     """
 
-    subtitle_ready = Signal(str)
-    annotations_ready = Signal(list)
+    subtitle_ready = Signal((str,), (str, int, int))
+    annotations_ready = Signal((list,), (list, int, int))
     history_ready = Signal(str, str, str)
     window_moved = Signal(int, int, int, int)
     content_cleared = Signal()
@@ -166,9 +166,23 @@ class WindowWatcher(QThread):
         self._translation_manager = TranslationManager(translator=self._translator)
         self._result_manager = ResultManager(generation_tracker=self._generation_tracker)
 
-        # 连接 ResultManager 内部信号至 WindowWatcher 公共信号
+        # 连接 ResultManager 内部信号至 WindowWatcher 公共信号（支持元数据多重重载透传）
+        try:
+            self._result_manager.subtitle_ready[str, int, int].connect(
+                lambda t, g, r: self.subtitle_ready[str, int, int].emit(t, g, r)
+            )
+        except Exception:
+            pass
         self._result_manager.subtitle_ready.connect(self.subtitle_ready.emit)
+
+        try:
+            self._result_manager.annotations_ready[list, int, int].connect(
+                lambda items, g, r: self.annotations_ready[list, int, int].emit(items, g, r)
+            )
+        except Exception:
+            pass
         self._result_manager.annotations_ready.connect(self.annotations_ready.emit)
+
         self._result_manager.history_ready.connect(self.history_ready.emit)
         self._result_manager.window_moved.connect(self.window_moved.emit)
         self._result_manager.content_cleared.connect(self.content_cleared.emit)
@@ -361,20 +375,32 @@ class WindowWatcher(QThread):
         self._last_processed_epoch = 0
         self.set_annotation_mask(None, reset_reference=True)
 
+    def _rotate_translation_session(self) -> str:
+        """轮转翻译会话标签并中断上一代未完成的在途请求。
+
+        彻底解决 Sticky Cancel 与恢复运行/切换语言的冲突：
+        旧标签被置为永久取消态（保证旧线程被释放后立刻短路退出，不争抢锁），
+        新标签获得独立全新的命名空间，保证后续翻译 100% 正常执行。
+        """
+        old_tag = self._translation_session_tag
+        self._translation_session_tag = f"watcher_{uuid.uuid4().hex[:8]}"
+        try:
+            if hasattr(self._translator, "abort_inflight"):
+                try:
+                    self._translator.abort_inflight(tag=old_tag)
+                except TypeError:
+                    self._translator.abort_inflight()
+        except Exception:
+            pass
+        return self._translation_session_tag
+
     def on_target_language_changed(self) -> None:
         """目标语言改变时重置检测器与缓存，中断旧语言在途请求，强制当前帧重新翻译。"""
         self._generation_tracker.reset()
         with self._content_epoch_lock:
             self._content_revision += 1
             self._content_epoch = self._content_revision
-        try:
-            if hasattr(self._translator, "abort_inflight"):
-                try:
-                    self._translator.abort_inflight(tag=self._translation_session_tag)
-                except TypeError:
-                    self._translator.abort_inflight()
-        except Exception:
-            pass
+        self._rotate_translation_session()
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=True)
         self._translation_manager.clear_cache()
@@ -460,14 +486,7 @@ class WindowWatcher(QThread):
             with self._content_epoch_lock:
                 self._content_revision += 1
                 self._content_epoch = self._content_revision
-            try:
-                if hasattr(self._translator, "abort_inflight"):
-                    try:
-                        self._translator.abort_inflight(tag=self._translation_session_tag)
-                    except TypeError:
-                        self._translator.abort_inflight()
-            except Exception:
-                pass
+            self._rotate_translation_session()
         else:
             self._last_captured_frame = None
             self._last_frame = None
@@ -499,7 +518,15 @@ class WindowWatcher(QThread):
         boxes = [b for b in boxes if b]
         if hasattr(diff_res, "has_change_in_boxes"):
             step = getattr(self._frame_detector, "step", 4)
-            return diff_res.has_change_in_boxes(boxes, step=step, min_changed_pixels=3)
+            margin_bottom = 24 if self._display_mode == "subtitle" else 0
+            expand_ratio = 1.0 if self._display_mode == "subtitle" else 0.0
+            return diff_res.has_change_in_boxes(
+                boxes,
+                step=step,
+                min_changed_pixels=3,
+                expand_bottom_ratio=expand_ratio,
+                margin_bottom_px=margin_bottom,
+            )
 
         roi_box = getattr(diff_res, "roi_box", None)
         if roi_box is not None:
@@ -579,6 +606,14 @@ class WindowWatcher(QThread):
                     time.sleep(0.05)
                     continue
                 self._consecutive_grab_fails = 0
+
+                # 备注浮层像素剔除：在画面差分与缓冲压入前先剔除自身译文浮层，彻底杜绝自反馈与假变动
+                if (
+                    self._profile == "region"
+                    and self._display_mode == "annotate"
+                    and bool(self._cfg.get("annotate_capture_visible"))
+                ):
+                    img = self._remove_annotation_overlay(img)
 
                 # 阶段 2: 目标位移追踪
                 if self._capture_service.has_moved(rect):
@@ -665,6 +700,11 @@ class WindowWatcher(QThread):
             if self._inference_thread is not None and self._inference_thread.is_alive():
                 self._inference_thread.join(timeout=1.5)
             self._capture_service.release()
+            try:
+                if hasattr(self._translator, "release_session"):
+                    self._translator.release_session(self._translation_session_tag)
+            except Exception:
+                pass
 
     def _inference_loop(self) -> None:
         """后台推理工作循环: 从 LatestFrameBuffer 消费最新帧并执行 OCR 与翻译 (PR 11 / PR 13)."""
@@ -808,7 +848,7 @@ class WindowWatcher(QThread):
                                         self._text_change_detector.rollback(text)
                                     continue
 
-                                dispatched = self._result_manager.dispatch_annotations(items, frame_gen_id)
+                                dispatched = self._result_manager.dispatch_annotations(items, frame_gen_id, content_rev=packet_epoch)
                                 if dispatched:
                                     if translation:
                                         self._result_manager.dispatch_history(text, translation, mode_tag, frame_gen_id)
@@ -834,7 +874,7 @@ class WindowWatcher(QThread):
                                         self._text_change_detector.rollback(text)
                                     continue
 
-                                dispatched = self._result_manager.dispatch_subtitle(translation, frame_gen_id)
+                                dispatched = self._result_manager.dispatch_subtitle(translation, frame_gen_id, content_rev=packet_epoch)
                                 if dispatched:
                                     if translation:
                                         self._result_manager.dispatch_history(text, translation, mode_tag, frame_gen_id)

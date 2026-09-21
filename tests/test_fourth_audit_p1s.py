@@ -223,6 +223,130 @@ class TestFourthAuditP1s(unittest.TestCase):
         w2 = WindowWatcher(MagicMock(), tr, {}, profile="region", hwnd=None, region=(0, 0, 100, 100))
         self.assertNotEqual(w1._translation_session_tag, w2._translation_session_tag, "每个 watcher 必须拥有独立唯一的 session tag")
 
+    def test_pause_resume_then_translate_succeeds(self):
+        """P0 修复验证：同一个 watcher 在暂停并恢复后，绝不能因为旧 tag 的 Sticky Cancel 导致翻译永久失效。"""
+        from app.translator import Translator
+        from app.window_watcher import WindowWatcher
+
+        fake_resp = MagicMock()
+        fake_resp.ok = True
+        fake_resp.json.return_value = {
+            "choices": [{"message": {"content": "世界你好"}}]
+        }
+
+        tr = Translator(base_url="http://127.0.0.1:18080", cfg={"db_path": ":memory:"})
+        tr._cache_get = lambda *args, **kwargs: None
+        w = WindowWatcher(MagicMock(), tr, {}, profile="region", hwnd=None, region=(0, 0, 100, 100))
+        tag0 = w._translation_session_tag
+
+        # 暂停 watcher
+        w.set_paused(True)
+        # 旧 tag 必须被粘性取消
+        self.assertTrue(tr._get_cancel_event(tag0).is_set())
+
+        # 恢复 watcher
+        w.set_paused(False)
+        tag1 = w._translation_session_tag
+        self.assertNotEqual(tag0, tag1, "恢复后必须生成全新的 session tag")
+        self.assertFalse(tr._get_cancel_event(tag1).is_set(), "新 tag 绝对不能处于已取消状态")
+
+        # 验证新 tag 的翻译请求必须能够成功执行并返回译文
+        with patch("requests.Session.post", return_value=fake_resp):
+            res = tr.translate("Hello world", session_tag=tag1)
+            self.assertEqual(res, "世界你好", "恢复后的新 session 必须能顺利完成翻译")
+
+    def test_target_language_switch_then_translate_succeeds(self):
+        """P0/P1 修复验证：运行中切换目标语言后，同一个 watcher 能够继续成功发起翻译。"""
+        from app.translator import Translator
+        from app.window_watcher import WindowWatcher
+
+        fake_resp = MagicMock()
+        fake_resp.ok = True
+        fake_resp.json.return_value = {
+            "choices": [{"message": {"content": "こんにちは世界"}}]
+        }
+
+        tr = Translator(base_url="http://127.0.0.1:18080", cfg={"db_path": ":memory:"})
+        tr._cache_get = lambda *args, **kwargs: None
+        w = WindowWatcher(MagicMock(), tr, {}, profile="region", hwnd=None, region=(0, 0, 100, 100))
+        old_tag = w._translation_session_tag
+
+        w.on_target_language_changed()
+        new_tag = w._translation_session_tag
+        self.assertNotEqual(old_tag, new_tag)
+        self.assertTrue(tr._get_cancel_event(old_tag).is_set())
+        self.assertFalse(tr._get_cancel_event(new_tag).is_set())
+
+        with patch("requests.Session.post", return_value=fake_resp):
+            res = tr.translate("Hello world", target_language="日语", session_tag=new_tag)
+            self.assertEqual(res, "こんにちは世界")
+
+    def test_rotate_translation_session_isolates_stale_requests(self):
+        """P1 验证：_rotate_translation_session 释放旧 session tag 阻断旧任务并开启新任务。"""
+        from app.translator import Translator
+        from app.window_watcher import WindowWatcher
+
+        tr = Translator(base_url="http://127.0.0.1:18080")
+        w = WindowWatcher(MagicMock(), tr, {}, profile="region", hwnd=None, region=(0, 0, 100, 100))
+        t1 = w._translation_session_tag
+
+        t2 = w._rotate_translation_session()
+        self.assertNotEqual(t1, t2)
+        self.assertTrue(tr._get_cancel_event(t1).is_set())
+        self.assertFalse(tr._get_cancel_event(t2).is_set())
+
+    def test_subtitle_new_line_bottom_expansion(self):
+        """P1 验证：字幕模式下向下扩展一行行高，精准捕捉原字幕下方新出现的下一行字幕。"""
+        boxes = [(100, 200, 500, 240)]  # 第一行字幕 y=200~240，高度 40px
+        diff_mask = np.zeros((200, 300), dtype=bool)
+
+        # 在下一行位置出现新字幕像素 (y=250~270，对应 step=4 下的 sy=62~67)
+        diff_mask[63:66, 30:60] = True
+
+        res = FrameDiffResult(
+            has_changed=True,
+            changed_ratio=0.01,
+            changed_pixels=90,
+            roi_box=(120, 252, 240, 268),
+            invalidates_content=False,
+            diff_mask=diff_mask,
+        )
+
+        # 默认不扩展时，不命中
+        self.assertFalse(res.has_change_in_boxes(boxes, step=4, expand_bottom_ratio=0.0, margin_bottom_px=0))
+
+        # 字幕模式下向下扩一行（expand_bottom_ratio=1.0, margin_bottom_px=24），命中！
+        self.assertTrue(res.has_change_in_boxes(boxes, step=4, expand_bottom_ratio=1.0, margin_bottom_px=24))
+
+    def test_model_copy_worker_interruption_and_cleanup(self):
+        """P2 验证：ModelCopyWorker 支持 isInterruptionRequested()，并安全清理临时文件。"""
+        from pathlib import Path
+        import tempfile
+        import time
+        from app.ui.windows import ModelCopyWorker
+
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "source.gguf"
+            dest = Path(td) / "dest.gguf"
+            # 写入 8MB 数据
+            src.write_bytes(b"x" * (8 * 1024 * 1024))
+
+            worker = ModelCopyWorker(src, dest)
+            finished_args = []
+            worker.copy_finished.connect(lambda s, p, e: finished_args.append((s, p, e)))
+
+            # 启动并在 5ms 后请求中断
+            worker.start()
+            time.sleep(0.005)
+            worker.requestInterruption()
+            worker.wait(2000)
+
+            # 验证：临时文件被清理，copy_finished 发射 False
+            temp_dest = dest.with_name(f"{dest.stem}.importing.gguf")
+            self.assertFalse(temp_dest.exists(), "中断后临时文件必须被彻底清理删除")
+            if finished_args:
+                self.assertFalse(finished_args[0][0], "中断后必须发射失败/取消信号")
+
 
 if __name__ == "__main__":
     unittest.main()

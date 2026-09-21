@@ -9,16 +9,86 @@ import re
 import threading
 import time
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 import requests
 from requests.adapters import HTTPAdapter
+from urllib3 import HTTPConnectionPool, PoolManager
 
 from .applog import get_logger
 from .storage import Storage
 from .translation_cache import TranslationCache
 
 _log = get_logger("translate")
+
+TRANSLATION_PROMPT_VERSION = "v1"
+
+
+class _InterruptibleConnectionPool(HTTPConnectionPool):
+    """可打断的 HTTP 连接池：记录活动连接并在取消时强制打断底层的活动 socket。"""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.active_conns: set[Any] = set()
+        self._conns_lock = threading.Lock()
+
+    def _get_conn(self, timeout: float | None = None) -> Any:
+        conn = super()._get_conn(timeout)
+        with self._conns_lock:
+            self.active_conns.add(conn)
+        return conn
+
+    def _put_conn(self, conn: Any) -> None:
+        with self._conns_lock:
+            self.active_conns.discard(conn)
+        super()._put_conn(conn)
+
+    def interrupt_all(self) -> None:
+        """立即关闭所有借出的活动 socket，使阻塞在网络读写的线程毫秒级抛异常并退出。"""
+        with self._conns_lock:
+            conns = list(self.active_conns)
+        for conn in conns:
+            try:
+                sock = getattr(conn, "sock", None)
+                if sock is not None:
+                    try:
+                        sock.shutdown(2)
+                    except Exception:
+                        pass
+                    sock.close()
+            except Exception:
+                pass
+
+
+class _InterruptibleHTTPAdapter(HTTPAdapter):
+    """支持主动打断在途网络连接的 HTTP 适配器。"""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._created_pools: set[_InterruptibleConnectionPool] = set()
+        self._pools_lock = threading.Lock()
+
+    def init_poolmanager(
+        self, connections: int, maxsize: int, block: bool = False, **pool_kwargs: Any
+    ) -> None:
+        self.poolmanager = PoolManager(
+            num_pools=connections, maxsize=maxsize, block=block, **pool_kwargs
+        )
+        self.poolmanager.pool_classes_by_scheme["http"] = self._make_pool
+        self.poolmanager.pool_classes_by_scheme["https"] = self._make_pool
+
+    def _make_pool(self, host: str, port: int, **kw: Any) -> _InterruptibleConnectionPool:
+        p = _InterruptibleConnectionPool(host, port, **kw)
+        with self._pools_lock:
+            self._created_pools.add(p)
+        return p
+
+    def interrupt_active(self) -> None:
+        with self._pools_lock:
+            pools = list(self._created_pools)
+        for pool in pools:
+            pool.interrupt_all()
 
 # 混元翻译模型官方模板加严格边界：原文即使像问题或指令，也只能被翻译。
 _SYSTEM_PROMPT = (
@@ -91,7 +161,7 @@ _FOOTER_LINE_RE = re.compile(
 
 
 def _get_model_fingerprint(model_path_val: Any) -> str:
-    """构建模型指纹（文件路径:文件大小:修改时间戳），防止同路径覆盖新模型时读取旧模型缓存。"""
+    """构建模型指纹（规范化绝对路径:文件大小:修改时间戳），防止同路径覆盖新模型或跨目录同名模型读取旧缓存。"""
     if not model_path_val:
         return "default_model"
     p_str = str(model_path_val).strip()
@@ -102,7 +172,7 @@ def _get_model_fingerprint(model_path_val: Any) -> str:
         p = resolve_path(p_str)
         if p.is_file():
             stat = p.stat()
-            return f"{p.name}:{stat.st_size}:{stat.st_mtime_ns}"
+            return f"{p.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
     except Exception:
         pass
     return p_str
@@ -142,7 +212,7 @@ class Translator:
             or _get_model_fingerprint(self._cfg.get("model_path"))
             or "default_model"
         )
-        self.prompt_version = str(self._cfg.get("prompt_version") or "v1")
+        self.prompt_version = str(self._cfg.get("prompt_version") or TRANSLATION_PROMPT_VERSION)
         if cache is not None:
             self.cache: TranslationCache | None = cache
         elif storage is not None:
@@ -249,13 +319,13 @@ class Translator:
             return evt
 
     def _get_session(self, tag: str = "default") -> requests.Session:
-        """获取指定会话标签的 HTTP Session（线程安全，彻底禁用环境代理）。"""
+        """获取指定会话标签的 HTTP Session（线程安全，彻底禁用环境代理，支持底层主动打断）。"""
         with self._sessions_lock:
             s = self._sessions.get(tag)
             if s is None:
                 s = requests.Session()
                 s.trust_env = False  # 彻底禁止继承本地环境代理 (PR 3)
-                adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10, max_retries=1)
+                adapter = _InterruptibleHTTPAdapter(pool_connections=5, pool_maxsize=10, max_retries=1)
                 s.mount("http://", adapter)
                 s.mount("https://", adapter)
                 self._sessions[tag] = s
@@ -274,10 +344,11 @@ class Translator:
     def abort_inflight(self, tag: str | None = None) -> None:
         """非阻塞立即中断正在执行中的网络推理请求，使旧 watcher 毫秒级释放锁并退出。
 
-        三重取消机制 (PR 2):
+        三重取消机制 (PR 2 & 第七轮升级):
         1. 触发 cancel_event.set() 并标记为永久粘性取消，使正在排队或未来等锁的旧任务立即短路；
-        2. 触发底层 Session.close() 尝试打断活动 socket；
-        3. 绝不争抢 self._lock，确保 UI 线程毫秒级（<0.1ms）返回，彻底杜绝 UI 卡死。
+        2. 触发底层 ConnectionPool 遍历并立即关闭借出的活动 socket，打断网络阻塞；
+        3. 触发底层 Session.close() 释放连接池；
+        4. 绝不争抢 self._lock，确保 UI 线程毫秒级（<0.1ms）返回，彻底杜绝 UI 卡死。
         """
         with self._sessions_lock:
             if tag is None:
@@ -298,6 +369,26 @@ class Translator:
 
         for s in to_close:
             try:
+                for prefix in ("http://", "https://"):
+                    ad = s.adapters.get(prefix)
+                    if hasattr(ad, "interrupt_active"):
+                        ad.interrupt_active()
+                s.close()
+            except Exception:
+                pass
+
+    def release_session(self, tag: str) -> None:
+        """释放指定的会话资源（打断网络连接、关闭 Session，清理事件与粘性取消标记），防止集合无界膨胀。"""
+        with self._sessions_lock:
+            self._cancelled_tags.discard(tag)
+            self._cancel_events.pop(tag, None)
+            s = self._sessions.pop(tag, None)
+        if s is not None:
+            try:
+                for prefix in ("http://", "https://"):
+                    ad = s.adapters.get(prefix)
+                    if hasattr(ad, "interrupt_active"):
+                        ad.interrupt_active()
                 s.close()
             except Exception:
                 pass
@@ -502,6 +593,8 @@ class Translator:
             except Exception as exc:
                 # 若连接被 abort_inflight 关闭/中断，立即退出不重试
                 last_err = exc
+                if cancel_event.is_set():
+                    return ""
                 break
 
             if resp.ok:
@@ -526,6 +619,8 @@ class Translator:
                 )
                 continue
             raise last_err
+        if cancel_event.is_set():
+            return ""
         raise last_err  # pragma: no cover
 
     def _translate_prompt(
