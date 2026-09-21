@@ -22,10 +22,17 @@ class TextChangeDetector:
     5. 维护逐行翻译缓存并支持定期修剪。
     """
 
-    def __init__(self, empty_clear_threshold: int = 2) -> None:
+    def __init__(
+        self,
+        empty_clear_threshold: int = 2,
+        candidate_confirm_frames: int = 2,
+    ) -> None:
         self.empty_clear_threshold = max(1, int(empty_clear_threshold))
+        self.candidate_confirm_frames = max(1, int(candidate_confirm_frames))
         self._lock = threading.RLock()
         self._last_text: str = ""
+        self._candidate_text: str = ""
+        self._candidate_count: int = 0
         self._empty_frames: int = 0
         self._line_cache: dict[str, str] = {}
 
@@ -38,6 +45,16 @@ class TextChangeDetector:
     def last_text(self, value: str) -> None:
         with self._lock:
             self._last_text = str(value)
+
+    @property
+    def candidate_text(self) -> str:
+        with self._lock:
+            return self._candidate_text
+
+    @property
+    def candidate_count(self) -> int:
+        with self._lock:
+            return self._candidate_count
 
     @property
     def empty_frames(self) -> int:
@@ -69,16 +86,26 @@ class TextChangeDetector:
         """重置状态机。若 clear_cache 为 True 则同时清空逐行缓存。"""
         with self._lock:
             self._last_text = ""
+            self._candidate_text = ""
+            self._candidate_count = 0
             self._empty_frames = 0
             if clear_cache:
                 self._line_cache.clear()
+
+    def rollback(self, text: str | None = None) -> None:
+        """回滚状态（派发失败或因世代过期丢弃时调用），允许后续帧重新发起翻译。"""
+        with self._lock:
+            if text is None or self._last_text == text:
+                self._last_text = ""
+                self._candidate_text = ""
+                self._candidate_count = 0
 
     def observe(self, lines: list[Any] | str, threshold: float = 0.5) -> tuple[str, str]:
         """观察新一轮 OCR 结果并判断状态事件。
 
         Args:
             lines: OCR 识别行列表（各项包含 .text 属性或为 str），或单一多行文本。
-            threshold: 相似度判定阈值（0.0 ~ 1.0）。若相似度 >= threshold 则判定无实质变化。
+            threshold: 相似度判定阈值（0.0 ~ 1.0）。
 
         Returns:
             (event, text):
@@ -101,6 +128,8 @@ class TextChangeDetector:
         with self._lock:
             if not text:
                 self._empty_frames += 1
+                self._candidate_text = ""
+                self._candidate_count = 0
                 if self._empty_frames >= self.empty_clear_threshold and self._last_text:
                     self._last_text = ""
                     return "clear", ""
@@ -108,21 +137,46 @@ class TextChangeDetector:
 
             self._empty_frames = 0
             if text == self._last_text:
+                self._candidate_text = ""
+                self._candidate_count = 0
                 return "none", text
 
             l1, l2 = len(self._last_text), len(text)
-            # 数学理论上限短路：ratio <= 2 * min(l1, l2) / (l1 + l2)。
-            # 当理论上限小于阈值时，必定不满足匹配，跳过昂贵的 LCS 动态规划
+            # 1. 数学理论上限短路：ratio <= 2 * min(l1, l2) / (l1 + l2)。
+            # 当理论上限小于阈值时必定为实质变化，跳过昂贵的 LCS 动态规划
             if (l1 + l2 > 0) and (2.0 * min(l1, l2) / (l1 + l2) < threshold):
                 self._last_text = text
+                self._candidate_text = ""
+                self._candidate_count = 0
                 return "change", text
 
+            # 2. 精确比对相似度
             ratio = SequenceMatcher(None, self._last_text, text).ratio()
-            if ratio >= threshold:
-                return "none", text
+            if ratio < threshold:
+                self._last_text = text
+                self._candidate_text = ""
+                self._candidate_count = 0
+                return "change", text
 
-            self._last_text = text
-            return "change", text
+            # 3. 相似度 >= threshold 但文本 != last_text（如数字微变、HUD）：
+            # 采用候选帧累积晋升机制，连续稳定出现后晋升确认，绝不永久丢弃！
+            if text == self._candidate_text:
+                self._candidate_count += 1
+                if self._candidate_count >= self.candidate_confirm_frames:
+                    self._last_text = text
+                    self._candidate_text = ""
+                    self._candidate_count = 0
+                    return "change", text
+                return "none", self._last_text
+            else:
+                self._candidate_text = text
+                self._candidate_count = 1
+                if self.candidate_confirm_frames <= 1:
+                    self._last_text = text
+                    self._candidate_text = ""
+                    self._candidate_count = 0
+                    return "change", text
+                return "none", self._last_text
 
     def prune_cache(self, active_lines: list[str], limit: int = 400) -> None:
         """修剪逐行译文缓存，保留活跃行，限制最大条目数。"""

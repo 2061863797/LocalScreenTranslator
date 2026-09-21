@@ -41,9 +41,14 @@ for their own code or models; see each project's license):
 - PySide6 (Qt for Python) — LGPLv3
   https://doc.qt.io/qtforpython-6/
 
-- HY-MT (Hunyuan-MT) GGUF model weights — license terms of the model
-  publisher (e.g. Tencent on Hugging Face); NOT the same as this repo's
-  Apache-2.0 source license. Check the model card before redistribution:
+- HY-MT (Hunyuan-MT) GGUF model weights — governed by the Tencent HY
+  Community License Agreement, NOT this repository's Apache-2.0 license.
+  The Tencent HY Community License explicitly restricts permitted territory
+  (excluding the European Union, the United Kingdom, and South Korea).
+  Redistribution requires providing the license terms and notice. For use
+  outside permitted territories, users should download/configure alternative
+  permissive models (such as Qwen2.5 or Gemma 2).
+  Model card and license:
   https://huggingface.co/tencent/HY-MT1.5-1.8B-GGUF
 
 Other Python dependencies are listed in requirements.txt and carry their

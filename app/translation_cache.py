@@ -54,6 +54,7 @@ class TranslationCache:
         self.l1_capacity: int = l1_capacity
         self.l2_max_entries: int = l2_max_entries
         self._l1: collections.OrderedDict[str, str] = collections.OrderedDict()
+        self._pending_reads: int = 0
 
     @staticmethod
     def make_key(
@@ -99,12 +100,18 @@ class TranslationCache:
             row = cur.fetchone()
             if row:
                 trans, count = row
-                # 更新访问统计
+                # 更新访问统计（内存事务更新，避免每次读命中都同步写盘 commit，消除 I/O 抖动与锁争夺）
                 self._conn.execute(
                     "UPDATE translation_cache SET last_accessed_at = ?, access_count = ? WHERE cache_key = ?",
                     (now, (count or 0) + 1, key),
                 )
-                self._conn.commit()
+                self._pending_reads += 1
+                if self._pending_reads >= 50:
+                    try:
+                        self._conn.commit()
+                    except Exception:
+                        pass
+                    self._pending_reads = 0
 
                 # 回填 L1 内存
                 self._l1[key] = trans
@@ -180,6 +187,7 @@ class TranslationCache:
             )
             self._check_eviction()
             self._conn.commit()
+            self._pending_reads = 0
 
     def _check_eviction(self) -> None:
         """检查并执行 L2 LRU 淘汰。"""
@@ -191,11 +199,18 @@ class TranslationCache:
             self._l1.clear()
             self._conn.execute("DELETE FROM translation_cache")
             self._conn.commit()
+            self._pending_reads = 0
 
     def close(self) -> None:
         """释放存储连接与资源。"""
         with self._lock:
             self._l1.clear()
+            if self._pending_reads > 0:
+                try:
+                    self._conn.commit()
+                except Exception:
+                    pass
+                self._pending_reads = 0
             if self._owns_storage:
                 self._storage.close()
             else:

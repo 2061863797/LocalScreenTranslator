@@ -8,9 +8,35 @@ are automatically dropped in favour of the most recent frame.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import threading
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 import numpy as np
+
+
+@dataclass
+class FramePacket:
+    """封装抓屏数据、内容版本与变动区域的帧数据包。
+    
+    兼容性保证：支持迭代与索引解包 (img, epoch = packet)，保证与既有代码和测试 100% 兼容。
+    """
+
+    frame: np.ndarray
+    epoch: int
+    roi_box: tuple[int, int, int, int] | None = None
+    timestamp: float = 0.0
+    has_changed: bool = True
+
+    def __iter__(self):
+        yield self.frame
+        yield self.epoch
+
+    def __getitem__(self, index: int):
+        if index == 0:
+            return self.frame
+        elif index == 1:
+            return self.epoch
+        raise IndexError(f"FramePacket index {index} out of range (0..1)")
 
 
 class LatestFrameBuffer:
@@ -27,33 +53,45 @@ class LatestFrameBuffer:
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._frame: np.ndarray | None = None
+        self._packet: FramePacket | None = None
         self._gen_id: int | None = None
         self._dropped_count: int = 0
 
     def put(
         self,
-        frame: np.ndarray,
+        frame: np.ndarray | FramePacket,
         generation_id: int | None = None,
         *,
         gen_id: int | None = None,
     ) -> None:
-        """Store the newest frame into the buffer, overwriting any unconsumed frame.
+        """Store the newest frame or FramePacket into the buffer, overwriting any unconsumed frame.
 
         Args:
-            frame: Captured image frame.
+            frame: Captured image frame or FramePacket.
             generation_id: Generation identifier (positional or keyword).
             gen_id: Generation identifier (alias keyword).
         """
+        if isinstance(frame, FramePacket):
+            with self._lock:
+                if self._frame is not None or self._packet is not None:
+                    self._dropped_count += 1
+                self._packet = frame
+                self._frame = frame.frame
+                self._gen_id = frame.epoch
+                self._cond.notify_all()
+            return
+
         gid = generation_id if generation_id is not None else (gen_id if gen_id is not None else 0)
         with self._lock:
-            if self._frame is not None:
+            if self._frame is not None or self._packet is not None:
                 self._dropped_count += 1
+            self._packet = None
             self._frame = frame
             self._gen_id = gid
             self._cond.notify_all()
 
-    def get(self, timeout: float | None = None) -> tuple[np.ndarray, int] | None:
-        """Consume and return the latest frame and generation ID from the buffer.
+    def get(self, timeout: float | None = None) -> tuple[np.ndarray, int] | FramePacket | None:
+        """Consume and return the latest frame or FramePacket from the buffer.
 
         Blocks until a frame is available or until timeout expires.
 
@@ -61,14 +99,22 @@ class LatestFrameBuffer:
             timeout: Optional wait timeout in seconds. None blocks indefinitely.
 
         Returns:
-            (frame, generation_id) tuple, or None if timed out without a frame.
+            FramePacket or (frame, generation_id) tuple, or None if timed out without a frame.
         """
         with self._lock:
-            if self._frame is None:
+            if self._frame is None and self._packet is None:
                 if not self._cond.wait(timeout):
                     return None
-            if self._frame is None:
+            if self._frame is None and self._packet is None:
                 return None
+
+            if self._packet is not None:
+                result = self._packet
+                self._packet = None
+                self._frame = None
+                self._gen_id = None
+                return result
+
             result = (self._frame, self._gen_id if self._gen_id is not None else 0)
             self._frame = None
             self._gen_id = None

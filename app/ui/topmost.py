@@ -82,20 +82,33 @@ def _insert_after_above(hwnd: int, target_hwnd: int) -> int:
     return prev
 
 
+def _is_valid_hwnd(h: int) -> bool:
+    if not h or h <= 0:
+        return False
+    try:
+        return bool(_user32.IsWindow(h))
+    except Exception:
+        return False
+
+
 def _set_window_owner(hwnd: int, owner_hwnd: int) -> bool:
     """设置顶层窗 owner；返回 False 时保留 Win32 错误日志。"""
+    if not _is_valid_hwnd(hwnd):
+        return True
     owner = int(owner_hwnd or 0)
     if owner == 0:
         ctypes.set_last_error(0)
         curr = _GetWindowLongPtr(hwnd, _GWLP_HWNDPARENT)
         if curr == 0:
             return True
+    elif not _is_valid_hwnd(owner):
+        return True
 
     ctypes.set_last_error(0)
     previous = _SetWindowLongPtr(hwnd, _GWLP_HWNDPARENT, owner)
     error = ctypes.get_last_error()
     if previous == 0 and error:
-        if owner == 0 and error == 1400:
+        if owner == 0 or error == 1400:
             return True
         _log.warning(
             "设置浮层 owner 失败 hwnd=%#x owner=%#x error=%d",
@@ -109,10 +122,14 @@ def _set_window_owner(hwnd: int, owner_hwnd: int) -> bool:
 
 def _set_window_pos(hwnd: int, after_hwnd: int, flags: int) -> bool:
     """只调整 Z 序；失败时记录 GetLastError，避免静默失效。"""
+    if not _is_valid_hwnd(hwnd):
+        return True
     ctypes.set_last_error(0)
     if _SetWindowPos(hwnd, after_hwnd, 0, 0, 0, 0, flags):
         return True
     error = ctypes.get_last_error()
+    if error == 1400:
+        return True
     _log.warning(
         "调整浮层 Z 序失败 hwnd=%#x after=%#x flags=%#x error=%d",
         hwnd,

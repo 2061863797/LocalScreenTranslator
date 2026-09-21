@@ -23,7 +23,7 @@ class RuntimeResources:
     def create(cls, cfg: dict) -> "RuntimeResources":
         storage = Storage()
         server = LlamaServer(cfg)
-        translator = Translator(server.base_url, cfg=cfg)
+        translator = Translator(server.base_url, cfg=cfg, storage=storage)
         return cls(storage, server, translator, OcrEngine(cfg))
 
     def close_clients(self) -> None:

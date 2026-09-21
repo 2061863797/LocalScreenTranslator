@@ -404,8 +404,8 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
 
     def _pad_top(self) -> int:
         _, py = self._effective_pads()
-        ctrl_h = self._ctrl.height() if hasattr(self, "_ctrl") and self._ctrl.isVisible() else 0
-        if self.height() > 50:
+        if self.height() > 50 and hasattr(self, "_ctrl"):
+            ctrl_h = self._ctrl.height() if self._ctrl.height() > 0 else self._ctrl.sizeHint().height()
             return max(py, ctrl_h + 4)
         return py
 

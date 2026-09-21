@@ -147,8 +147,16 @@ class FrameChangeDetector:
                 roi_box=None,
             )
 
+        effective_min_pixels = self.min_changed_pixels
+        if effective_min_pixels > 0 and total_sub_pixels > 0:
+            # 对于微型帧或极小 ROI 窗口，防止绝对像素阈值超过画面可用容量导致误判为未变动
+            effective_min_pixels = min(
+                effective_min_pixels,
+                max(1, int(total_sub_pixels * 0.05)),
+            )
+
         # Filter cursor blink and small video/compression noise
-        if changed_count < self.min_changed_pixels or ratio < self.min_changed_ratio:
+        if changed_count < effective_min_pixels or ratio < self.min_changed_ratio:
             return FrameDiffResult(
                 has_changed=False,
                 changed_ratio=ratio,

@@ -3,7 +3,7 @@
 #define MyAppName "本地屏译"
 #define MyAppVersion "1.1.0"
 #define MyAppPublisher "本地屏译"
-#define MyAppURL "https://github.com/LocalScreenTranslator"
+#define MyAppURL "https://github.com/2061863797/LocalScreenTranslator"
 #define MyAppExeName "LocalScreenTranslator.exe"
 
 [Setup]
@@ -45,9 +45,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "dist\LocalScreenTranslator\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 离线 runtime 资源（llama-server, models, ocr）
 Source: "runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
-; 基础附属文件
+; 基础附属文件与许可证
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "config.example.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "NOTICE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"

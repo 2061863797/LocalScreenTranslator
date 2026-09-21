@@ -26,12 +26,13 @@ from .adaptive_polling import AdaptivePollingController
 from .applog import get_logger
 from .capture_service import CaptureService, is_invalid_window_handle_error
 from .frame_detector import FrameChangeDetector
-from .latest_frame_buffer import LatestFrameBuffer
+from .latest_frame_buffer import LatestFrameBuffer, FramePacket
 from .ocr_engine import OcrEngine
 from .ocr_service import OcrService
 from .ocr_stabilizer import OcrStabilizer
 from .pipelines import GenerationTracker, WatchCycleContext
 from .result_manager import ResultManager
+from .scene_text_state import SceneTextState
 from .text_change_detector import TextChangeDetector
 from .translation_manager import TranslationManager
 from .translator import Translator
@@ -180,6 +181,11 @@ class WindowWatcher(QThread):
         self._last_skip_target: bool | None = None
         self._last_frame: np.ndarray | None = None
         self._skipped_frames = 0
+        self._content_epoch: int = 0
+        self._content_epoch_lock = threading.Lock()
+        self._consecutive_grab_fails: int = 0
+        self._last_captured_frame: np.ndarray | None = None
+        self._scene_text_state = SceneTextState()
 
     # ==========================================
     # 解耦组件只读访问器
@@ -224,6 +230,15 @@ class WindowWatcher(QThread):
     @property
     def text_change_detector(self) -> TextChangeDetector:
         return self._text_change_detector
+
+    @property
+    def scene_text_state(self) -> SceneTextState:
+        return self._scene_text_state
+
+    @property
+    def content_epoch(self) -> int:
+        with self._content_epoch_lock:
+            return self._content_epoch
 
     # ==========================================
     # 兼容既有测试与调用方的属性代理
@@ -286,6 +301,10 @@ class WindowWatcher(QThread):
             return
         self._display_mode = mode
         self._generation_tracker.reset()
+        with self._content_epoch_lock:
+            self._content_epoch += 1
+        self._scene_text_state.clear()
+        self._last_captured_frame = None
         self._frame_buffer.clear()
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=True)
@@ -302,6 +321,10 @@ class WindowWatcher(QThread):
             self._region = region
         self._capture_service.set_region(region)
         self._generation_tracker.reset()
+        with self._content_epoch_lock:
+            self._content_epoch += 1
+        self._scene_text_state.clear()
+        self._last_captured_frame = None
         self._frame_buffer.clear()
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=False)
@@ -369,7 +392,11 @@ class WindowWatcher(QThread):
         self._running = False
         self._consumer_stop_event.set()
         self._generation_tracker.reset()
+        with self._content_epoch_lock:
+            self._content_epoch += 1
         self._frame_buffer.clear()
+        self._scene_text_state.clear()
+        self._last_captured_frame = None
 
     def set_paused(self, paused: bool) -> None:
         """暂停或恢复监视。"""
@@ -442,16 +469,47 @@ class WindowWatcher(QThread):
                     return
 
                 if img is None:
-                    _log.warning("监视目标无法捕获，结束")
-                    self._result_manager.dispatch_stopped("监视目标已关闭或无法捕获")
-                    return
+                    self._consecutive_grab_fails += 1
+                    if self._consecutive_grab_fails >= 10:
+                        _log.warning("监视目标持续无法捕获，结束")
+                        self._result_manager.dispatch_stopped("监视目标已关闭或无法捕获")
+                        return
+                    time.sleep(0.05)
+                    continue
+                self._consecutive_grab_fails = 0
 
                 # 阶段 2: 目标位移追踪
                 if self._capture_service.has_moved(rect):
                     self._result_manager.dispatch_moved(*rect)
 
-                # 阶段 3: 压入 LatestFrameBuffer（削峰解耦，异步投递至推理消费线程）
-                self._frame_buffer.put(img)
+                # 阶段 3: 轻量差分与 ContentEpoch 演进
+                try:
+                    diff_res = self._frame_detector.detect(self._last_captured_frame, img)
+                    has_visual_change = diff_res.has_changed
+                    roi_box = diff_res.roi_box
+                except Exception:
+                    has_visual_change = True
+                    roi_box = None
+
+                if self._last_captured_frame is None or has_visual_change:
+                    with self._content_epoch_lock:
+                        self._content_epoch += 1
+                        current_epoch = self._content_epoch
+                    self._last_captured_frame = img
+                else:
+                    with self._content_epoch_lock:
+                        current_epoch = self._content_epoch
+
+                packet = FramePacket(
+                    frame=img,
+                    epoch=current_epoch,
+                    roi_box=roi_box,
+                    timestamp=t0,
+                    has_changed=has_visual_change,
+                )
+
+                # 阶段 4: 压入 LatestFrameBuffer（削峰解耦，异步投递至推理消费线程）
+                self._frame_buffer.put(packet)
 
                 # 自适应轮询间隔休眠
                 dynamic_delay = (
@@ -488,117 +546,173 @@ class WindowWatcher(QThread):
             self._capture_service.release()
 
     def _inference_loop(self) -> None:
-        """后台推理工作循环: 从 LatestFrameBuffer 消费最新帧并执行 OCR 与翻译 (PR 11)."""
+        """后台推理工作循环: 从 LatestFrameBuffer 消费最新帧并执行 OCR 与翻译 (PR 11 / PR 13)."""
         _log.debug("推理消费线程启动")
         threshold = float(self._cfg.get(f"{self._profile}_watch_diff_threshold", 0.9))
 
         while not self._consumer_stop_event.is_set():
-            # 1. 尝试从缓冲中拉取最新帧（带超时，超时后循环检查 stop_event）
-            pulled = self._frame_buffer.get(timeout=0.1)
-            if pulled is None:
-                if not self._running or self._consumer_stop_event.is_set():
-                    break
-                continue
-
-            img, _ = pulled
-            # 2. 开启当前推理世代，确保异步结果与会话状态同步
-            frame_gen_id = self._generation_tracker.next_generation()
-
-            # 3. 画面两阶段轻量差分检测 (<1.5ms)
-            diff_result = self._frame_detector.detect(self._last_frame, img)
-            has_changed = diff_result.has_changed or (
-                self._last_frame is not None and _frame_changed(self._last_frame, img)
-            )
-
-            # 4. 更新自适应轮询状态机
-            self._polling_controller.on_frame(has_changed)
-
-            # 5. 静止画面跳过 OCR 判定（连续不超过 _MAX_SKIPPED_FRAMES 帧）
-            if (
-                self._last_frame is not None
-                and self._skipped_frames < self._MAX_SKIPPED_FRAMES
-                and not has_changed
-            ):
-                self._skipped_frames += 1
-                if not self._running and self._frame_buffer.is_empty:
-                    break
-                continue
-
-            self._skipped_frames = 0
-            self._last_frame = img
-
-            # 6. 备注浮层像素剔除
-            if (
-                self._profile == "region"
-                and self._display_mode == "annotate"
-                and bool(self._cfg.get("annotate_capture_visible"))
-            ):
-                img = self._remove_annotation_overlay(img)
-
-            # 7. OCR 识别（ROI 局部加速与兜底）与防抖过滤，内部异常隔离防护
-            lines: list[Any] = []
             try:
-                # 区域监视小图与字幕模式保证全图完整性，避免局部差分 ROI 造成丢行吞字
-                roi_box = (
-                    diff_result.roi_box
-                    if (self._profile != "region" and self._display_mode != "subtitle")
-                    else None
-                )
-                lines = self._ocr_service.recognize_frame(img, roi_box=roi_box)
-                _, lines = self._ocr_stabilizer.process(lines)
-            except Exception as e:
-                _log.warning("OCR 识别异常 (gen=%s): %s", frame_gen_id, e)
-                if not self._running and self._frame_buffer.is_empty:
-                    break
-                continue
+                # 1. 尝试从缓冲中拉取最新帧（带超时，超时后循环检查 stop_event）
+                pulled = self._frame_buffer.get(timeout=0.1)
+                if pulled is None:
+                    if not self._running or self._consumer_stop_event.is_set():
+                        break
+                    continue
 
-            # 8. 文本变化检测与空帧清空判定
-            with self._state_lock:
-                event, text = self._text_change_detector.observe(lines, threshold)
+                if isinstance(pulled, FramePacket):
+                    img = pulled.frame
+                    packet_epoch = pulled.epoch
+                    packet_roi = pulled.roi_box
+                    has_visual_change = pulled.has_changed
+                else:
+                    img, packet_epoch = pulled
+                    packet_roi = None
+                    has_visual_change = True
 
-            # 9. 结果派发与增量翻译，内部异常隔离防护
-            if event == "clear":
-                self._result_manager.dispatch_cleared(frame_gen_id)
-            elif event == "change":
-                target = str(self._cfg.get("target_language", "zh"))
-                mode_tag = (
-                    f"{self._profile}_annotate"
-                    if self._display_mode == "annotate"
-                    else f"{self._profile}_subtitle"
-                )
-                try:
-                    if self._display_mode == "annotate":
-                        skip_target = bool(self._cfg.get(f"{self._profile}_annotate_skip_target_lang"))
-                        items, translation = self._translation_manager.translate_annotations(
-                            lines,
-                            target,
-                            frame_gen_id,
-                            skip_target=skip_target,
-                            is_running_fn=lambda: self._running and not self._consumer_stop_event.is_set(),
-                        )
-                        if self._running and not self._consumer_stop_event.is_set():
-                            if self._result_manager.dispatch_annotations(items, frame_gen_id):
-                                if translation:
-                                    self._result_manager.dispatch_history(text, translation, mode_tag, frame_gen_id)
-                    else:
-                        translation = self._translation_manager.translate_subtitle(
-                            text, target, frame_gen_id
-                        )
-                        if self._running and not self._consumer_stop_event.is_set():
-                            if self._result_manager.dispatch_subtitle(translation, frame_gen_id):
-                                if translation:
-                                    self._result_manager.dispatch_history(text, translation, mode_tag, frame_gen_id)
-                except Exception as e:
-                    _log.warning("翻译处理异常 (gen=%s): %s", frame_gen_id, e)
-                    with self._state_lock:
-                        self._text_change_detector.last_text = ""
-                    self._ocr_stabilizer.reset()
+                # 2. 开启当前推理世代，确保异步结果与会话状态同步
+                frame_gen_id = self._generation_tracker.next_generation()
+
+                # 3. 画面两阶段轻量差分检测（纯净算法，绝不被单像素噪声绕过）
+                if packet_roi is not None or not has_visual_change:
+                    diff_has_changed = has_visual_change
+                    roi_box = packet_roi
+                    diff_ratio = 1.0 if has_visual_change else 0.0
+                else:
+                    diff_result = self._frame_detector.detect(self._last_frame, img)
+                    diff_has_changed = diff_result.has_changed
+                    roi_box = diff_result.roi_box
+                    diff_ratio = diff_result.changed_ratio
+
+                # 4. 更新自适应轮询状态机
+                self._polling_controller.on_frame(diff_has_changed)
+
+                # 5. 静止画面跳过 OCR 判定（连续不超过 _MAX_SKIPPED_FRAMES 帧）
+                if (
+                    self._last_frame is not None
+                    and self._skipped_frames < self._MAX_SKIPPED_FRAMES
+                    and not diff_has_changed
+                ):
+                    self._skipped_frames += 1
                     if not self._running and self._frame_buffer.is_empty:
                         break
                     continue
 
-            # 10. 检查退出条件（用于同步单测：捕获循环已结束且缓冲已排空）
-            if not self._running and self._frame_buffer.is_empty:
-                break
+                self._skipped_frames = 0
+                self._last_frame = img
+
+                # 6. 备注浮层像素剔除
+                if (
+                    self._profile == "region"
+                    and self._display_mode == "annotate"
+                    and bool(self._cfg.get("annotate_capture_visible"))
+                ):
+                    img = self._remove_annotation_overlay(img)
+
+                # 7. OCR 识别（ROI 增量融合与兜底）与防抖过滤，内部异常隔离防护
+                lines: list[Any] = []
+                try:
+                    force_full = (
+                        self._scene_text_state.should_force_full_refresh()
+                        or self._profile == "region"
+                        or roi_box is None
+                        or diff_ratio > 0.6
+                    )
+                    active_roi = None if force_full else roi_box
+                    raw_lines = self._ocr_service.recognize_frame(img, roi_box=active_roi)
+                    _, stable_lines = self._ocr_stabilizer.process(raw_lines)
+
+                    # 使用 SceneTextState 融合全局与局部结果，避免视野外注释丢行
+                    if active_roi is not None:
+                        lines = self._scene_text_state.update_roi(stable_lines, active_roi)
+                    else:
+                        lines = self._scene_text_state.update_full(stable_lines)
+                except Exception as e:
+                    _log.warning("OCR 识别异常 (gen=%s): %s", frame_gen_id, e)
+                    if not self._running and self._frame_buffer.is_empty:
+                        break
+                    continue
+
+                # 8. 文本变化检测与空帧清空判定
+                with self._state_lock:
+                    # 字幕模式下因前面已有 OcrStabilizer 稳定层，传 0.0 阈值使得微小真实变动（如数字 125->128）也能触发翻译，绝不吞字
+                    sim_threshold = 0.0 if self._display_mode == "subtitle" else threshold
+                    event, text = self._text_change_detector.observe(lines, sim_threshold)
+
+                # 9. 结果派发与增量翻译，内部异常隔离防护
+                if event == "clear":
+                    self._scene_text_state.clear()
+                    self._result_manager.dispatch_cleared(frame_gen_id)
+                elif event == "change":
+                    target = str(self._cfg.get("target_language", "zh"))
+                    mode_tag = (
+                        f"{self._profile}_annotate"
+                        if self._display_mode == "annotate"
+                        else f"{self._profile}_subtitle"
+                    )
+                    try:
+                        if self._display_mode == "annotate":
+                            skip_target = bool(self._cfg.get(f"{self._profile}_annotate_skip_target_lang"))
+                            items, translation = self._translation_manager.translate_annotations(
+                                lines,
+                                target,
+                                frame_gen_id,
+                                skip_target=skip_target,
+                                is_running_fn=lambda: self._running and not self._consumer_stop_event.is_set(),
+                            )
+                            if self._running and not self._consumer_stop_event.is_set():
+                                # Latest-Content-Wins 校验：翻译耗时期间画面若有实质新变化，丢弃旧译文防闪烁
+                                with self._content_epoch_lock:
+                                    is_fresh = (packet_epoch == self._content_epoch)
+                                if not is_fresh:
+                                    _log.debug("画面内容已变动，丢弃过时逐行备注 (epoch=%s vs %s)", packet_epoch, self._content_epoch)
+                                    with self._state_lock:
+                                        self._text_change_detector.rollback(text)
+                                    continue
+
+                                dispatched = self._result_manager.dispatch_annotations(items, frame_gen_id)
+                                if dispatched:
+                                    if translation:
+                                        self._result_manager.dispatch_history(text, translation, mode_tag, frame_gen_id)
+                                else:
+                                    with self._state_lock:
+                                        self._text_change_detector.rollback(text)
+                        else:
+                            translation = self._translation_manager.translate_subtitle(
+                                text, target, frame_gen_id
+                            )
+                            if self._running and not self._consumer_stop_event.is_set():
+                                # Latest-Content-Wins 校验：翻译耗时期间画面若有实质新变化，丢弃旧译文防闪烁
+                                with self._content_epoch_lock:
+                                    is_fresh = (packet_epoch == self._content_epoch)
+                                if not is_fresh:
+                                    _log.debug("画面内容已变动，丢弃过时字幕译文 (epoch=%s vs %s)", packet_epoch, self._content_epoch)
+                                    with self._state_lock:
+                                        self._text_change_detector.rollback(text)
+                                    continue
+
+                                dispatched = self._result_manager.dispatch_subtitle(translation, frame_gen_id)
+                                if dispatched:
+                                    if translation:
+                                        self._result_manager.dispatch_history(text, translation, mode_tag, frame_gen_id)
+                                else:
+                                    with self._state_lock:
+                                        self._text_change_detector.rollback(text)
+                    except Exception as e:
+                        _log.warning("翻译处理异常 (gen=%s): %s", frame_gen_id, e)
+                        with self._state_lock:
+                            self._text_change_detector.rollback(text)
+                        self._ocr_stabilizer.reset()
+                        if not self._running and self._frame_buffer.is_empty:
+                            break
+                        continue
+
+                # 10. 检查退出条件（用于同步单测：捕获循环已结束且缓冲已排空）
+                if not self._running and self._frame_buffer.is_empty:
+                    break
+            except Exception:
+                _log.exception("推理消费工作线程异常拦截，安全恢复")
+                time.sleep(0.02)
+                if not self._running and self._frame_buffer.is_empty:
+                    break
 
         _log.debug("推理消费线程退出")

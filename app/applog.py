@@ -89,15 +89,37 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    fh = RotatingFileHandler(
-        LOG_PATH,
-        maxBytes=2 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8",
-    )
-    fh.setLevel(level)
-    fh.setFormatter(fmt)
-    root.addHandler(fh)
+    actual_log_path = LOG_PATH
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        fh = RotatingFileHandler(
+            LOG_PATH,
+            maxBytes=2 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        fh.setLevel(level)
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+    except (PermissionError, OSError):
+        # 权限不足（如 Program Files 默认无写权限）时降级至临时目录，保证程序绝对不崩溃
+        try:
+            import tempfile
+            from pathlib import Path
+            temp_log_dir = Path(tempfile.gettempdir()) / "LocalScreenTranslator"
+            temp_log_dir.mkdir(parents=True, exist_ok=True)
+            actual_log_path = temp_log_dir / "app.log"
+            fh = RotatingFileHandler(
+                actual_log_path,
+                maxBytes=2 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
+            fh.setLevel(level)
+            fh.setFormatter(fmt)
+            root.addHandler(fh)
+        except Exception:
+            pass
 
     if sys.stderr is not None:
         try:
@@ -116,7 +138,7 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
     root.addHandler(_qt_handler)
 
     _configured = True
-    root.info("======== 日志启动 path=%s ========", LOG_PATH)
+    root.info("======== 日志启动 path=%s ========", actual_log_path)
     return root
 
 

@@ -13,20 +13,60 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 # 源码运行时 app/ 的上一级是软件根目录；PyInstaller 打包后以 exe
-# 所在目录为根，确保 runtime、配置、日志和数据库仍位于便携软件目录。
+# 所在目录为根，确保 runtime 位于便携软件目录。
 ROOT = (
     Path(sys.executable).resolve().parent
     if getattr(sys, "frozen", False)
     else Path(__file__).resolve().parent.parent
 )
 
-CONFIG_PATH = ROOT / "config.json"
-LOG_PATH = ROOT / "app.log"
-DB_PATH = ROOT / "data.db"
+
+def get_data_dir() -> Path:
+    """运行期可写用户数据目录（配置、日志与数据库）。
+
+    - 便携模式：ROOT 下存在 portable.flag（或源码开发环境已有 config.json），数据保存在 ROOT；
+    - 安装模式（PyInstaller 安装包装入 Program Files）：写入系统标准 %LOCALAPPDATA%/LocalScreenTranslator。
+    """
+    if (ROOT / "portable.flag").exists():
+        return ROOT
+    if not getattr(sys, "frozen", False) and (ROOT / "config.json").exists():
+        return ROOT
+
+    try:
+        from PySide6.QtCore import QCoreApplication, QStandardPaths
+
+        if not QCoreApplication.instance():
+            QCoreApplication.setApplicationName("LocalScreenTranslator")
+        loc = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.AppLocalDataLocation
+        )
+        if loc:
+            p = Path(loc)
+            if p.name != "LocalScreenTranslator":
+                p = p / "LocalScreenTranslator"
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+    except Exception:
+        pass
+
+    local_app = os.environ.get("LOCALAPPDATA")
+    if local_app:
+        p = Path(local_app) / "LocalScreenTranslator"
+    else:
+        p = Path.home() / "AppData" / "Local" / "LocalScreenTranslator"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+DATA_DIR = get_data_dir()
+CONFIG_PATH = DATA_DIR / "config.json"
+LOG_PATH = DATA_DIR / "app.log"
+DB_PATH = DATA_DIR / "data.db"
 ICON_ICO = ROOT / "icon.ico"
 
 # 内置资源（相对 ROOT，写入 config 时用正斜杠）
