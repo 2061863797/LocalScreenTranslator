@@ -97,14 +97,24 @@ def _set_geo_if_changed(widget: QWidget, x: int, y: int, w: int, h: int) -> bool
     g = widget.geometry()
     if g.x() == x and g.y() == y and g.width() == w and g.height() == h:
         return False
+    parent = widget.parentWidget()
+    old_rect = QRect(g)
     widget.setGeometry(x, y, w, h)
+    if parent is not None and parent.isVisible():
+        parent.update(old_rect)
+        parent.update(widget.geometry())
     return True
 
 
 def _move_if_changed(widget: QWidget, x: int, y: int) -> bool:
     if widget.x() == x and widget.y() == y:
         return False
+    parent = widget.parentWidget()
+    old_rect = QRect(widget.geometry())
     widget.move(x, y)
+    if parent is not None and parent.isVisible():
+        parent.update(old_rect)
+        parent.update(widget.geometry())
     return True
 
 
@@ -479,12 +489,17 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
 
     def _place_chrome(self):
         """控制条 / 滚动条 / 缩放把手贴在文字层周围（client 相对坐标）。"""
+        if hasattr(self._ctrl, "adapt_to_width"):
+            self._ctrl.adapt_to_width(self.width())
         self._ctrl.adjustSize()
         ctrl_w = self._ctrl.width()
         ctrl_h = self._ctrl.height()
+        target_x = max(2, self.width() - ctrl_w - 4)
+        if self.width() < ctrl_w + 4:
+            target_x = max(0, (self.width() - ctrl_w) // 2)
         changed = _set_geo_if_changed(
             self._ctrl,
-            max(0, self.width() - ctrl_w - 4),
+            target_x,
             4,
             ctrl_w,
             ctrl_h,
@@ -511,7 +526,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             self._ctrl.update()
             self._vscroll.update()
             self._grip.update()
-            self.update(self.rect())
+            self.update()
 
     def _show_chrome(self):
         """统一显示附属窗：仅在需要时 show，避免每轮 raise 闪烁。"""
@@ -577,9 +592,8 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # 1. 彻底擦除背景透明度，消除 DWM 下旧子控件位置与文字重影残影（必须取消局部剪裁）
+        # 1. 彻底擦除背景透明度，消除 DWM 下旧子控件位置与文字重影残影
         painter.save()
-        painter.setClipping(False)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
         painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
         painter.restore()
@@ -707,20 +721,19 @@ class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
 
     def __init__(self, bar: SubtitleBar):
         super().__init__(bar)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setObjectName("ctrl")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._bar = bar
         self._drag_offset = None
+        self._compact_mode = False
 
         self._btns: dict[str, QPushButton] = {}
-        container = QWidget(self)
-        container.setObjectName("ctrl")
-        container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        lay = QHBoxLayout(container)
-        lay.setContentsMargins(4, 1, 4, 1)
-        lay.setSpacing(2)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(3, 1, 3, 1)
+        lay.setSpacing(1)
         self._handle = QLabel("⠿")
         self._handle.setStyleSheet(
-            "color:#fff;font-size:12px;padding:0 1px;background:transparent;"
+            "color:#fff;font-size:11px;padding:0;background:transparent;"
         )
         lay.addWidget(self._handle)
         for key in ("follow", "free", "pinned"):
@@ -745,29 +758,51 @@ class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
         self._btn_close.setFixedHeight(18)
         self._btn_close.clicked.connect(self._bar.stop_requested.emit)
         lay.addWidget(self._btn_close)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(container)
+
         self.setFixedHeight(22)
         self.setStyleSheet(CTRL_STYLE)
         self.sync_checked(bar.mode)
         self.apply_ui_language()
 
+    def adapt_to_width(self, parent_w: int):
+        """根据父窗口可用宽度动态切换紧凑单字与标准文字，杜绝窄窗口右边缘截断。"""
+        should_compact = parent_w < 200
+        if should_compact != self._compact_mode:
+            self._compact_mode = should_compact
+            self.apply_ui_language()
+        self.adjustSize()
+
     def sizeHint(self) -> QSize:
-        w = self.layout().sizeHint().width() if self.layout() else 200
-        return QSize(max(200, w), 22)
+        w = self.layout().sizeHint().width() if self.layout() else 180
+        return QSize(max(116, w), 22)
 
     def apply_ui_language(self):
         self._handle.setToolTip(_t("sub_drag_tip"))
-        self._btns["follow"].setText(_t("sub_follow"))
-        self._btns["free"].setText(_t("sub_free"))
-        self._btns["pinned"].setText(_t("sub_pinned"))
-        self._btn_ann.setText(_t("sub_annotate"))
+        if self._compact_mode:
+            self._btns["follow"].setText(_t("sub_follow")[:1])
+            self._btns["free"].setText(_t("sub_free")[:1])
+            self._btns["pinned"].setText(_t("sub_pinned")[:1])
+            self._btn_ann.setText(_t("sub_annotate")[:1])
+            self._btn_pause.setText(
+                (_t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause"))[:1]
+            )
+            self._btn_close.setText(_t("sub_close")[:1])
+        else:
+            self._btns["follow"].setText(_t("sub_follow"))
+            self._btns["free"].setText(_t("sub_free"))
+            self._btns["pinned"].setText(_t("sub_pinned"))
+            self._btn_ann.setText(_t("sub_annotate"))
+            self._btn_pause.setText(
+                _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
+            )
+            self._btn_close.setText(_t("sub_close"))
+        self._btns["follow"].setToolTip(_t("sub_follow"))
+        self._btns["free"].setToolTip(_t("sub_free"))
+        self._btns["pinned"].setToolTip(_t("sub_pinned"))
         self._btn_ann.setToolTip(_t("sub_annotate_tip"))
-        self._btn_pause.setText(
+        self._btn_pause.setToolTip(
             _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
         )
-        self._btn_close.setText(_t("sub_close"))
         self._btn_close.setToolTip(_t("sub_close_tip"))
         self.adjustSize()
 

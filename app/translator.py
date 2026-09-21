@@ -271,6 +271,7 @@ class Translator:
         if not text:
             return ""
         text = _THINK_RE.sub("", text).strip()
+        text = re.sub(r"(?is)</?source>", "", text).strip()
         text = re.sub(r"(?is)^\s*```[^\r\n]*\r?\n?", "", text)
         text = re.sub(r"(?is)\r?\n?```\s*$", "", text).strip()
         text = _LEADING_LABEL_RE.sub("", text).strip()
