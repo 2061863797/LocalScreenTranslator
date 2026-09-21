@@ -1056,10 +1056,16 @@ class App:
     def _on_watch_subtitle_guarded(self, text: str, session_id: int, watcher: Any) -> None:
         if not self._is_active_watch_session(session_id, watcher):
             return
+        if self._watch_paused or (hasattr(watcher, "_paused") and watcher._paused.is_set()):
+            self.log.debug("持续翻译已暂停，丢弃排队晚到的字幕刷新信号")
+            return
         self.subtitle.set_text(text)
 
     def _on_watch_annotations_guarded(self, items: list, session_id: int, watcher: Any) -> None:
         if not self._is_active_watch_session(session_id, watcher):
+            return
+        if self._watch_paused or (hasattr(watcher, "_paused") and watcher._paused.is_set()):
+            self.log.debug("持续翻译已暂停，丢弃排队晚到的逐行备注信号")
             return
         self._on_watch_annotations(items)
 

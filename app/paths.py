@@ -132,10 +132,12 @@ def to_portable_path(value: str | Path) -> str:
             return str(p)
 
 
-def is_gguf_model(path: str | Path) -> bool:
-    """仅做本地模型选择所需的轻量校验：扩展名与 GGUF 文件头。"""
+def is_gguf_model(path: str | Path, check_suffix: bool = True) -> bool:
+    """仅做本地模型选择所需的轻量校验：扩展名（可选）与 GGUF 文件头。"""
     p = Path(path)
-    if p.suffix.lower() != ".gguf" or not p.is_file():
+    if check_suffix and p.suffix.lower() != ".gguf":
+        return False
+    if not p.is_file():
         return False
     try:
         with p.open("rb") as stream:

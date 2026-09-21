@@ -211,6 +211,7 @@ class TranslationManager:
         text_or_lines: str | list[str] | list[Any],
         target_language: str,
         gen_id: int | None = None,
+        session_tag: str = "default",
     ) -> str:
         """翻译字幕文本（支持单字符串或行列表，按行增量缓存复用）。"""
         if not text_or_lines:
@@ -223,7 +224,7 @@ class TranslationManager:
             # 持续字幕模式下输入为视觉段落，优先保证跨行自然语意连贯性与两级持久化缓存
             if self.translator is not None and hasattr(self.translator, "translate"):
                 try:
-                    return str(self.translator.translate(raw_text, target_language, session_tag="watcher"))
+                    return str(self.translator.translate(raw_text, target_language, session_tag=session_tag))
                 except TypeError:
                     return str(self.translator.translate(raw_text, target_language))
             lines = [line.strip() for line in text_or_lines.splitlines() if line.strip()]
@@ -248,6 +249,7 @@ class TranslationManager:
         *,
         skip_target: bool = False,
         is_running_fn: Callable[[], bool] | None = None,
+        session_tag: str = "default",
     ) -> tuple[list[tuple[Any, str]], str]:
         """备注模式：按行增量翻译，稳定原文走缓存，只请求变化行。
 
@@ -259,6 +261,7 @@ class TranslationManager:
             gen_id: 可选当前世代标识。
             skip_target: 是否跳过已是目标语言的文本行。
             is_running_fn: 可选运行状态检查函数。
+            session_tag: 会话隔离标签。
 
         Returns:
             (items, joined_translation):
@@ -291,12 +294,12 @@ class TranslationManager:
             unique = list(dict.fromkeys(todo_text))
             if self.translator is not None and hasattr(self.translator, "translate_lines"):
                 try:
-                    trs = self.translator.translate_lines(unique, target_language, session_tag="watcher")
+                    trs = self.translator.translate_lines(unique, target_language, session_tag=session_tag)
                 except TypeError:
                     trs = self.translator.translate_lines(unique, target_language)
             elif self.translator is not None and hasattr(self.translator, "translate"):
                 try:
-                    trs = [self.translator.translate(u, target_language, session_tag="watcher") for u in unique]
+                    trs = [self.translator.translate(u, target_language, session_tag=session_tag) for u in unique]
                 except TypeError:
                     trs = [self.translator.translate(u, target_language) for u in unique]
             else:

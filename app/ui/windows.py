@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """功能窗口：设置、翻译历史、统一翻译窗口（输入/划词/截屏共用）。"""
 
+from pathlib import Path
+import os
+import shutil
+
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
@@ -10,6 +14,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -327,6 +332,55 @@ def _set_combo_data(combo: QComboBox, value, fallback=0) -> None:
         index = combo.findData(fallback)
     combo.setCurrentIndex(max(0, index))
 
+
+class ModelCopyWorker(QThread):
+    """大模型文件后台异步复制工作线程，避免 UI 主线程发生数秒至数十秒假死。"""
+    progress = Signal(int)
+    finished = Signal(bool, str, str)  # success, target_path_str, error_msg
+
+    def __init__(self, src_path: Path, dest_path: Path, parent=None):
+        super().__init__(parent)
+        self.src_path = src_path
+        self.dest_path = dest_path
+
+    def run(self):
+        # 临时文件保持 .gguf 后缀（避免校验工具因扩展名拒认），拷贝完成后原子替换
+        temp_dest = self.dest_path.with_name(f"{self.dest_path.stem}.importing.gguf")
+        try:
+            self.dest_path.parent.mkdir(parents=True, exist_ok=True)
+            total_bytes = self.src_path.stat().st_size
+            copied_bytes = 0
+            chunk_size = 4 * 1024 * 1024  # 4MB 分块
+            with open(self.src_path, "rb") as fsrc, open(temp_dest, "wb") as fdst:
+                while True:
+                    buf = fsrc.read(chunk_size)
+                    if not buf:
+                        break
+                    fdst.write(buf)
+                    copied_bytes += len(buf)
+                    if total_bytes > 0:
+                        self.progress.emit(int(copied_bytes * 100 / total_bytes))
+
+            if not is_gguf_model(temp_dest):
+                if temp_dest.exists():
+                    temp_dest.unlink()
+                self.finished.emit(False, "", "拷贝后模型文件头校验失败（非合法 GGUF）")
+                return
+
+            if self.dest_path.exists():
+                try:
+                    self.dest_path.unlink()
+                except Exception:
+                    pass
+            os.replace(temp_dest, self.dest_path)
+            self.finished.emit(True, str(self.dest_path), "")
+        except Exception as e:
+            try:
+                if temp_dest.exists():
+                    temp_dest.unlink()
+            except Exception:
+                pass
+            self.finished.emit(False, "", str(e))
 
 
 class SettingsWindow(_DraggableMixin, QWidget):
@@ -1034,10 +1088,8 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._model_file.blockSignals(False)
 
     def _on_import_model(self):
-        """支持用户从任意位置选择 .gguf 模型文件并自动导入至 USER_MODELS。"""
-        from PySide6.QtWidgets import QFileDialog
-        from ..paths import USER_MODELS, is_gguf_model, to_portable_path
-        import shutil
+        """支持用户从任意位置选择 .gguf 模型文件（支持直接引用外部路径或后台复制到 USER_MODELS）。"""
+        from ..paths import USER_MODELS, RUNTIME_MODELS, is_gguf_model, to_portable_path
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -1058,44 +1110,83 @@ class SettingsWindow(_DraggableMixin, QWidget):
             return
 
         dest = USER_MODELS / p.name
-        target_path = dest
-        if p.resolve() != dest.resolve():
-            USER_MODELS.mkdir(parents=True, exist_ok=True)
-            temp_dest = dest.with_suffix(".importing")
-            try:
-                # 写入带 .importing 后缀的临时文件，拷贝完成后原子替换，杜绝残缺模型文件与中断脏数据
-                shutil.copy2(p, temp_dest)
-                if not is_gguf_model(temp_dest):
-                    if temp_dest.exists():
-                        temp_dest.unlink()
-                    raise ValueError("拷贝后模型文件损坏或不完整")
-                os.replace(temp_dest, dest)
-                target_path = dest
-            except Exception as e:
-                try:
-                    if temp_dest.exists():
-                        temp_dest.unlink()
-                except Exception:
-                    pass
-                topmost_message(
-                    "warning",
-                    self._tr("title_warning"),
-                    f"导入模型文件失败: {e}" if self._lang == "zh" else f"Failed to import model file: {e}",
-                    parent=self,
-                )
-                return
+        # 若已经在标准模型目录中：直接高亮选中
+        if p.resolve() == dest.resolve() or p.parent.resolve() == RUNTIME_MODELS.resolve():
+            self._reload_model_choices(select_path=to_portable_path(p))
+            topmost_message(
+                "information",
+                self._tr("title_info"),
+                f"已选择模型: {p.name}，点击“保存”后将提示重启生效。"
+                if self._lang == "zh"
+                else f"Selected model: {p.name}. Click 'Save' to apply restart.",
+                parent=self,
+            )
+            return
 
-        # 核心加固 (PR 5)：绝不提前修改 self._cfg["model_path"]，保留 real old_model！
-        # 仅刷新下拉框并高亮选中导入的模型，待用户点击保存时由 _save() 统一触发变更检测与重启提示
-        self._reload_model_choices(select_path=to_portable_path(target_path))
-        topmost_message(
-            "information",
-            self._tr("title_info"),
-            f"已成功导入模型: {p.name}，点击“保存”后将提示重启生效。"
+        # 针对外部模型，提供两种友好模式：直接使用（零等待）与后台复制（自包含）
+        size_mb = p.stat().st_size // (1024 * 1024) if p.exists() else 0
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("导入外部模型" if self._lang == "zh" else "Import External Model")
+        msg_box.setText(
+            f"已选择外部模型：{p.name} ({size_mb} MB)\n\n请选择使用方式："
             if self._lang == "zh"
-            else f"Successfully imported model: {p.name}. Click 'Save' to apply restart.",
-            parent=self,
+            else f"External model selected: {p.name} ({size_mb} MB)\n\nChoose import mode:"
         )
+        btn_direct = msg_box.addButton(
+            "直接使用此路径" if self._lang == "zh" else "Use External Path Directly",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        btn_copy = msg_box.addButton(
+            "复制到模型目录" if self._lang == "zh" else "Copy to Models Directory",
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        msg_box.addButton(QMessageBox.StandardButton.Cancel)
+
+        msg_box.exec()
+        clicked = msg_box.clickedButton()
+        if clicked == btn_direct:
+            # 直接使用外部路径（零等待，不复制几 GB 文件）
+            self._reload_model_choices(select_path=to_portable_path(p))
+            topmost_message(
+                "information",
+                self._tr("title_info"),
+                f"已直接引用模型: {p.name}，点击“保存”后将提示重启生效。"
+                if self._lang == "zh"
+                else f"Directly referencing model: {p.name}. Click 'Save' to apply restart.",
+                parent=self,
+            )
+            return
+        elif clicked == btn_copy:
+            # 后台线程异步复制，彻底消除 UI 假死
+            self._btn_import_model.setEnabled(False)
+            self._btn_import_model.setText("正在后台复制..." if self._lang == "zh" else "Copying...")
+            worker = ModelCopyWorker(p, dest, self)
+
+            def on_copy_finished(success: bool, target_path_str: str, err: str):
+                self._btn_import_model.setEnabled(True)
+                self._btn_import_model.setText(self._tr("model_import_btn"))
+                if success:
+                    target_p = Path(target_path_str)
+                    self._reload_model_choices(select_path=to_portable_path(target_p))
+                    topmost_message(
+                        "information",
+                        self._tr("title_info"),
+                        f"已成功复制并导入模型: {target_p.name}，点击“保存”后将提示重启生效。"
+                        if self._lang == "zh"
+                        else f"Successfully imported model: {target_p.name}. Click 'Save' to apply restart.",
+                        parent=self,
+                    )
+                else:
+                    topmost_message(
+                        "warning",
+                        self._tr("title_warning"),
+                        f"导入模型文件失败: {err}" if self._lang == "zh" else f"Failed to import model file: {err}",
+                        parent=self,
+                    )
+
+            worker.finished.connect(on_copy_finished)
+            self._model_copy_worker = worker
+            worker.start()
 
     def _on_hotkey_recording(self, on: bool):
         """录入热键时暂停全局监听，避免与输入框抢键。"""

@@ -9,6 +9,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
+from typing import Any
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -89,6 +90,24 @@ _FOOTER_LINE_RE = re.compile(
 )
 
 
+def _get_model_fingerprint(model_path_val: Any) -> str:
+    """构建模型指纹（文件路径:文件大小:修改时间戳），防止同路径覆盖新模型时读取旧模型缓存。"""
+    if not model_path_val:
+        return "default_model"
+    p_str = str(model_path_val).strip()
+    if not p_str:
+        return "default_model"
+    try:
+        from .paths import resolve_path
+        p = resolve_path(p_str)
+        if p.is_file():
+            stat = p.stat()
+            return f"{p.name}:{stat.st_size}:{stat.st_mtime_ns}"
+    except Exception:
+        pass
+    return p_str
+
+
 class Translator:
     def __init__(
         self,
@@ -106,6 +125,7 @@ class Translator:
         self._sessions: dict[str, requests.Session] = {}
         self._sessions_lock = threading.Lock()
         self._cancel_events: dict[str, threading.Event] = {}
+        self._cancelled_tags: set[str] = set()
         # 初始化默认 session
         self._get_session("default")
         # llama-server 默认单 slot；同时也保护推理与 LRU 缓存。
@@ -116,8 +136,12 @@ class Translator:
         # 整段缓存上限字符数：避免一次几千字的截屏把 LRU 撑爆
         self._text_cache_max_chars = 4000
 
-        # 两级持久化缓存 (PR 8: L1 内存 LRU + L2 SQLite)
-        self.model_id = str(self._cfg.get("model_id") or self._cfg.get("model_path") or "default_model")
+        # 两级持久化缓存 (PR 8: L1 内存 LRU + L2 SQLite，增加文件指纹防覆盖串味)
+        self.model_id = str(
+            self._cfg.get("model_id")
+            or _get_model_fingerprint(self._cfg.get("model_path"))
+            or "default_model"
+        )
         self.prompt_version = str(self._cfg.get("prompt_version") or "v1")
         if cache is not None:
             self.cache: TranslationCache | None = cache
@@ -209,8 +233,15 @@ class Translator:
         return text
 
     def _get_cancel_event(self, tag: str = "default") -> threading.Event:
-        """获取指定会话标签的取消事件句柄（线程安全）。"""
+        """获取指定会话标签的取消事件句柄（线程安全且具备粘性取消特性）。"""
         with self._sessions_lock:
+            if tag in self._cancelled_tags:
+                evt = self._cancel_events.get(tag)
+                if evt is None:
+                    evt = threading.Event()
+                    self._cancel_events[tag] = evt
+                evt.set()
+                return evt
             evt = self._cancel_events.get(tag)
             if evt is None:
                 evt = threading.Event()
@@ -244,7 +275,7 @@ class Translator:
         """非阻塞立即中断正在执行中的网络推理请求，使旧 watcher 毫秒级释放锁并退出。
 
         三重取消机制 (PR 2):
-        1. 触发 cancel_event.set()，使正在排队等锁的任务获得锁后立即短路退出，杜绝模型白算；
+        1. 触发 cancel_event.set() 并标记为永久粘性取消，使正在排队或未来等锁的旧任务立即短路；
         2. 触发底层 Session.close() 尝试打断活动 socket；
         3. 绝不争抢 self._lock，确保 UI 线程毫秒级（<0.1ms）返回，彻底杜绝 UI 卡死。
         """
@@ -252,13 +283,16 @@ class Translator:
             if tag is None:
                 for evt in self._cancel_events.values():
                     evt.set()
-                self._cancel_events.clear()
+                self._cancelled_tags.update(self._cancel_events.keys())
                 to_close = list(self._sessions.values())
                 self._sessions.clear()
             else:
-                evt = self._cancel_events.pop(tag, None)
-                if evt is not None:
-                    evt.set()
+                self._cancelled_tags.add(tag)
+                evt = self._cancel_events.get(tag)
+                if evt is None:
+                    evt = threading.Event()
+                    self._cancel_events[tag] = evt
+                evt.set()
                 s = self._sessions.pop(tag, None)
                 to_close = [s] if s is not None else []
 

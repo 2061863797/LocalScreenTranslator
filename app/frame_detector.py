@@ -26,6 +26,38 @@ class FrameDiffResult:
     changed_pixels: int
     roi_box: tuple[int, int, int, int] | None  # (x1, y1, x2, y2) in full coordinates
     invalidates_content: bool = False
+    diff_mask: np.ndarray | None = None  # 降采样变动掩码 (h//s, w//s)
+
+    def has_change_in_boxes(
+        self, boxes: list[Any], step: int = 4, min_changed_pixels: int = 3
+    ) -> bool:
+        """精确判定指定的各个文本框内部是否存在实质像素改动。
+
+        消除所有变动像素的总外接矩形（bounding box）造成的虚假大面积相交，彻底根除 Result Starvation。
+        """
+        if not boxes:
+            return False
+        if self.diff_mask is None:
+            if self.roi_box is not None:
+                from .scene_text_state import _boxes_intersect
+                return any(_boxes_intersect(getattr(b, "box", b), self.roi_box, margin=6) for b in boxes)
+            return False
+        mh, mw = self.diff_mask.shape[:2]
+        for b in boxes:
+            box = getattr(b, "box", b)
+            if not box or len(box) < 4:
+                continue
+            bx1, by1, bx2, by2 = box[:4]
+            sx1 = max(0, min(mw, int(bx1 // step)))
+            sy1 = max(0, min(mh, int(by1 // step)))
+            sx2 = max(0, min(mw, int((bx2 + step - 1) // step)))
+            sy2 = max(0, min(mh, int((by2 + step - 1) // step)))
+            if sx2 <= sx1 or sy2 <= sy1:
+                continue
+            sub_mask = self.diff_mask[sy1:sy2, sx1:sx2]
+            if int(np.count_nonzero(sub_mask)) >= min_changed_pixels:
+                return True
+        return False
 
 
 class FrameChangeDetector:
@@ -46,7 +78,12 @@ class FrameChangeDetector:
         self.min_changed_pixels = int(min_changed_pixels)
         self.min_changed_ratio = float(min_changed_ratio)
 
-    def detect(self, previous: np.ndarray | None, current: np.ndarray | None) -> FrameDiffResult:
+    def detect(
+        self,
+        previous: np.ndarray | None,
+        current: np.ndarray | None,
+        prior_text_boxes: list[Any] | None = None,
+    ) -> FrameDiffResult:
         """Detect visual change between previous and current frames.
 
         Args:
@@ -156,14 +193,34 @@ class FrameChangeDetector:
         # 微小噪点、光标闪烁及普通局部文字增量绝对不使内容失效，根除 Result Starvation
         is_major_scene_cut = ratio >= 0.35
 
+        # 检查是否文字区域有变动（文字区域高敏感：2~3 像素变动即可判定有变，杜绝小字号数字/HUD延迟）
+        text_box_changed = False
+        if prior_text_boxes:
+            mh, mw = mask.shape[:2]
+            for b in prior_text_boxes:
+                box = getattr(b, "box", b)
+                if not box or len(box) < 4:
+                    continue
+                bx1, by1, bx2, by2 = box[:4]
+                sx1 = max(0, min(mw, int(bx1 // s)))
+                sy1 = max(0, min(mh, int(by1 // s)))
+                sx2 = max(0, min(mw, int((bx2 + s - 1) // s)))
+                sy2 = max(0, min(mh, int((by2 + s - 1) // s)))
+                if sx2 > sx1 and sy2 > sy1:
+                    if int(np.count_nonzero(mask[sy1:sy2, sx1:sx2])) >= 1:
+                        text_box_changed = True
+                        break
+
         # Filter cursor blink and small video/compression noise for heavy OCR trigger
-        if changed_count < effective_min_pixels or ratio < self.min_changed_ratio:
+        # 若文字区域内部发生明确改动，不被全局 40 像素噪声过滤门槛吞掉
+        if not text_box_changed and (changed_count < effective_min_pixels or ratio < self.min_changed_ratio):
             return FrameDiffResult(
                 has_changed=False,
                 changed_ratio=ratio,
                 changed_pixels=changed_count,
                 roi_box=None,
                 invalidates_content=False,
+                diff_mask=mask,
             )
 
         # 投影法极速求 ROI bounding box（O(H+W) vs O(H*W)，无大数组内存分配）
@@ -186,4 +243,5 @@ class FrameChangeDetector:
             changed_pixels=changed_count,
             roi_box=roi_box,
             invalidates_content=is_major_scene_cut,
+            diff_mask=mask,
         )

@@ -17,6 +17,7 @@ from __future__ import annotations
 import threading
 import time
 import traceback
+import uuid
 from typing import Any, Callable, List, Optional, Tuple
 
 import numpy as np
@@ -190,6 +191,7 @@ class WindowWatcher(QThread):
         self._scene_text_state = SceneTextState()
         self._last_processed_work_rev: int = 0
         self._last_processed_epoch: int = 0
+        self._translation_session_tag: str = f"watcher_{uuid.uuid4().hex[:8]}"
 
     # ==========================================
     # 解耦组件只读访问器
@@ -360,10 +362,19 @@ class WindowWatcher(QThread):
         self.set_annotation_mask(None, reset_reference=True)
 
     def on_target_language_changed(self) -> None:
-        """目标语言改变时重置检测器与缓存，强制当前帧重新翻译。"""
+        """目标语言改变时重置检测器与缓存，中断旧语言在途请求，强制当前帧重新翻译。"""
+        self._generation_tracker.reset()
         with self._content_epoch_lock:
             self._content_revision += 1
             self._content_epoch = self._content_revision
+        try:
+            if hasattr(self._translator, "abort_inflight"):
+                try:
+                    self._translator.abort_inflight(tag=self._translation_session_tag)
+                except TypeError:
+                    self._translator.abort_inflight()
+        except Exception:
+            pass
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=True)
         self._translation_manager.clear_cache()
@@ -432,7 +443,7 @@ class WindowWatcher(QThread):
         try:
             if hasattr(self._translator, "abort_inflight"):
                 try:
-                    self._translator.abort_inflight(tag="watcher")
+                    self._translator.abort_inflight(tag=self._translation_session_tag)
                 except TypeError:
                     self._translator.abort_inflight()
         except Exception:
@@ -449,6 +460,14 @@ class WindowWatcher(QThread):
             with self._content_epoch_lock:
                 self._content_revision += 1
                 self._content_epoch = self._content_revision
+            try:
+                if hasattr(self._translator, "abort_inflight"):
+                    try:
+                        self._translator.abort_inflight(tag=self._translation_session_tag)
+                    except TypeError:
+                        self._translator.abort_inflight()
+            except Exception:
+                pass
         else:
             self._last_captured_frame = None
             self._last_frame = None
@@ -476,14 +495,15 @@ class WindowWatcher(QThread):
         if not existing_lines:
             return True
 
+        boxes = [getattr(line, "box", None) or line for line in existing_lines]
+        boxes = [b for b in boxes if b]
+        if hasattr(diff_res, "has_change_in_boxes"):
+            step = getattr(self._frame_detector, "step", 4)
+            return diff_res.has_change_in_boxes(boxes, step=step, min_changed_pixels=3)
+
         roi_box = getattr(diff_res, "roi_box", None)
         if roi_box is not None:
-            for line in existing_lines:
-                box = getattr(line, "box", None) or line
-                if _boxes_intersect(box, roi_box, margin=6):
-                    return True
-            # 变动区域完全与文字区域分离
-            return False
+            return any(_boxes_intersect(box, roi_box, margin=6) for box in boxes)
 
         return True
 
@@ -564,8 +584,14 @@ class WindowWatcher(QThread):
                 if self._capture_service.has_moved(rect):
                     self._result_manager.dispatch_moved(*rect)
 
+                prior_boxes = [
+                    getattr(line, "box", None) or line
+                    for line in self._scene_text_state.lines
+                ]
                 try:
-                    diff_res = self._frame_detector.detect(self._last_captured_frame, img)
+                    diff_res = self._frame_detector.detect(
+                        self._last_captured_frame, img, prior_text_boxes=prior_boxes
+                    )
                     has_visual_change = diff_res.has_changed
                     roi_box = diff_res.roi_box
                     diff_ratio = diff_res.changed_ratio
@@ -770,6 +796,7 @@ class WindowWatcher(QThread):
                                 frame_gen_id,
                                 skip_target=skip_target,
                                 is_running_fn=lambda: self._running and not self._consumer_stop_event.is_set(),
+                                session_tag=self._translation_session_tag,
                             )
                             if self._running and not self._consumer_stop_event.is_set():
                                 # Latest-Content-Wins 校验：翻译耗时期间画面若有实质新变化，丢弃旧译文防闪烁
@@ -789,8 +816,13 @@ class WindowWatcher(QThread):
                                     with self._state_lock:
                                         self._text_change_detector.rollback(text)
                         else:
+                            if not self._running or self._consumer_stop_event.is_set():
+                                break
                             translation = self._translation_manager.translate_subtitle(
-                                text, target, frame_gen_id
+                                text,
+                                target,
+                                frame_gen_id,
+                                session_tag=self._translation_session_tag,
                             )
                             if self._running and not self._consumer_stop_event.is_set():
                                 # Latest-Content-Wins 校验：翻译耗时期间画面若有实质新变化，丢弃旧译文防闪烁

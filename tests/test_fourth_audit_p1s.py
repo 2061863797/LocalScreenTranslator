@@ -151,6 +151,78 @@ class TestFourthAuditP1s(unittest.TestCase):
         watcher.set_paused(False)
         self.assertIsNone(watcher._last_captured_frame, "恢复时必须清空上一捕获帧，强制执行全量刷新")
 
+    def test_disjoint_animations_large_bounding_box_does_not_starve_subtitle(self):
+        """P1 验证：左上角与右下角动画形成覆盖全屏的巨型 bounding box 时，字幕框内无变动绝不误作废在途结果。"""
+        from app.window_watcher import WindowWatcher
+
+        watcher = WindowWatcher(
+            ocr=MagicMock(),
+            translator=MagicMock(),
+            cfg={},
+            profile="region",
+            hwnd=None,
+            region=(0, 0, 1920, 1080),
+        )
+        # 底部字幕框 (y: 900~950, x: 400~1200)
+        mock_line = MagicMock()
+        mock_line.box = [400, 900, 1200, 950]
+        watcher.scene_text_state.update_full([mock_line])
+
+        # 构造 diff_mask (降采样 480x270)，仅在左上角 (0,0) 和右下角 (269, 479) 有变动
+        mask = np.zeros((270, 480), dtype=bool)
+        mask[5:15, 5:15] = True       # 左上角动画
+        mask[250:260, 460:470] = True # 右下角动画
+
+        diff_res = FrameDiffResult(
+            has_changed=True,
+            changed_ratio=0.01,
+            changed_pixels=200,
+            roi_box=(0, 0, 1920, 1080),  # 虚假的整屏大 bounding box
+            invalidates_content=False,
+            diff_mask=mask,
+        )
+
+        # 验证：虽然 roi_box 与字幕行相交，但 has_change_in_boxes 准确判定字幕内部像素未被改动！
+        self.assertFalse(
+            watcher._is_content_invalidated(diff_res, True),
+            "分散动画形成虚假大 ROI 时，只要字幕框内无变动，绝不作废在途翻译，彻底杜绝 Result Starvation！"
+        )
+
+    def test_small_font_or_hud_sensitive_detection(self):
+        """P1/P2 验证：微小数字/HUD 变化未达到全局 40 像素噪点门槛，若发生在既有文字框内，依然灵敏触发变动。"""
+        detector = FrameChangeDetector(step=4, min_changed_pixels=40)
+        prev = np.zeros((400, 600, 3), dtype=np.uint8)
+        curr = prev.copy()
+        # 仅修改 12 个物理像素（对应降采样后约 2~3 个采样像素）
+        curr[100:104, 100:103] = 255
+        text_box = (90, 90, 120, 120)
+
+        # 无 prior text boxes 时，被全局 40 像素过滤
+        res_no_box = detector.detect(prev, curr)
+        self.assertFalse(res_no_box.has_changed, "微小改动在全图模式下被正常当噪点过滤")
+
+        # 传入该文字框后，针对已知文字区域提升灵敏度，立即捕获
+        res_with_box = detector.detect(prev, curr, prior_text_boxes=[text_box])
+        self.assertTrue(res_with_box.has_changed, "文字框内部的微小数值变化必须即时捕获，不需等 5 帧周期轮询！")
+
+    def test_sticky_cancellation_and_unique_session_tags(self):
+        """P1 验证：cancellation 必须具粘性（已 abort 的 tag 绝不可被新调用重置为未取消），且 watcher 拥有唯一 session tag。"""
+        from app.translator import Translator
+        from app.window_watcher import WindowWatcher
+
+        tr = Translator(base_url="http://127.0.0.1:18080")
+        tag = "test_tag_1"
+        tr.abort_inflight(tag)
+
+        # 粘性测试：abort 后再次获取 cancel_event，必须依然是 is_set() == True！
+        evt = tr._get_cancel_event(tag)
+        self.assertTrue(evt.is_set(), "已 abort 的 tag 必须保持永久粘性取消，旧任务绝不可重新建立未取消状态")
+
+        # 独立 session tag 测试
+        w1 = WindowWatcher(MagicMock(), tr, {}, profile="region", hwnd=None, region=(0, 0, 100, 100))
+        w2 = WindowWatcher(MagicMock(), tr, {}, profile="region", hwnd=None, region=(0, 0, 100, 100))
+        self.assertNotEqual(w1._translation_session_tag, w2._translation_session_tag, "每个 watcher 必须拥有独立唯一的 session tag")
+
 
 if __name__ == "__main__":
     unittest.main()
