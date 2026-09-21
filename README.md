@@ -136,7 +136,7 @@ venv\Scripts\pythonw.exe run.py
 
 启动后会自动打开设置，并显示 OCR 与翻译模型的加载状态；失败项可直接重试。托盘菜单仍可打开设置、历史和日志。窗口持续翻译与区域实时翻译同时只能运行一个，控制条可原地暂停或继续。
 
-翻译历史默认最多保存 50 条，以明文写入项目目录的 `data.db`。可在“设置 → 常规”关闭后续记录；历史窗口支持搜索、复制、删除单条或确认后清空。设置、历史、翻译窗口以及字幕条会记住上次有效的位置和大小。
+翻译历史默认最多保存 50 条，以明文写入数据库 `data.db`（便携版位于软件根目录；安装版位于系统标准用户目录 `%LOCALAPPDATA%\LocalScreenTranslator\`）。可在“设置 → 常规”关闭后续记录；历史窗口支持搜索、复制、删除单条或确认后清空。设置、历史、翻译窗口以及字幕条会记住上次有效的位置和大小。
 
 ## 常见问题
 
@@ -150,7 +150,7 @@ venv\Scripts\pythonw.exe run.py
 | 提示程序已在运行 | 检查系统托盘，程序只允许一个实例 |
 | 想确认资源是否齐全 | 运行 `.\setup.ps1 -Check` |
 
-日志位置：`app.log`。详细设置说明见设置页面和 [SETTINGS.md](./SETTINGS.md)（英文版 [SETTINGS.en.md](./SETTINGS.en.md)）。
+数据与日志位置：便携版保存在软件根目录下的 `config.json`、`data.db` 与 `app.log`；安装包安装版自动安全存储在 `%LOCALAPPDATA%\LocalScreenTranslator\`（升级时会自动平滑迁移旧配置与历史）。详细设置说明见设置页面和 [SETTINGS.md](./SETTINGS.md)（英文版 [SETTINGS.en.md](./SETTINGS.en.md)）。
 
 更详细的 runtime 目录说明见 [runtime/README.md](./runtime/README.md)。
 

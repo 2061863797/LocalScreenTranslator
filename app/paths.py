@@ -63,7 +63,24 @@ def get_data_dir() -> Path:
     return p
 
 
+def _migrate_legacy_data_if_needed(data_dir: Path) -> None:
+    """若从旧版本便携目录升级到安装版用户目录，自动平滑迁移现有配置与历史数据库。"""
+    if data_dir == ROOT or (ROOT / "portable.flag").exists():
+        return
+    import shutil
+
+    for filename in ("config.json", "data.db"):
+        src = ROOT / filename
+        dst = data_dir / filename
+        if src.is_file() and not dst.exists():
+            try:
+                shutil.copy2(src, dst)
+            except OSError:
+                pass
+
+
 DATA_DIR = get_data_dir()
+_migrate_legacy_data_if_needed(DATA_DIR)
 CONFIG_PATH = DATA_DIR / "config.json"
 LOG_PATH = DATA_DIR / "app.log"
 DB_PATH = DATA_DIR / "data.db"

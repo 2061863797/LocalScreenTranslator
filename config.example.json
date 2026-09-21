@@ -18,6 +18,7 @@
   "ui_language": "zh",
   "max_tokens": 512,
   "history_enabled": true,
+  "translation_cache_enabled": true,
   "translate_window_font_size": 0,
   "settings_window_geometry": [],
   "history_window_geometry": [],

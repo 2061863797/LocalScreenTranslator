@@ -186,6 +186,7 @@ class WindowWatcher(QThread):
         self._consecutive_grab_fails: int = 0
         self._last_captured_frame: np.ndarray | None = None
         self._scene_text_state = SceneTextState()
+        self._last_processed_epoch: int = 0
 
     # ==========================================
     # 解耦组件只读访问器
@@ -331,6 +332,7 @@ class WindowWatcher(QThread):
         self._ocr_stabilizer.reset()
         self._last_frame = None
         self._skipped_frames = 0
+        self._last_processed_epoch = 0
         self.set_annotation_mask(None, reset_reference=True)
 
     def set_annotation_mask(
@@ -397,6 +399,7 @@ class WindowWatcher(QThread):
         self._frame_buffer.clear()
         self._scene_text_state.clear()
         self._last_captured_frame = None
+        self._last_processed_epoch = 0
 
     def set_paused(self, paused: bool) -> None:
         """暂停或恢复监视。"""
@@ -482,14 +485,15 @@ class WindowWatcher(QThread):
                 if self._capture_service.has_moved(rect):
                     self._result_manager.dispatch_moved(*rect)
 
-                # 阶段 3: 轻量差分与 ContentEpoch 演进
                 try:
                     diff_res = self._frame_detector.detect(self._last_captured_frame, img)
                     has_visual_change = diff_res.has_changed
                     roi_box = diff_res.roi_box
+                    diff_ratio = diff_res.changed_ratio
                 except Exception:
                     has_visual_change = True
                     roi_box = None
+                    diff_ratio = 1.0
 
                 if self._last_captured_frame is None or has_visual_change:
                     with self._content_epoch_lock:
@@ -506,6 +510,7 @@ class WindowWatcher(QThread):
                     roi_box=roi_box,
                     timestamp=t0,
                     has_changed=has_visual_change,
+                    changed_ratio=diff_ratio,
                 )
 
                 # 阶段 4: 压入 LatestFrameBuffer（削峰解耦，异步投递至推理消费线程）
@@ -564,19 +569,28 @@ class WindowWatcher(QThread):
                     packet_epoch = pulled.epoch
                     packet_roi = pulled.roi_box
                     has_visual_change = pulled.has_changed
+                    packet_diff_ratio = pulled.changed_ratio
                 else:
                     img, packet_epoch = pulled
                     packet_roi = None
                     has_visual_change = True
+                    packet_diff_ratio = 1.0
 
                 # 2. 开启当前推理世代，确保异步结果与会话状态同步
                 frame_gen_id = self._generation_tracker.next_generation()
 
                 # 3. 画面两阶段轻量差分检测（纯净算法，绝不被单像素噪声绕过）
-                if packet_roi is not None or not has_visual_change:
+                # 修复 ContentEpoch 覆盖漏洞：若当前帧的 epoch 与上次推理处理的 epoch 不同，
+                # 说明在推理繁忙期间画面已发生实质视觉变动，即使此帧相对上一捕获帧已静止，对推理端也是全新内容！
+                epoch_changed = (packet_epoch != self._last_processed_epoch)
+                if epoch_changed:
+                    diff_has_changed = True
+                    roi_box = packet_roi
+                    diff_ratio = packet_diff_ratio if packet_diff_ratio > 0.0 else 1.0
+                elif packet_roi is not None or not has_visual_change:
                     diff_has_changed = has_visual_change
                     roi_box = packet_roi
-                    diff_ratio = 1.0 if has_visual_change else 0.0
+                    diff_ratio = packet_diff_ratio
                 else:
                     diff_result = self._frame_detector.detect(self._last_frame, img)
                     diff_has_changed = diff_result.has_changed
@@ -587,10 +601,16 @@ class WindowWatcher(QThread):
                 self._polling_controller.on_frame(diff_has_changed)
 
                 # 5. 静止画面跳过 OCR 判定（连续不超过 _MAX_SKIPPED_FRAMES 帧）
+                # 关键修复：当存在正在等待防抖确认的候选文本（OcrStabilizer 或 TextChangeDetector），或处于清空确认中时，坚决禁止跳过 OCR！
+                can_skip_ocr = (
+                    not self._ocr_stabilizer.has_pending_candidate
+                    and not self._text_change_detector.has_pending_candidate
+                )
                 if (
                     self._last_frame is not None
                     and self._skipped_frames < self._MAX_SKIPPED_FRAMES
                     and not diff_has_changed
+                    and can_skip_ocr
                 ):
                     self._skipped_frames += 1
                     if not self._running and self._frame_buffer.is_empty:
@@ -599,6 +619,7 @@ class WindowWatcher(QThread):
 
                 self._skipped_frames = 0
                 self._last_frame = img
+                self._last_processed_epoch = packet_epoch
 
                 # 6. 备注浮层像素剔除
                 if (
@@ -608,24 +629,13 @@ class WindowWatcher(QThread):
                 ):
                     img = self._remove_annotation_overlay(img)
 
-                # 7. OCR 识别（ROI 增量融合与兜底）与防抖过滤，内部异常隔离防护
+                # 7. OCR 识别与防抖过滤，内部异常隔离防护
+                # 当前阶段保持安全可靠的全图 OCR，确保语义不被未成熟的局部 ROI 截断
                 lines: list[Any] = []
                 try:
-                    force_full = (
-                        self._scene_text_state.should_force_full_refresh()
-                        or self._profile == "region"
-                        or roi_box is None
-                        or diff_ratio > 0.6
-                    )
-                    active_roi = None if force_full else roi_box
-                    raw_lines = self._ocr_service.recognize_frame(img, roi_box=active_roi)
+                    raw_lines = self._ocr_service.recognize_frame(img, roi_box=None)
                     _, stable_lines = self._ocr_stabilizer.process(raw_lines)
-
-                    # 使用 SceneTextState 融合全局与局部结果，避免视野外注释丢行
-                    if active_roi is not None:
-                        lines = self._scene_text_state.update_roi(stable_lines, active_roi)
-                    else:
-                        lines = self._scene_text_state.update_full(stable_lines)
+                    lines = self._scene_text_state.update_full(stable_lines)
                 except Exception as e:
                     _log.warning("OCR 识别异常 (gen=%s): %s", frame_gen_id, e)
                     if not self._running and self._frame_buffer.is_empty:
@@ -634,9 +644,13 @@ class WindowWatcher(QThread):
 
                 # 8. 文本变化检测与空帧清空判定
                 with self._state_lock:
-                    # 字幕模式下因前面已有 OcrStabilizer 稳定层，传 0.0 阈值使得微小真实变动（如数字 125->128）也能触发翻译，绝不吞字
-                    sim_threshold = 0.0 if self._display_mode == "subtitle" else threshold
-                    event, text = self._text_change_detector.observe(lines, sim_threshold)
+                    # 字幕模式下前面已有 OcrStabilizer 稳定层，传 exact_change=True（threshold=1.0），
+                    # 只要稳定文本变动立即触发翻译，彻底杜绝进入两帧候选延迟与首帧延迟！
+                    is_sub = (self._display_mode == "subtitle")
+                    sim_threshold = 1.0 if is_sub else threshold
+                    event, text = self._text_change_detector.observe(
+                        lines, sim_threshold, exact_change=is_sub
+                    )
 
                 # 9. 结果派发与增量翻译，内部异常隔离防护
                 if event == "clear":

@@ -79,6 +79,32 @@ class LlamaServer:
         except (requests.RequestException, ValueError):
             return False
 
+    def check_model_match(self, timeout: float = 2.0) -> bool:
+        """检查已有运行实例加载的模型是否与当前配置的模型匹配。"""
+        model_name = self.model_path.name.casefold()
+        model_stem = self.model_path.stem.casefold()
+        try:
+            # 1. 尝试从 /models 端点获取模型列表
+            r = requests.get(f"{self.base_url}/models", timeout=timeout)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, dict):
+                    for item in data.get("data", []):
+                        m_id = str(item.get("id", "")).casefold()
+                        if model_name in m_id or model_stem in m_id:
+                            return True
+            # 2. 尝试从 /props 端点获取默认模型配置
+            r = requests.get(f"{self.base_url}/props", timeout=timeout)
+            if r.status_code == 200:
+                props = r.json()
+                if isinstance(props, dict):
+                    m_str = str(props.get("default_generation_settings", {}).get("model", "")).casefold()
+                    if model_name in m_str or model_stem in m_str:
+                        return True
+        except Exception:
+            pass
+        return False
+
     def _read_output(self, proc: subprocess.Popen) -> None:
         """持续消费子进程输出，既避免管道堵塞，也保留启动诊断。"""
         stream = proc.stdout
@@ -197,8 +223,11 @@ class LlamaServer:
             if self._stop_requested.is_set():
                 raise InterruptedError("llama-server 启动已取消")
             if self.is_healthy():
-                _log.info("复用已有健康实例 %s", self.base_url)
-                return
+                # 若已有健康实例，严格校验加载的模型是否匹配，防止误复用其他模型或未知进程
+                if self.check_model_match():
+                    _log.info("复用已有健康且模型匹配的实例 %s", self.base_url)
+                    return
+                _log.warning("端口 %s 上的已有实例模型不匹配，不能复用", self.port)
             exe = self.llama_dir / "llama-server.exe"
             if not exe.exists():
                 raise FileNotFoundError(f"未找到 llama-server：{exe}")

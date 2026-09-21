@@ -33,8 +33,10 @@ def _boxes_intersect(
             bx1, bx2 = min(xs), max(xs)
             by1, by2 = min(ys), max(ys)
         elif isinstance(first, (int, float)):
-            bx1, by1, bw, bh = box_a[0], box_a[1], box_a[2], box_a[3]
-            bx2, by2 = bx1 + bw, by1 + bh
+            # 严格解析标准 (x1, y1, x2, y2) 绝对坐标（OcrLine.box 标准格式）
+            p1, p2, p3, p4 = float(box_a[0]), float(box_a[1]), float(box_a[2]), float(box_a[3])
+            bx1, bx2 = min(p1, p3), max(p1, p3)
+            by1, by2 = min(p2, p4), max(p2, p4)
         else:
             return False
     else:

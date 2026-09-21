@@ -109,6 +109,11 @@ class OcrStabilizer:
         self._candidate_lines: list[Any] = []
         self._candidate_repeat_count: int = 0
 
+    @property
+    def has_pending_candidate(self) -> bool:
+        """是否有正在等待防抖确认的候选文本。"""
+        return self._candidate_repeat_count > 0
+
     def _extract_text(self, lines: list[Any]) -> str:
         """Extract joined text from list of OCR lines or strings."""
         parts: list[str] = []

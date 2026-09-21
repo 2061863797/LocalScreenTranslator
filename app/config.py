@@ -50,6 +50,8 @@ DEFAULTS = {
     "max_tokens": 512,
     # 本地明文历史；可在设置中关闭，并可在历史窗口手动清空
     "history_enabled": True,
+    # 持久化翻译缓存：加速重复文本识别；注重隐私可设为 false（关闭历史不等于不落盘缓存）
+    "translation_cache_enabled": True,
     # 0=沿用原有默认；非 0 为正文像素字号
     "translate_window_font_size": 0,
     "settings_window_geometry": [],

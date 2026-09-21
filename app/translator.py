@@ -133,7 +133,7 @@ class Translator:
         if key in self._line_cache:
             self._line_cache.move_to_end(key)
             return self._line_cache[key]
-        if self.cache is not None:
+        if self.cache is not None and bool(self._cfg.get("translation_cache_enabled", True)):
             cached = self.cache.get(text, target, self.model_id, self.prompt_version)
             if cached is not None:
                 self._line_cache[key] = cached
@@ -149,7 +149,7 @@ class Translator:
         self._line_cache.move_to_end(key)
         while len(self._line_cache) > self._line_cache_max:
             self._line_cache.popitem(last=False)
-        if self.cache is not None:
+        if self.cache is not None and bool(self._cfg.get("translation_cache_enabled", True)):
             self.cache.put(text, target, self.model_id, self.prompt_version, tr)
 
     @staticmethod

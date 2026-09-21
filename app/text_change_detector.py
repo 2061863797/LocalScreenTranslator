@@ -82,6 +82,14 @@ class TextChangeDetector:
         with self._lock:
             return bool(self._last_text) and self._empty_frames == 0
 
+    @property
+    def has_pending_candidate(self) -> bool:
+        """是否有正在等待确认的候选文本或待确认的清空帧。"""
+        with self._lock:
+            return self._candidate_count > 0 or (
+                bool(self._last_text) and 0 < self._empty_frames < self.empty_clear_threshold
+            )
+
     def reset(self, *, clear_cache: bool = True) -> None:
         """重置状态机。若 clear_cache 为 True 则同时清空逐行缓存。"""
         with self._lock:
@@ -100,12 +108,19 @@ class TextChangeDetector:
                 self._candidate_text = ""
                 self._candidate_count = 0
 
-    def observe(self, lines: list[Any] | str, threshold: float = 0.5) -> tuple[str, str]:
+    def observe(
+        self,
+        lines: list[Any] | str,
+        threshold: float = 0.5,
+        *,
+        exact_change: bool = False,
+    ) -> tuple[str, str]:
         """观察新一轮 OCR 结果并判断状态事件。
 
         Args:
             lines: OCR 识别行列表（各项包含 .text 属性或为 str），或单一多行文本。
             threshold: 相似度判定阈值（0.0 ~ 1.0）。
+            exact_change: 是否启用精确文本变动（只要 text != last_text 即视为变动，不进入两帧相似度候选确认）。
 
         Returns:
             (event, text):
@@ -140,6 +155,14 @@ class TextChangeDetector:
                 self._candidate_text = ""
                 self._candidate_count = 0
                 return "none", text
+
+            # 显式精确变动（如字幕模式已具备前置 OcrStabilizer）、threshold >= 1.0 或首帧建立基准：
+            # 只要文本不相等，立即触发变动，不进入相似度候选确认，彻底消除首帧与字幕更新延迟！
+            if exact_change or threshold >= 1.0 or not self._last_text:
+                self._last_text = text
+                self._candidate_text = ""
+                self._candidate_count = 0
+                return "change", text
 
             l1, l2 = len(self._last_text), len(text)
             # 1. 数学理论上限短路：ratio <= 2 * min(l1, l2) / (l1 + l2)。
