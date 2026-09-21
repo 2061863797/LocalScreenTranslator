@@ -5,6 +5,7 @@
 host 固定读配置（默认 127.0.0.1，仅本机）。
 """
 
+import socket
 import subprocess
 import threading
 import time
@@ -33,6 +34,16 @@ def sanitize_server_host(host: str | None) -> str:
     if h in ("localhost", "::1"):
         return "127.0.0.1"
     return h
+
+
+def is_port_in_use(host: str, port: int) -> bool:
+    """探测指定端口是否已被占用。"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            return s.connect_ex((host, port)) == 0
+    except Exception:
+        return False
 
 
 class LlamaServer:
@@ -84,21 +95,29 @@ class LlamaServer:
         model_name = self.model_path.name.casefold()
         model_stem = self.model_path.stem.casefold()
         try:
-            # 1. 尝试从 /models 端点获取模型列表
-            r = requests.get(f"{self.base_url}/models", timeout=timeout)
-            if r.status_code == 200:
-                data = r.json()
-                if isinstance(data, dict):
-                    for item in data.get("data", []):
-                        m_id = str(item.get("id", "")).casefold()
-                        if model_name in m_id or model_stem in m_id:
-                            return True
+            # 1. 尝试从 /models 或 /v1/models 端点获取模型列表
+            for path in ("/models", "/v1/models"):
+                try:
+                    r = requests.get(f"{self.base_url}{path}", timeout=timeout)
+                    if r.status_code == 200:
+                        data = r.json()
+                        if isinstance(data, dict):
+                            for item in data.get("data", []):
+                                m_id = str(item.get("id", "")).casefold()
+                                if model_name in m_id or model_stem in m_id:
+                                    return True
+                except Exception:
+                    pass
             # 2. 尝试从 /props 端点获取默认模型配置
             r = requests.get(f"{self.base_url}/props", timeout=timeout)
             if r.status_code == 200:
                 props = r.json()
                 if isinstance(props, dict):
-                    m_str = str(props.get("default_generation_settings", {}).get("model", "")).casefold()
+                    m_str = (
+                        str(props.get("default_generation_settings", {}).get("model", ""))
+                        or str(props.get("model_path", ""))
+                        or str(props.get("model", ""))
+                    ).casefold()
                     if model_name in m_str or model_stem in m_str:
                         return True
         except Exception:
@@ -222,23 +241,41 @@ class LlamaServer:
         with self._lock:
             if self._stop_requested.is_set():
                 raise InterruptedError("llama-server 启动已取消")
+
+            # 1. 若当前实例是健康且模型匹配的，直接复用
             if self.is_healthy():
-                # 若已有健康实例，严格校验加载的模型是否匹配，防止误复用其他模型或未知进程
                 if self.check_model_match():
                     _log.info("复用已有健康且模型匹配的实例 %s", self.base_url)
                     return
-                _log.warning("端口 %s 上的已有实例模型不匹配，不能复用", self.port)
+
+            # 2. 回收由本程序持有但已失活/不健康的旧子进程
+            if self._proc is not None:
+                if self._proc.poll() is None:
+                    _log.warning("回收未通过健康检查的旧 llama-server pid=%s", self._proc.pid)
+                self._terminate_process_locked()
+
+            # 3. 此时若端口依然被占用，说明存在外部程序占用或运行着其它模型，坚决拒绝冲突拉起
+            if is_port_in_use(self.host, self.port) or self.is_healthy():
+                if self.is_healthy():
+                    if self.check_model_match():
+                        _log.info("复用外部健康且模型匹配的实例 %s", self.base_url)
+                        return
+                    msg = (
+                        f"端口 {self.port} 上的已有服务正在运行其他模型，与当前配置的模型 "
+                        f"({self.model_path.name}) 不匹配。请关闭外部占用进程或在配置中更换 server_port。"
+                    )
+                else:
+                    msg = (
+                        f"端口 {self.port} 已被其它本地程序占用且无法通过健康检查。请关闭占用端口的程序或在配置中修改 server_port。"
+                    )
+                _log.error(msg)
+                raise RuntimeError(msg)
+
             exe = self.llama_dir / "llama-server.exe"
             if not exe.exists():
                 raise FileNotFoundError(f"未找到 llama-server：{exe}")
             if not self.model_path.exists():
                 raise FileNotFoundError(f"未找到模型文件：{self.model_path}")
-
-            # 上一轮进程还活着却不健康时必须先回收，不能覆盖引用变成孤儿进程。
-            if self._proc is not None:
-                if self._proc.poll() is None:
-                    _log.warning("回收未通过健康检查的旧 llama-server pid=%s", self._proc.pid)
-                self._terminate_process_locked()
 
             cmd = self._build_cmd(exe)
             _log.info(

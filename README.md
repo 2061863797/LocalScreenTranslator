@@ -156,13 +156,18 @@ venv\Scripts\pythonw.exe run.py
 
 ## 独立安装包构建
 
-若需要将软件（含 Python 运行环境与离线模型资源）打包为单文件安装包（`LocalScreenTranslator-Setup.exe`），在满足已安装 Inno Setup 6 与完整 `runtime\` 资源的前提下执行：
+若需要将软件（含 Python 运行环境与离线引擎资源）打包为独立安装包（`本地屏译-Setup.exe`），在满足已安装 Inno Setup 6 与基础 `runtime\` 资源的前提下执行：
 
 ```powershell
+# 默认 Model-Free 模式构建（模型与主程序解耦，符合开源分发与合规要求）
 .\package.ps1
+
+# 若需要捆绑模型一键打包（仅限符合其社区许可地域限制的分发渠道）
+.\package-with-model.ps1
+# 或 .\package.ps1 -IncludeModel
 ```
 
-脚本将自动执行 PATH 环境净化、PyInstaller onedir 编译、QtCore 依赖兼容性冒烟检测以及 Inno Setup 封装，生成安装包至 `dist\LocalScreenTranslator-Setup.exe`。
+脚本将自动执行 PATH 环境净化、PyInstaller onedir 编译、QtCore 依赖兼容性冒烟检测以及 Inno Setup 封装，生成安装包至 `dist\本地屏译-Setup.exe`。
 
 ## 其它
 

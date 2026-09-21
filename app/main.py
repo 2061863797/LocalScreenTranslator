@@ -899,13 +899,20 @@ class App:
                 self.log.warning("旧监视线程尚未退出，本次启动已取消")
                 return
         # 上次超时保留的线程可能还在跑最后一帧（卡在翻译请求），
-        # 此时不启动新会话，避免两路抓屏+OCR+翻译并行空耗资源。
-        self._retired_watchers = [
-            w for w in self._retired_watchers if w.isRunning()
-        ]
+        # 此时主动再次触发 abort 并快速回收，避免两路并行或永久阻塞。
+        if self._retired_watchers:
+            for rw in self._retired_watchers:
+                try:
+                    rw.stop()
+                    rw.wait(300)
+                except Exception:
+                    pass
+            self._retired_watchers = [
+                w for w in self._retired_watchers if w.isRunning()
+            ]
         if self._retired_watchers:
             self.log.warning(
-                "仍有 %d 个旧监视线程未退出（可能卡在翻译请求），本次启动已取消",
+                "仍有 %d 个旧监视线程未退出（等待资源释放中），本次启动已取消",
                 len(self._retired_watchers),
             )
             return
@@ -1090,15 +1097,17 @@ class App:
                 pass
             # 外置字幕可缩放；outside=True 永远不盖住目标窗/识别区
             self.subtitle.set_interactive(True)
-            mode = str(self.cfg.get("subtitle_mode", "follow"))
-            self.subtitle.set_mode(
-                mode if mode in ("follow", "free", "pinned") else "follow"
-            )
+            # 持续翻译字幕模式每次默认跟随翻译框，并清除历史自定义尺寸以确保窗口比例一致
+            self.subtitle.reset_follow_mode()
+            self.cfg["subtitle_mode"] = "follow"
             is_region = self._watch_region is not None or self._watch_profile == "region"
             self.subtitle.set_capture_visible(
                 not is_region or bool(self.cfg.get("annotate_capture_visible"))
             )
-            self.subtitle.attach_below(rect, outside=True, match_target_size=is_region)
+            if is_region:
+                self.subtitle.attach_below(rect, outside=True, match_target_size=True)
+            else:
+                self.subtitle.attach_below(rect, outside=False, match_target_size=False)
             # PR 1 零闪烁：不在启动时注入占位文本，保持隐藏直到第一帧有效翻译到达
             self.subtitle.hide()
 

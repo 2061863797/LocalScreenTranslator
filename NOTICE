@@ -46,8 +46,9 @@ for their own code or models; see each project's license):
   The Tencent HY Community License explicitly restricts permitted territory
   (excluding the European Union, the United Kingdom, and South Korea).
   Redistribution requires providing the license terms and notice. For use
-  outside permitted territories, users should download/configure alternative
-  permissive models (such as Qwen2.5 or Gemma 2).
+  outside permitted territories, users should download and configure alternative
+  models with licenses suitable for your intended use and distribution (verify
+  each model's terms and licenses separately).
   Model card and license:
   https://huggingface.co/tencent/HY-MT1.5-1.8B-GGUF
 

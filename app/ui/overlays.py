@@ -305,50 +305,76 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         if emit:
             self.mode_changed.emit(mode)
 
+    def reset_follow_mode(self, emit: bool = False) -> None:
+        """重置为默认跟随模式，清除用户手动缩放尺寸残留，确保默认跟随翻译框并匹配比例。"""
+        self._user_size = None
+        self.set_mode("follow", emit=emit)
+
     def attach_below(
         self,
         win_rect: tuple[int, int, int, int],
         *,
         outside: bool = False,
-        match_target_size: bool = False,
+        match_target_size: bool = True,
     ):
-        """跟随模式下吸附到目标下缘；其他模式不动。框体大小不随译文变。
+        """跟随模式下吸附到目标下缘；其他模式不动。默认与翻译框保持相同窗口比例。
 
-        match_target_size: 区域翻译时开启，宽高完全同步为区域选区尺寸。
+        match_target_size: 默认为 True，宽高严格匹配翻译框窗口比例（1:1 等比例）。
         """
         if self.mode != "follow":
             return
         x, y, w, h = win_rect
         if match_target_size:
-            bar_w = max(w, self._MIN_W)
-            # 适度字幕高度：小选区（<=120）完全匹配，大选区限制为默认字幕高度，防止撑爆屏幕导致无法跟随
-            bar_h = max(h, self._MIN_H) if h <= 120 else max(self._DEFAULT_H, self._MIN_H)
             self._user_size = None
+            bar_w = max(w, self._MIN_W)
+            if w > 0 and h > 0:
+                bar_h = max(self._MIN_H, round(bar_w * h / w))
+            else:
+                bar_h = max(h, self._MIN_H)
         elif self._user_size:
             bar_w, bar_h = self._user_size
         else:
-            bar_w, bar_h = max(w, 280), self._DEFAULT_H
-        if outside:
-            nx, ny, nw, nh = x, y + h + 4, bar_w, bar_h
-        else:
-            nx, ny, nw, nh = x, y + h - bar_h - 10, max(w, 200), bar_h
+            bar_w = max(w, self._MIN_W)
+            if w > 0 and h > 0:
+                bar_h = max(self._MIN_H, round(bar_w * h / w))
+            else:
+                bar_h = max(h, self._MIN_H)
 
-        # 屏幕边界安全夹紧与防出界翻转（仅在屏幕内常规窗口时生效）
+        # 屏幕边界安全夹紧与防出界保护
+        screen = None
+        avail = None
         try:
             center_pt = QPoint(x + w // 2, y + h // 2)
             screen = QGuiApplication.screenAt(center_pt)
             if screen:
                 avail = screen.availableGeometry()
                 if avail.contains(center_pt):
-                    # 若 outside=True 且底部放不下，自动翻转吸附到目标选区上方（避开区域控制条）
-                    if outside and (ny + nh > avail.bottom()):
-                        alt_y = y - nh - 34
-                        if alt_y >= avail.top():
-                            ny = alt_y
-                        else:
-                            ny = min(ny, avail.bottom() - nh)
-                    # 限制在屏幕可见工作区内
-                    nx = max(avail.left(), min(nx, avail.right() - nw))
+                    # 若计算高度过大（超过屏幕可用工作区），在可用高度内等比缩放避免撑爆屏幕
+                    max_allowed_h = max(self._MIN_H, avail.height() - 60)
+                    if bar_h > max_allowed_h:
+                        bar_h = max_allowed_h
+                        if h > 0:
+                            bar_w = max(self._MIN_W, min(bar_w, round(bar_h * w / h)))
+        except Exception:
+            pass
+
+        if outside:
+            nx, ny, nw, nh = x, y + h + 4, bar_w, bar_h
+        else:
+            nx, ny, nw, nh = x, y + h - bar_h - 10, bar_w, bar_h
+
+        try:
+            if screen and avail and avail.contains(center_pt):
+                # 若 outside=True 且底部放不下，自动翻转吸附到目标选区上方（避开区域控制条）
+                if outside and (ny + nh > avail.bottom()):
+                    alt_y = y - nh - 34
+                    if alt_y >= avail.top():
+                        ny = alt_y
+                    else:
+                        ny = min(ny, avail.bottom() - nh)
+                # 限制在屏幕可见工作区内
+                nx = max(avail.left(), min(nx, avail.right() - nw))
+                ny = max(avail.top(), min(ny, avail.bottom() - nh))
         except Exception:
             pass
 
@@ -403,11 +429,10 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         return pad_x, pad_y
 
     def _pad_top(self) -> int:
-        _, py = self._effective_pads()
-        if self.height() > 50 and hasattr(self, "_ctrl"):
-            ctrl_h = self._ctrl.height() if self._ctrl.height() > 0 else self._ctrl.sizeHint().height()
-            return max(py, ctrl_h + 4)
-        return py
+        ctrl_h = 28
+        if hasattr(self, "_ctrl"):
+            ctrl_h = self._ctrl.height() if self._ctrl.height() > 0 else 28
+        return max(34, ctrl_h + 6)
 
     def _text_rect_size(self) -> QSize:
         """正文可用区域（为滚动条留出右边距，为顶部控制条留出空间）。"""
@@ -455,7 +480,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         self._ctrl.adjustSize()
         ctrl_w = self._ctrl.width()
         ctrl_h = self._ctrl.height()
-        _set_geo_if_changed(
+        changed = _set_geo_if_changed(
             self._ctrl,
             max(0, self.width() - ctrl_w - 4),
             4,
@@ -466,7 +491,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         sw = max(self._SCROLL_W, 16)
         vscroll_y = ctrl_h + 4
         vscroll_h = max(10, self.height() - vscroll_y - self._GRIP - 4)
-        _set_geo_if_changed(
+        changed |= _set_geo_if_changed(
             self._vscroll,
             max(0, self.width() - sw),
             vscroll_y,
@@ -474,12 +499,14 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             vscroll_h,
         )
         self._vscroll.raise_()
-        _move_if_changed(
+        changed |= _move_if_changed(
             self._grip,
             max(0, self.width() - self._GRIP),
             max(0, self.height() - self._GRIP),
         )
         self._grip.raise_()
+        if changed and self.isVisible():
+            self.update()
 
     def _show_chrome(self):
         """统一显示附属窗：仅在需要时 show，避免每轮 raise 闪烁。"""
@@ -545,6 +572,13 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # 1. 彻底擦除背景透明度，消除 DWM 下旧子控件位置与文字重影残影
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        painter.restore()
+
+        # 2. 绘制半透明圆角底板
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(PANEL_QCOLOR)
         painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 8, 8)
@@ -707,9 +741,14 @@ class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(container)
+        self.setFixedHeight(26)
         self.setStyleSheet(CTRL_STYLE)
         self.sync_checked(bar.mode)
         self.apply_ui_language()
+
+    def sizeHint(self) -> QSize:
+        w = self.layout().sizeHint().width() if self.layout() else 320
+        return QSize(max(260, w), 26)
 
     def apply_ui_language(self):
         self._handle.setToolTip(_t("sub_drag_tip"))

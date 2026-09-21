@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   本地屏译（LocalScreen Translator）一键打包构建与完整性验证脚本
@@ -12,6 +12,10 @@
     5. 调用 Inno Setup 编译生成离线安装包 dist\LocalScreenTranslator-Setup.exe；
     6. 输出安装包哈希值与体积信息。
 #>
+
+param(
+    [switch]$IncludeModel
+)
 
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
@@ -39,7 +43,7 @@ Write-Ok "Python: $py"
 & $py -c "import PyInstaller" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Step "安装 PyInstaller"
-    & $py -m pip install pyinstaller
+    & $py -m pip install "pyinstaller>=6.4.0,<7.0.0"
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller 安装失败" }
 }
 Write-Ok "PyInstaller 已就绪"
@@ -78,15 +82,20 @@ if (-not (Test-Path -LiteralPath $llamaExe)) {
     Write-Err2 "缺少 $llamaExe"
     exit 1
 }
-if (-not (Test-Path -LiteralPath $modelGguf)) {
-    Write-Err2 "缺少 $modelGguf"
-    exit 1
-}
 if (-not (Test-Path -LiteralPath (Join-Path $ocrDir "det.onnx")) -or -not (Test-Path -LiteralPath (Join-Path $ocrDir "rec.onnx"))) {
     Write-Err2 "缺少 OCR ONNX 模型"
     exit 1
 }
-Write-Ok "runtime 离线资源完整"
+if ($IncludeModel) {
+    if (-not (Test-Path -LiteralPath $modelGguf)) {
+        Write-Err2 "已指定 -IncludeModel，但在 $modelGguf 未找到模型文件！"
+        exit 1
+    }
+    Write-Ok "已检测到捆绑模型文件: $modelGguf"
+} else {
+    Write-Ok "按默认 Model-Free 模式打包（不包含模型文件，符合开源分发与合规要求）"
+}
+Write-Ok "runtime 基础引擎资源完整"
 
 # 4. PATH 环境净化（核心安全防护）
 Write-Step "4. 净化 PATH 环境变量（过滤第三方污染源）"
@@ -170,7 +179,11 @@ if (-not (Test-Path -LiteralPath $issFile)) {
     exit 1
 }
 
-& $iscc /Qp $issFile
+if ($IncludeModel) {
+    & $iscc /Qp /DIncludeModels=1 $issFile
+} else {
+    & $iscc /Qp /DIncludeModels=0 $issFile
+}
 if ($LASTEXITCODE -ne 0) {
     Write-Err2 "Inno Setup 编译安装包失败！"
     exit 1

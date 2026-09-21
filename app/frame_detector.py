@@ -25,6 +25,7 @@ class FrameDiffResult:
     changed_ratio: float
     changed_pixels: int
     roi_box: tuple[int, int, int, int] | None  # (x1, y1, x2, y2) in full coordinates
+    invalidates_content: bool = False
 
 
 class FrameChangeDetector:
@@ -145,6 +146,7 @@ class FrameChangeDetector:
                 changed_ratio=0.0,
                 changed_pixels=0,
                 roi_box=None,
+                invalidates_content=False,
             )
 
         effective_min_pixels = self.min_changed_pixels
@@ -155,13 +157,17 @@ class FrameChangeDetector:
                 max(1, int(total_sub_pixels * 0.05)),
             )
 
-        # Filter cursor blink and small video/compression noise
+        # 高敏感视觉失效检测：只要检测到哪怕微小但真实的像素变化，立即标记失效，杜绝旧译文短暂上屏
+        is_invalidated = changed_count >= 1
+
+        # Filter cursor blink and small video/compression noise for heavy OCR trigger
         if changed_count < effective_min_pixels or ratio < self.min_changed_ratio:
             return FrameDiffResult(
                 has_changed=False,
                 changed_ratio=ratio,
                 changed_pixels=changed_count,
                 roi_box=None,
+                invalidates_content=is_invalidated,
             )
 
         # Compute ROI bounding box in downsampled space and scale back by step factor
@@ -178,4 +184,5 @@ class FrameChangeDetector:
             changed_ratio=ratio,
             changed_pixels=changed_count,
             roi_box=roi_box,
+            invalidates_content=True,
         )

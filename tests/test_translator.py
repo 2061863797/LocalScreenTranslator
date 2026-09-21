@@ -48,10 +48,29 @@ class TranslatorTests(unittest.TestCase):
             return_value=(
                 "<think>先分析原文</think>\n"
                 "当然，以下是翻译：\n```text\n翻译结果：你好，世界\n```\n"
-                "希望这能帮到你。"
+                "如有其他问题，请随时告诉我。"
             )
         )
         self.assertEqual(translator.translate("Hello, world"), "你好，世界")
+
+    def test_legitimate_dialogue_lines_are_not_purged(self):
+        """普通台词与生活用语（如抱歉、希望帮到你）绝不得被当作 AI 客套误删。"""
+        translator = self.make_translator()
+
+        legitimate_cases = [
+            "I'm sorry, I can't come.",
+            "Hope this helps!",
+            "抱歉，我不能参加。",
+            "希望这能帮到你。",
+            "抱歉，我不能和你一起去。",
+        ]
+        for line in legitimate_cases:
+            cleaned = Translator._clean_translation_output(line)
+            self.assertEqual(
+                cleaned,
+                line,
+                f"合法台词 {line!r} 绝不得被误删为 {cleaned!r}",
+            )
 
     def test_same_source_text_is_translated_once(self):
         """字幕模式同一段文字反复出现时应命中缓存，不再打扰模型。"""

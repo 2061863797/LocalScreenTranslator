@@ -49,8 +49,10 @@ Source: "dist\LocalScreenTranslator\*"; DestDir: "{app}"; Flags: ignoreversion r
 ; 离线 runtime 资源：llama-server 与 OCR 引擎
 Source: "runtime\llama\*"; DestDir: "{app}\runtime\llama"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "runtime\ocr\*"; DestDir: "{app}\runtime\ocr"; Flags: ignoreversion recursesubdirs createallsubdirs
-; 翻译模型目录：按地域合规解耦分发，若存在则打包，缺失时自动创建目录供用户放入模型
+; 翻译模型目录：默认 Model-Free 解耦分发；仅当显式指定 IncludeModels=1 时打包模型文件
+#if Defined(IncludeModels) && IncludeModels == "1"
 Source: "runtime\models\*"; DestDir: "{app}\runtime\models"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+#endif
 ; 基础附属文件与许可证
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "config.example.json"; DestDir: "{app}"; Flags: ignoreversion

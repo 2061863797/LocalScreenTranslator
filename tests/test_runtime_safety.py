@@ -130,6 +130,83 @@ class RuntimeSafetyTests(unittest.TestCase):
         with patch("app.llama_server.requests.get", return_value=unrelated):
             self.assertFalse(server.is_healthy())
 
+    def test_llama_server_rejects_unmatched_model_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "llama-server.exe").write_bytes(b"x")
+            model = root / "target_model.gguf"
+            model.write_bytes(b"GGUF")
+            server = LlamaServer({
+                "llama_dir": str(root),
+                "model_path": str(model),
+                "server_host": "127.0.0.1",
+                "server_port": 18080,
+                "llama_device": "cpu",
+            })
+            server.is_healthy = Mock(return_value=True)
+            server.check_model_match = Mock(return_value=False)
+            with patch("app.llama_server.is_port_in_use", return_value=True):
+                with patch("app.llama_server.subprocess.Popen") as mock_popen:
+                    with self.assertRaisesRegex(RuntimeError, "不匹配"):
+                        server.start()
+                    mock_popen.assert_not_called()
+
+    def test_llama_server_rejects_occupied_port_by_unrelated_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "llama-server.exe").write_bytes(b"x")
+            model = root / "target_model.gguf"
+            model.write_bytes(b"GGUF")
+            server = LlamaServer({
+                "llama_dir": str(root),
+                "model_path": str(model),
+                "server_host": "127.0.0.1",
+                "server_port": 18080,
+                "llama_device": "cpu",
+            })
+            server.is_healthy = Mock(return_value=False)
+            with patch("app.llama_server.is_port_in_use", return_value=True):
+                with patch("app.llama_server.subprocess.Popen") as mock_popen:
+                    with self.assertRaisesRegex(RuntimeError, "已被其它本地程序占用"):
+                        server.start()
+                    mock_popen.assert_not_called()
+
+    def test_llama_server_reuses_matching_model_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "llama-server.exe").write_bytes(b"x")
+            model = root / "target_model.gguf"
+            model.write_bytes(b"GGUF")
+            server = LlamaServer({
+                "llama_dir": str(root),
+                "model_path": str(model),
+                "server_host": "127.0.0.1",
+                "server_port": 18080,
+                "llama_device": "cpu",
+            })
+            server.is_healthy = Mock(return_value=True)
+            server.check_model_match = Mock(return_value=True)
+            with patch("app.llama_server.subprocess.Popen") as mock_popen:
+                server.start()
+                mock_popen.assert_not_called()
+
+    def test_check_model_match_supports_v1_models_and_props(self):
+        server = object.__new__(LlamaServer)
+        server.host, server.port = "127.0.0.1", 18080
+        server.model_path = Path("D:/models/HY-MT1.5-1.8B.gguf")
+
+        # 1. 命中 /v1/models
+        resp_v1 = Mock(status_code=200)
+        resp_v1.json.return_value = {"data": [{"id": "HY-MT1.5-1.8B"}]}
+        with patch("app.llama_server.requests.get", return_value=resp_v1):
+            self.assertTrue(server.check_model_match())
+
+        # 2. 命中 /props 的 default_generation_settings
+        resp_props = Mock(status_code=200)
+        resp_props.json.return_value = {"default_generation_settings": {"model": "hy-mt1.5-1.8b.gguf"}}
+        with patch("app.llama_server.requests.get", side_effect=[Mock(status_code=404), Mock(status_code=404), resp_props]):
+            self.assertTrue(server.check_model_match())
+
     def test_native_rect_is_mapped_to_qt_logical_coordinates(self):
         old = list(capture._SCREEN_LAYOUT)
         try:

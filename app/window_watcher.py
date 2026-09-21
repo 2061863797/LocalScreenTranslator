@@ -400,6 +400,11 @@ class WindowWatcher(QThread):
         self._scene_text_state.clear()
         self._last_captured_frame = None
         self._last_processed_epoch = 0
+        try:
+            if hasattr(self._translator, "abort_inflight"):
+                self._translator.abort_inflight()
+        except Exception:
+            pass
 
     def set_paused(self, paused: bool) -> None:
         """暂停或恢复监视。"""
@@ -488,14 +493,16 @@ class WindowWatcher(QThread):
                 try:
                     diff_res = self._frame_detector.detect(self._last_captured_frame, img)
                     has_visual_change = diff_res.has_changed
+                    invalidates_content = getattr(diff_res, "invalidates_content", has_visual_change)
                     roi_box = diff_res.roi_box
                     diff_ratio = diff_res.changed_ratio
                 except Exception:
                     has_visual_change = True
+                    invalidates_content = True
                     roi_box = None
                     diff_ratio = 1.0
 
-                if self._last_captured_frame is None or has_visual_change:
+                if self._last_captured_frame is None or invalidates_content:
                     with self._content_epoch_lock:
                         self._content_epoch += 1
                         current_epoch = self._content_epoch
@@ -619,7 +626,6 @@ class WindowWatcher(QThread):
 
                 self._skipped_frames = 0
                 self._last_frame = img
-                self._last_processed_epoch = packet_epoch
 
                 # 6. 备注浮层像素剔除
                 if (
@@ -641,6 +647,9 @@ class WindowWatcher(QThread):
                     if not self._running and self._frame_buffer.is_empty:
                         break
                     continue
+
+                # 仅在 OCR 成功执行后，才宣告该 epoch 已被成功消费，确保异常帧能被下一周期立即重试
+                self._last_processed_epoch = packet_epoch
 
                 # 8. 文本变化检测与空帧清空判定
                 with self._state_lock:

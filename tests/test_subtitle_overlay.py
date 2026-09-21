@@ -471,5 +471,84 @@ class TestProductionSubtitleBar(unittest.TestCase):
         self.assertEqual(res_plate, (True, -1), "Over text/plate must return HTTRANSPARENT (-1)")
 
 
+    def test_default_follow_mode_reset_on_watch_display(self):
+        """持续翻译的字幕模式每次默认跟随翻译框，重置自定义尺寸以保证窗口比例一致。"""
+        from app.main import App
+        from app.ui.overlays import SubtitleBar
+
+        app = MagicMock()
+        app.cfg = {"subtitle_mode": "free"}
+        app.subtitle = SubtitleBar()
+        app._watch_paused = False
+        app._watch_region = (100, 100, 450, 150)
+        app._watch_profile = "region"
+
+        try:
+            # 模拟用户上一轮曾拖拽过并缩小
+            app.subtitle.mode = "free"
+            app.subtitle._user_size = (300, 80)
+
+            # 启动持续翻译 / 切换至字幕模式
+            App._apply_watch_display(app, annotate=False, rect=(100, 100, 450, 150), announce=True)
+
+            # 必须重置为跟随模式，清除旧尺寸
+            self.assertEqual(app.subtitle.mode, "follow")
+            self.assertEqual(app.cfg.get("subtitle_mode"), "follow")
+            self.assertIsNone(app.subtitle._user_size)
+            self.assertTrue(app.subtitle._ctrl._btns["follow"].isChecked())
+
+            # 窗口比例必须与翻译框 (450, 150) 一致（3:1）
+            self.assertEqual(app.subtitle.width(), 450)
+            self.assertEqual(app.subtitle.height(), 150)
+            self.assertEqual(app.subtitle.x(), 100)
+            self.assertEqual(app.subtitle.y(), 100 + 150 + 4)
+        finally:
+            app.subtitle.close()
+            app.subtitle.deleteLater()
+
+    def test_subtitle_aspect_ratio_matches_target_rect(self):
+        """字幕框尺寸与各种不同比例翻译框的窗口比例严格保持一致。"""
+        # 1. 宽屏比例 3:1 (480 x 160)，不再受旧逻辑 <=120 的截断限制
+        self.bar.attach_below((50, 60, 480, 160), outside=True)
+        self.assertEqual(self.bar.width(), 480)
+        self.assertEqual(self.bar.height(), 160)
+        self.assertAlmostEqual(self.bar.width() / self.bar.height(), 480 / 160, places=2)
+
+        # 2. 正方形比例 1:1 (240 x 240)
+        self.bar.attach_below((50, 60, 240, 240), outside=True)
+        self.assertEqual(self.bar.width(), 240)
+        self.assertEqual(self.bar.height(), 240)
+        self.assertEqual(self.bar.width() / self.bar.height(), 1.0)
+
+        # 3. 窄长条比例 1:2 (60 x 120)，宽度被 _MIN_W (100) 夹紧时，高度等比伸缩为 200
+        self.bar.attach_below((50, 60, 60, 120), outside=True)
+        self.assertEqual(self.bar.width(), self.bar._MIN_W)
+        self.assertEqual(self.bar.height(), 200)
+        self.assertAlmostEqual(self.bar.width() / self.bar.height(), 60 / 120, places=2)
+
+    def test_subtitle_text_rect_strictly_below_control_bar(self):
+        """验证字幕文字区域物理隔离在控制栏下方，严禁出现控制栏覆盖第一二行文字。"""
+        self.bar.resize(400, 150)
+        self.bar._place_chrome()
+        ctrl_bottom = self.bar._ctrl.y() + self.bar._ctrl.height()
+        pad_top = self.bar._pad_top()
+        text_size = self.bar._text_rect_size()
+
+        self.assertGreaterEqual(pad_top, ctrl_bottom + 2, "正文顶部边距必须严格位于控制栏底部下方")
+        self.assertGreaterEqual(pad_top, 34)
+        self.assertGreaterEqual(text_size.height(), 10)
+
+    def test_paint_event_clears_background_and_renders_cleanly(self):
+        """验证 paintEvent 执行 CompositionMode_Clear 擦除背景并正常绘制文字。"""
+        from PySide6.QtGui import QPaintEvent
+        from PySide6.QtCore import QRect
+
+        self.bar.resize(400, 150)
+        self.bar.set_text("测试清除重影与正常排版\n第二行内容")
+        ev = QPaintEvent(QRect(0, 0, 400, 150))
+        # 执行绘制事件不抛出任何异常
+        self.bar.paintEvent(ev)
+
+
 if __name__ == "__main__":
     unittest.main()

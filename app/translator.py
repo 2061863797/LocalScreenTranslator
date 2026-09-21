@@ -80,10 +80,12 @@ _CHATTER_LINE_RE = re.compile(
     r"(?:translat|译文|翻译)"
 )
 _REFUSAL_LINE_RE = re.compile(
-    r"(?i)^(?:as an ai|i(?:'m| am) sorry|作为(?:一个)?\s*ai|抱歉[，,]?我(?:不能|无法)).*"
+    r"^(?:(?:as an ai|作为(?:一个)?(?:ai|人工智能|语言模型)|i am an ai|我是一个?(?:ai|人工智能)).*(?:cannot|can't|unable|不能|无法|抱歉).*|"
+    r"(?:i (?:cannot|can't)|我(?:无法|不能))(?: assist with translating| help translate| translate|提供翻译|翻译该文本).*)",
+    re.IGNORECASE,
 )
 _FOOTER_LINE_RE = re.compile(
-    r"(?i)^(?:hope this helps|let me know if|希望这能帮到你|如需.*请告诉我)[.!！。]?$"
+    r"(?i)^(?:(?:if you have (?:any )?(?:other|further) questions|如有(?:任何)?其他(?:问题|需求)|如需其他帮助)[，,]?\s*(?:please let me know|feel free to ask|请随时告诉我|请告知).*)$"
 )
 
 
@@ -184,11 +186,16 @@ class Translator:
             if line.strip()
             and not re.fullmatch(r"```[^\r\n]*", line.strip())
         ]
-        while lines and (
+        while len(lines) > 1 and (
             _CHATTER_LINE_RE.match(lines[0]) or _REFUSAL_LINE_RE.match(lines[0])
         ):
             lines.pop(0)
-        while lines and _FOOTER_LINE_RE.match(lines[-1]):
+        # 单行时仅当完全匹配明确的 AI 元拒答/闲聊才清空，普通台词绝不误删
+        if len(lines) == 1 and (
+            _CHATTER_LINE_RE.match(lines[0]) or _REFUSAL_LINE_RE.match(lines[0])
+        ):
+            lines.pop(0)
+        while len(lines) > 1 and _FOOTER_LINE_RE.match(lines[-1]):
             lines.pop()
         text = "\n".join(lines).strip()
         text = _LEADING_LABEL_RE.sub("", text).strip()
@@ -199,6 +206,18 @@ class Translator:
                 text = text[len(left) : -len(right)].strip()
                 break
         return text
+
+    def abort_inflight(self) -> None:
+        """立即中断/取消当前正在执行中的网络推理请求，使旧 watcher 毫秒级释放锁并退出。"""
+        with self._lock:
+            try:
+                self._session.close()
+            except Exception:
+                pass
+            adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10, max_retries=1)
+            self._session = requests.Session()
+            self._session.mount("http://", adapter)
+            self._session.mount("https://", adapter)
 
     def _ctx_budget(self) -> tuple[int, int]:
         """返回 (上下文 token 上限, 留给生成的 max_tokens 上限)。"""
