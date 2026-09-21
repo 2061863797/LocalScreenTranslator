@@ -96,5 +96,64 @@ class TestAbortInflightNonBlocking(unittest.TestCase):
         self.assertFalse(default_closed, "Default session must remain open and intact")
 
 
+    def test_abort_cancels_queued_request_without_calling_http(self):
+        """P0 核心竞态测试：在等锁期间被 abort 的请求，获得锁后必须立刻短路退出，绝不发 HTTP 请求。"""
+        translator = Translator(base_url="http://127.0.0.1:18080", timeout=10.0)
+        post_called = False
+
+        session = translator._get_session("watcher")
+        def mock_post(*args, **kwargs):
+            nonlocal post_called
+            post_called = True
+            return MagicMock(ok=True, json=lambda: {"choices": [{"message": {"content": "ok"}}]})
+        session.post = mock_post
+
+        lock_held = threading.Event()
+        release_lock = threading.Event()
+        queued_started = threading.Event()
+        result_returned = threading.Event()
+        final_result = None
+
+        # 1. 模拟划词翻译先占着 translator._lock
+        def hold_lock():
+            with translator._lock:
+                lock_held.set()
+                release_lock.wait()
+
+        t_holder = threading.Thread(target=hold_lock, daemon=True)
+        t_holder.start()
+        self.assertTrue(lock_held.wait(timeout=2.0))
+
+        # 2. Watcher 发起请求，进入等锁排队状态
+        def run_watcher():
+            nonlocal final_result
+            queued_started.set()
+            final_result = translator.translate("Waiting test", target_language="简体中文", session_tag="watcher")
+            result_returned.set()
+
+        t_watcher = threading.Thread(target=run_watcher, daemon=True)
+        t_watcher.start()
+        self.assertTrue(queued_started.wait(timeout=2.0))
+        time.sleep(0.05)  # 确保 watcher 已经卡在 with self._lock 之前
+
+        # 3. 用户此时停止 watcher，调用 abort_inflight("watcher")
+        translator.abort_inflight("watcher")
+
+        # 4. 划词翻译释放锁
+        release_lock.set()
+        t_holder.join(timeout=2.0)
+
+        # 5. 等待 watcher 返回
+        self.assertTrue(result_returned.wait(timeout=2.0), "Watcher must return after acquiring lock")
+        self.assertEqual(final_result, "", "Cancelled request must return empty string without executing")
+        self.assertFalse(post_called, "Cancelled request must NEVER invoke session.post()")
+
+    def test_localhost_session_disables_trust_env(self):
+        """P1 安全测试：所有本地 Session 必须禁用 trust_env，防止继承系统环境代理。"""
+        translator = Translator(base_url="http://127.0.0.1:18080", timeout=10.0)
+        session = translator._get_session("watcher")
+        self.assertFalse(session.trust_env, "Local translator session must have trust_env=False")
+
+
 if __name__ == "__main__":
     unittest.main()

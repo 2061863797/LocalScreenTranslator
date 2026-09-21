@@ -157,7 +157,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
     _SCROLL_W = 14
     _GRIP = 18
     _MIN_W = 100
-    _MIN_H = 40
+    _MIN_H = 60
     _DEFAULT_H = 100
     _DEFAULT_FONT_SIZE = 16
 

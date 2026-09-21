@@ -32,7 +32,7 @@ from .ocr_service import OcrService
 from .ocr_stabilizer import OcrStabilizer
 from .pipelines import GenerationTracker, WatchCycleContext
 from .result_manager import ResultManager
-from .scene_text_state import SceneTextState
+from .scene_text_state import SceneTextState, _boxes_intersect
 from .text_change_detector import TextChangeDetector
 from .translation_manager import TranslationManager
 from .translator import Translator
@@ -181,11 +181,14 @@ class WindowWatcher(QThread):
         self._last_skip_target: bool | None = None
         self._last_frame: np.ndarray | None = None
         self._skipped_frames = 0
+        self._work_revision: int = 0
+        self._content_revision: int = 0
         self._content_epoch: int = 0
         self._content_epoch_lock = threading.Lock()
         self._consecutive_grab_fails: int = 0
         self._last_captured_frame: np.ndarray | None = None
         self._scene_text_state = SceneTextState()
+        self._last_processed_work_rev: int = 0
         self._last_processed_epoch: int = 0
 
     # ==========================================
@@ -237,9 +240,19 @@ class WindowWatcher(QThread):
         return self._scene_text_state
 
     @property
+    def work_revision(self) -> int:
+        with self._content_epoch_lock:
+            return self._work_revision
+
+    @property
+    def content_revision(self) -> int:
+        with self._content_epoch_lock:
+            return self._content_revision
+
+    @property
     def content_epoch(self) -> int:
         with self._content_epoch_lock:
-            return self._content_epoch
+            return self._content_revision
 
     # ==========================================
     # 兼容既有测试与调用方的属性代理
@@ -292,6 +305,15 @@ class WindowWatcher(QThread):
         with self._state_lock:
             self._translation_manager.line_cache = value
 
+    def _observe_empty_ocr_frame(self) -> None:
+        """连续两轮无文字才清空，兼顾及时消失和单帧 OCR 抖动。"""
+        self._empty_ocr_frames += 1
+        if self._empty_ocr_frames < 2 or not self._last_text:
+            return
+        self._last_text = ""
+        self.content_cleared.emit()
+        _log.info("连续两轮未识别到文字，已清空持续翻译显示")
+
     # ==========================================
     # 控制与生命周期
     # ==========================================
@@ -303,7 +325,8 @@ class WindowWatcher(QThread):
         self._display_mode = mode
         self._generation_tracker.reset()
         with self._content_epoch_lock:
-            self._content_epoch += 1
+            self._content_revision += 1
+            self._content_epoch = self._content_revision
         self._scene_text_state.clear()
         self._last_captured_frame = None
         self._frame_buffer.clear()
@@ -323,7 +346,8 @@ class WindowWatcher(QThread):
         self._capture_service.set_region(region)
         self._generation_tracker.reset()
         with self._content_epoch_lock:
-            self._content_epoch += 1
+            self._content_revision += 1
+            self._content_epoch = self._content_revision
         self._scene_text_state.clear()
         self._last_captured_frame = None
         self._frame_buffer.clear()
@@ -338,7 +362,8 @@ class WindowWatcher(QThread):
     def on_target_language_changed(self) -> None:
         """目标语言改变时重置检测器与缓存，强制当前帧重新翻译。"""
         with self._content_epoch_lock:
-            self._content_epoch += 1
+            self._content_revision += 1
+            self._content_epoch = self._content_revision
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=True)
         self._translation_manager.clear_cache()
@@ -365,40 +390,31 @@ class WindowWatcher(QThread):
             reference = self._annotation_clean_frame
 
         clean = image
-        mask_matches = mask is not None and mask.shape == image.shape[:2]
-        reference_matches = (
-            reference is not None and reference.shape == image.shape
-        )
-        if mask_matches and reference_matches:
+        if reference is None or reference.shape != image.shape:
+            with self._annotation_mask_lock:
+                self._annotation_clean_frame = image.copy()
+            return clean
+
+        if mask is not None:
             clean = image.copy()
             clean[mask] = reference[mask]
-        elif mask_matches:
-            try:
-                import cv2
-
-                clean = cv2.inpaint(
-                    image,
-                    mask.astype(np.uint8) * 255,
-                    2,
-                    cv2.INPAINT_TELEA,
-                )
-            except Exception:
-                clean = image.copy()
-
-        with self._annotation_mask_lock:
-            self._annotation_clean_frame = clean.copy()
         return clean
 
-    def _notify_cleared(self) -> None:
-        self._result_manager.dispatch_cleared()
-        _log.info("连续两轮未识别到文字，已清空持续翻译显示")
+    def _sync_clean_frame(self, image: np.ndarray) -> None:
+        """在更新遮罩前保存干净底图。"""
+        with self._annotation_mask_lock:
+            self._annotation_clean_frame = image.copy()
 
-    def _observe_empty_ocr_frame(self) -> None:
+    def _check_and_notify_cleared(self) -> None:
         """连续两轮无文字才清空，兼顾及时消失和单帧 OCR 抖动。"""
         with self._state_lock:
             event, _ = self._text_change_detector.observe([], 0.0)
         if event == "clear":
             self._notify_cleared()
+
+    def _notify_cleared(self) -> None:
+        self._result_manager.dispatch_cleared()
+        _log.info("连续两轮未识别到文字，已清空持续翻译显示")
 
     def stop(self) -> None:
         """停止监视并清空缓冲与世代。"""
@@ -406,11 +422,13 @@ class WindowWatcher(QThread):
         self._consumer_stop_event.set()
         self._generation_tracker.reset()
         with self._content_epoch_lock:
-            self._content_epoch += 1
+            self._content_revision += 1
+            self._content_epoch = self._content_revision
         self._frame_buffer.clear()
         self._scene_text_state.clear()
         self._last_captured_frame = None
         self._last_processed_epoch = 0
+        self._last_processed_work_rev = 0
         try:
             if hasattr(self._translator, "abort_inflight"):
                 try:
@@ -421,11 +439,53 @@ class WindowWatcher(QThread):
             pass
 
     def set_paused(self, paused: bool) -> None:
-        """暂停或恢复监视。"""
+        """暂停或恢复监视。
+        暂停时立即作废当前世代与内容版本，丢弃在途翻译，UI 冻结；
+        恢复时重置捕获基准，强制拉取最新帧刷新。
+        """
         if paused:
             self._paused.set()
+            self._generation_tracker.reset()
+            with self._content_epoch_lock:
+                self._content_revision += 1
+                self._content_epoch = self._content_revision
         else:
+            self._last_captured_frame = None
+            self._last_frame = None
             self._paused.clear()
+
+    def _is_content_invalidated(self, diff_res: Any, has_visual_change: bool) -> bool:
+        """检查变动是否需要作废当前在途内容 (PR 1 / Content Revision).
+        
+        判定原则：
+        1. 若画面没有发生任何变动，不作废；
+        2. 若发生场景级突变（changed_ratio >= 0.35 或 尺寸不符），100% 作废；
+        3. 若变动 ROI 区域与上一轮 OCR 识别到的任意既有文字框相交，说明字幕/文字发生增删改，100% 作废；
+        4. 若此前画面完全无文字，但现在出现有效变动（可能有新字幕出现），100% 作废；
+        5. 若画面变化仅局限于无文字的背景/边角（如游戏粒子、背景动画），绝不作废在途翻译，杜绝画面饥饿。
+        """
+        if not has_visual_change:
+            return False
+        if getattr(diff_res, "invalidates_content", False):
+            return True
+        ratio = getattr(diff_res, "changed_ratio", 0.0)
+        if ratio >= 0.35:
+            return True
+
+        existing_lines = self._scene_text_state.lines
+        if not existing_lines:
+            return True
+
+        roi_box = getattr(diff_res, "roi_box", None)
+        if roi_box is not None:
+            for line in existing_lines:
+                box = getattr(line, "box", None) or line
+                if _boxes_intersect(box, roi_box, margin=6):
+                    return True
+            # 变动区域完全与文字区域分离
+            return False
+
+        return True
 
     def _grab(self) -> tuple[tuple[int, int, int, int] | None, np.ndarray | None]:
         """按当前目标抓取屏幕或窗口。"""
@@ -507,33 +567,40 @@ class WindowWatcher(QThread):
                 try:
                     diff_res = self._frame_detector.detect(self._last_captured_frame, img)
                     has_visual_change = diff_res.has_changed
-                    invalidates_content = getattr(diff_res, "invalidates_content", has_visual_change)
                     roi_box = diff_res.roi_box
                     diff_ratio = diff_res.changed_ratio
                 except Exception:
+                    diff_res = None
                     has_visual_change = True
-                    invalidates_content = True
                     roi_box = None
                     diff_ratio = 1.0
 
-                if self._last_captured_frame is None or invalidates_content:
-                    with self._content_epoch_lock:
-                        self._content_epoch += 1
-                        current_epoch = self._content_epoch
-                    self._last_captured_frame = img
-                else:
-                    with self._content_epoch_lock:
-                        current_epoch = self._content_epoch
+                invalidates_content = (
+                    self._last_captured_frame is None
+                    or self._is_content_invalidated(diff_res, has_visual_change)
+                )
+
+                with self._content_epoch_lock:
                     if has_visual_change:
-                        self._last_captured_frame = img
+                        self._work_revision += 1
+                    if invalidates_content:
+                        self._content_revision += 1
+                    current_work_rev = self._work_revision
+                    current_content_rev = self._content_revision
+                    self._content_epoch = self._content_revision
+
+                if has_visual_change or self._last_captured_frame is None:
+                    self._last_captured_frame = img
 
                 packet = FramePacket(
                     frame=img,
-                    epoch=current_epoch,
+                    epoch=current_content_rev,
                     roi_box=roi_box,
                     timestamp=t0,
                     has_changed=has_visual_change,
                     changed_ratio=diff_ratio,
+                    work_revision=current_work_rev,
+                    content_revision=current_content_rev,
                 )
 
                 # 阶段 4: 压入 LatestFrameBuffer（削峰解耦，异步投递至推理消费线程）
@@ -589,12 +656,14 @@ class WindowWatcher(QThread):
 
                 if isinstance(pulled, FramePacket):
                     img = pulled.frame
-                    packet_epoch = pulled.epoch
+                    packet_epoch = pulled.content_revision or pulled.epoch
+                    packet_work_rev = pulled.work_revision
                     packet_roi = pulled.roi_box
                     has_visual_change = pulled.has_changed
                     packet_diff_ratio = pulled.changed_ratio
                 else:
                     img, packet_epoch = pulled
+                    packet_work_rev = packet_epoch
                     packet_roi = None
                     has_visual_change = True
                     packet_diff_ratio = 1.0
@@ -603,10 +672,13 @@ class WindowWatcher(QThread):
                 frame_gen_id = self._generation_tracker.next_generation()
 
                 # 3. 画面两阶段轻量差分检测（纯净算法，绝不被单像素噪声绕过）
-                # 修复 ContentEpoch 覆盖漏洞：若当前帧的 epoch 与上次推理处理的 epoch 不同，
-                # 说明在推理繁忙期间画面已发生实质视觉变动，即使此帧相对上一捕获帧已静止，对推理端也是全新内容！
+                # 双版本号加固 (PR 1 / Work Revision)：
+                # 若 packet_work_rev != self._last_processed_work_rev，说明在推理繁忙期间抓屏捕获到了变动帧！
+                # 即使该变动帧在缓冲队列中被后续的静态帧覆盖（has_visual_change=False），但由于 work_revision 是新的，
+                # 推理端绝不漏掉变动帧，立即触发处理，彻底杜绝 Latest-Frame-Wins 覆盖漏洞！
+                work_changed = (packet_work_rev != self._last_processed_work_rev)
                 epoch_changed = (packet_epoch != self._last_processed_epoch)
-                if epoch_changed:
+                if work_changed or epoch_changed:
                     diff_has_changed = True
                     roi_box = packet_roi
                     diff_ratio = packet_diff_ratio if packet_diff_ratio > 0.0 else 1.0
@@ -664,8 +736,9 @@ class WindowWatcher(QThread):
                         break
                     continue
 
-                # 仅在 OCR 成功执行后，才宣告该 epoch 已被成功消费，确保异常帧能被下一周期立即重试
+                # 仅在 OCR 成功执行后，才宣告该 work 与 epoch 已被成功消费，确保异常帧能被下一周期立即重试
                 self._last_processed_epoch = packet_epoch
+                self._last_processed_work_rev = packet_work_rev
 
                 # 8. 文本变化检测与空帧清空判定
                 with self._state_lock:

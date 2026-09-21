@@ -105,6 +105,7 @@ class Translator:
         self._cfg = cfg if cfg is not None else {}
         self._sessions: dict[str, requests.Session] = {}
         self._sessions_lock = threading.Lock()
+        self._cancel_events: dict[str, threading.Event] = {}
         # 初始化默认 session
         self._get_session("default")
         # llama-server 默认单 slot；同时也保护推理与 LRU 缓存。
@@ -207,12 +208,22 @@ class Translator:
                 break
         return text
 
+    def _get_cancel_event(self, tag: str = "default") -> threading.Event:
+        """获取指定会话标签的取消事件句柄（线程安全）。"""
+        with self._sessions_lock:
+            evt = self._cancel_events.get(tag)
+            if evt is None:
+                evt = threading.Event()
+                self._cancel_events[tag] = evt
+            return evt
+
     def _get_session(self, tag: str = "default") -> requests.Session:
-        """获取指定会话标签的 HTTP Session（线程安全）。"""
+        """获取指定会话标签的 HTTP Session（线程安全，彻底禁用环境代理）。"""
         with self._sessions_lock:
             s = self._sessions.get(tag)
             if s is None:
                 s = requests.Session()
+                s.trust_env = False  # 彻底禁止继承本地环境代理 (PR 3)
                 adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10, max_retries=1)
                 s.mount("http://", adapter)
                 s.mount("https://", adapter)
@@ -232,14 +243,22 @@ class Translator:
     def abort_inflight(self, tag: str | None = None) -> None:
         """非阻塞立即中断正在执行中的网络推理请求，使旧 watcher 毫秒级释放锁并退出。
 
-        重要修复：绝不争抢 self._lock，确保 UI 线程毫秒级返回，彻底杜绝 UI 卡死。
-        tag: 为指定会话标签（如 'watcher'）时仅中断该会话；为 None 时中断所有活动会话。
+        三重取消机制 (PR 2):
+        1. 触发 cancel_event.set()，使正在排队等锁的任务获得锁后立即短路退出，杜绝模型白算；
+        2. 触发底层 Session.close() 尝试打断活动 socket；
+        3. 绝不争抢 self._lock，确保 UI 线程毫秒级（<0.1ms）返回，彻底杜绝 UI 卡死。
         """
         with self._sessions_lock:
             if tag is None:
+                for evt in self._cancel_events.values():
+                    evt.set()
+                self._cancel_events.clear()
                 to_close = list(self._sessions.values())
                 self._sessions.clear()
             else:
+                evt = self._cancel_events.pop(tag, None)
+                if evt is not None:
+                    evt.set()
                 s = self._sessions.pop(tag, None)
                 to_close = [s] if s is not None else []
 
@@ -297,7 +316,14 @@ class Translator:
 
     def translate(self, text: str, target_language: str = "简体中文", session_tag: str = "default") -> str:
         """自动识别源语言，翻译为 target_language。"""
+        cancel_event = self._get_cancel_event(session_tag)
+        if cancel_event.is_set():
+            return ""
+
         with self._lock:
+            # 获得锁后双重校验：排队期间若已被取消（如旧 watcher 停止），立即短路退出
+            if cancel_event.is_set():
+                return ""
             text = self._sanitize(text)
             if not text:
                 return ""
@@ -412,12 +438,23 @@ class Translator:
             raise ValueError("翻译提示超过上下文上限，未发送不完整内容")
 
         session = self._get_session(session_tag)
+        cancel_event = self._get_cancel_event(session_tag)
+        if cancel_event.is_set():
+            return ""
+
+        model_name = self.model_id
+        if self._cfg.get("model_path"):
+            model_name = Path(str(self._cfg.get("model_path"))).stem
+
         last_err: Exception | None = None
         for attempt in range(2):
+            if cancel_event.is_set():
+                return ""
             try:
                 resp = session.post(
                     f"{self.base_url}/v1/chat/completions",
                     json={
+                        "model": model_name,
                         "messages": [
                             {"role": "system", "content": _SYSTEM_PROMPT},
                             {"role": "user", "content": prompt},
@@ -568,7 +605,13 @@ class Translator:
         备注模式会频繁多行 OCR：优先一次请求，避免动辄 N 次 llama 调用。
         命中行缓存的原文直接复用。
         """
+        cancel_event = self._get_cancel_event(session_tag)
+        if cancel_event.is_set():
+            return ["" for _ in lines]
+
         with self._lock:
+            if cancel_event.is_set():
+                return ["" for _ in lines]
             return self._translate_lines_locked(lines, target_language, session_tag=session_tag)
 
     def _translate_lines_locked(

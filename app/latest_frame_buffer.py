@@ -16,17 +16,29 @@ import numpy as np
 
 @dataclass
 class FramePacket:
-    """封装抓屏数据、内容版本与变动区域的帧数据包。
+    """封装抓屏数据、工作版本、内容版本与变动区域的帧数据包。
     
+    双版本号设计 (PR 1)：
+    - work_revision: 画面只要发生视觉变动即自增，保证 LatestFrameBuffer 覆盖后消费端知晓有新工作需处理；
+    - content_revision: 仅在场景突变或变动 ROI 命中已有字幕行时自增，用于淘汰旧在途翻译结果；
+    - epoch: 向后兼容属性，与 content_revision 保持同义。
     兼容性保证：支持迭代与索引解包 (img, epoch = packet)，保证与既有代码和测试 100% 兼容。
     """
 
     frame: np.ndarray
-    epoch: int
+    epoch: int = 0
     roi_box: tuple[int, int, int, int] | None = None
     timestamp: float = 0.0
     has_changed: bool = True
     changed_ratio: float = 0.0
+    work_revision: int = 0
+    content_revision: int = 0
+
+    def __post_init__(self):
+        if self.content_revision == 0 and self.epoch != 0:
+            object.__setattr__(self, "content_revision", self.epoch)
+        elif self.epoch == 0 and self.content_revision != 0:
+            object.__setattr__(self, "epoch", self.content_revision)
 
     def __iter__(self):
         yield self.frame

@@ -209,11 +209,11 @@ class QualityOfLifeTests(unittest.TestCase):
             self.assertEqual(bar.y(), 150 + 60 + 4)
             self.assertIsNone(bar._user_size)
 
-            # 缩放区域后再次同步
+            # 缩放区域后再次同步（当区域高度低于 _MIN_H 时，保底为 _MIN_H 以保证正文物理可见）
             smaller_region = (50, 80, 160, 40)
             bar.attach_below(smaller_region, outside=True, match_target_size=True)
             self.assertEqual(bar.width(), 160)
-            self.assertEqual(bar.height(), 40)
+            self.assertEqual(bar.height(), bar._MIN_H)
             self.assertEqual(bar.x(), 50)
             self.assertEqual(bar.y(), 80 + 40 + 4)
         finally:

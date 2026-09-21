@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 import numpy as np
 
-from app.frame_detector import FrameChangeDetector
+from app.frame_detector import FrameChangeDetector, FrameDiffResult
 from app.translation_manager import TranslationManager
 from app.llama_server import LlamaServer
 
@@ -72,6 +72,84 @@ class TestFourthAuditP1s(unittest.TestCase):
         with patch.object(server, "is_healthy", return_value=True), \
              patch.object(server, "check_model_match", return_value=True):
             self.assertTrue(server.is_ready(), "健康且模型匹配时返回 True")
+
+    def test_shape_mismatch_invalidates_content(self):
+        """P1 验证：窗口尺寸改变（shape mismatch）必须 100% 标记 invalidates_content=True。"""
+        detector = FrameChangeDetector()
+        prev = np.zeros((400, 600, 3), dtype=np.uint8)
+        curr = np.zeros((500, 700, 3), dtype=np.uint8)
+        res = detector.detect(prev, curr)
+        self.assertTrue(res.has_changed)
+        self.assertTrue(res.invalidates_content, "窗口尺寸变化必须强制宣告内容失效，防止旧翻译被当 fresh 上屏")
+
+    def test_dual_revisions_and_text_box_intersection(self):
+        """P0/P1 双版本号核心验证：变动 ROI 命中字幕行淘汰旧译文，背景晃动保留在途字幕。"""
+        from app.window_watcher import WindowWatcher
+        from app.scene_text_state import SceneTextState
+
+        watcher = WindowWatcher(
+            ocr=MagicMock(),
+            translator=MagicMock(),
+            cfg={},
+            profile="region",
+            hwnd=None,
+            region=(0, 0, 1920, 1080),
+        )
+        # 预先注入上一轮识别到的字幕行（位于底部 y=900~950）
+        mock_line = MagicMock()
+        mock_line.box = [400, 900, 1200, 950]
+        watcher.scene_text_state.update_full([mock_line])
+
+        # 场景 A: 字幕区域发生变动（ROI: [450, 910, 800, 940]）
+        diff_sub = FrameDiffResult(
+            has_changed=True,
+            changed_ratio=0.03,  # 仅占 3% 画面
+            changed_pixels=5000,
+            roi_box=(450, 910, 800, 940),
+            invalidates_content=False,
+        )
+        self.assertTrue(
+            watcher._is_content_invalidated(diff_sub, True),
+            "变动 ROI 与字幕行相交时，必须判定 invalidates_content=True（作废旧字幕在途请求）"
+        )
+
+        # 场景 B: 仅背景动画变动（ROI: [100, 100, 300, 300]，完全远离字幕行）
+        diff_bg = FrameDiffResult(
+            has_changed=True,
+            changed_ratio=0.05,  # 占 5% 画面
+            changed_pixels=8000,
+            roi_box=(100, 100, 300, 300),
+            invalidates_content=False,
+        )
+        self.assertFalse(
+            watcher._is_content_invalidated(diff_bg, True),
+            "背景晃动且未触碰字幕行时，绝不作废在途字幕，彻底根除 Result Starvation"
+        )
+
+    def test_pause_freezes_generation_and_bumps_content_revision(self):
+        """P2 验证：暂停时立即作废在途世代与内容版本，恢复时清空底图以强制刷新。"""
+        from app.window_watcher import WindowWatcher
+
+        watcher = WindowWatcher(
+            ocr=MagicMock(),
+            translator=MagicMock(),
+            cfg={},
+            profile="region",
+            hwnd=None,
+            region=(0, 0, 1920, 1080),
+        )
+        rev0 = watcher.content_revision
+        gen0 = watcher.generation_tracker.next_generation()
+
+        # 暂停
+        watcher.set_paused(True)
+        self.assertGreater(watcher.content_revision, rev0, "暂停时必须自增 content_revision 以作废在途结果")
+        self.assertFalse(watcher.generation_tracker.is_active(gen0), "暂停时必须重置世代使得在途请求变 stale")
+
+        # 恢复
+        watcher._last_captured_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        watcher.set_paused(False)
+        self.assertIsNone(watcher._last_captured_frame, "恢复时必须清空上一捕获帧，强制执行全量刷新")
 
 
 if __name__ == "__main__":

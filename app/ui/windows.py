@@ -997,9 +997,9 @@ class SettingsWindow(_DraggableMixin, QWidget):
         except (OSError, ValueError):
             return str(value).strip().casefold()
 
-    def _reload_model_choices(self):
-        """每次打开设置都重新扫描 runtime/models，下载后无需重启即可看到列表。"""
-        current = str(self._cfg.get("model_path") or "").strip()
+    def _reload_model_choices(self, select_path: str | None = None):
+        """每次打开设置都重新扫描 runtime/models，下载或导入后无需重启即可看到列表。"""
+        current = select_path if select_path else str(self._cfg.get("model_path") or "").strip()
         current_key = self._model_path_key(current) if current else ""
         models = available_translation_models()
 
@@ -1058,25 +1058,42 @@ class SettingsWindow(_DraggableMixin, QWidget):
             return
 
         dest = USER_MODELS / p.name
+        target_path = dest
         if p.resolve() != dest.resolve():
+            USER_MODELS.mkdir(parents=True, exist_ok=True)
+            temp_dest = dest.with_suffix(".importing")
             try:
-                USER_MODELS.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(p, dest)
+                # 写入带 .importing 后缀的临时文件，拷贝完成后原子替换，杜绝残缺模型文件与中断脏数据
+                shutil.copy2(p, temp_dest)
+                if not is_gguf_model(temp_dest):
+                    if temp_dest.exists():
+                        temp_dest.unlink()
+                    raise ValueError("拷贝后模型文件损坏或不完整")
+                os.replace(temp_dest, dest)
+                target_path = dest
             except Exception as e:
+                try:
+                    if temp_dest.exists():
+                        temp_dest.unlink()
+                except Exception:
+                    pass
                 topmost_message(
                     "warning",
                     self._tr("title_warning"),
-                    f"复制模型文件失败: {e}" if self._lang == "zh" else f"Failed to copy model file: {e}",
+                    f"导入模型文件失败: {e}" if self._lang == "zh" else f"Failed to import model file: {e}",
                     parent=self,
                 )
                 return
 
-        self._cfg["model_path"] = to_portable_path(dest)
-        self._reload_model_choices()
+        # 核心加固 (PR 5)：绝不提前修改 self._cfg["model_path"]，保留 real old_model！
+        # 仅刷新下拉框并高亮选中导入的模型，待用户点击保存时由 _save() 统一触发变更检测与重启提示
+        self._reload_model_choices(select_path=to_portable_path(target_path))
         topmost_message(
             "information",
             self._tr("title_info"),
-            f"已成功导入模型: {p.name}" if self._lang == "zh" else f"Successfully imported model: {p.name}",
+            f"已成功导入模型: {p.name}，点击“保存”后将提示重启生效。"
+            if self._lang == "zh"
+            else f"Successfully imported model: {p.name}. Click 'Save' to apply restart.",
             parent=self,
         )
 

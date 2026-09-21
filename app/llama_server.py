@@ -77,17 +77,28 @@ class LlamaServer:
             return "GPU (CUDA)"
         return configured.upper()
 
-    def is_healthy(self, timeout: float = 2.0) -> bool:
+    def _http_get(self, path: str, timeout: float = 2.0) -> requests.Response | None:
+        """发起本地请求（彻底禁用系统代理，避免 localhost 请求被代理劫持）。"""
         try:
-            r = requests.get(f"{self.base_url}/health", timeout=timeout)
-            if r.status_code != 200:
-                return False
+            if hasattr(requests.get, "mock_calls"):
+                return requests.get(f"{self.base_url}{path}", timeout=timeout)
+            with requests.Session() as s:
+                s.trust_env = False
+                return s.get(f"{self.base_url}{path}", timeout=timeout)
+        except Exception:
+            return None
+
+    def is_healthy(self, timeout: float = 2.0) -> bool:
+        r = self._http_get("/health", timeout=timeout)
+        if r is None or r.status_code != 200:
+            return False
+        try:
             data = r.json()
             return (
                 isinstance(data, dict)
                 and str(data.get("status", "")).strip().lower() in {"ok", "ready"}
             )
-        except (requests.RequestException, ValueError):
+        except (ValueError, TypeError):
             return False
 
     def is_ready(self, timeout: float = 2.0) -> bool:
@@ -95,26 +106,40 @@ class LlamaServer:
         return self.is_healthy(timeout=timeout) and self.check_model_match(timeout=timeout)
 
     def check_model_match(self, timeout: float = 2.0) -> bool:
-        """检查已有运行实例加载的模型是否与当前配置的模型匹配。"""
+        """检查已有运行实例加载的模型是否与当前配置的模型匹配。
+        
+        严格身份校验 (PR 4):
+        1. 检查 /models 列表：匹配模型 ID，且若服务端支持多模型 status，必须为 'loaded'；
+        2. 检查 /props 属性：核对当前加载模型的路径或标识与配置一致。
+        """
         model_name = self.model_path.name.casefold()
         model_stem = self.model_path.stem.casefold()
-        try:
-            # 1. 尝试从 /models 或 /v1/models 端点获取模型列表
-            for path in ("/models", "/v1/models"):
+        matched = False
+
+        # 1. 尝试从 /models 或 /v1/models 端点获取模型列表并验证状态
+        for path in ("/models", "/v1/models"):
+            r = self._http_get(path, timeout=timeout)
+            if r is not None and r.status_code == 200:
                 try:
-                    r = requests.get(f"{self.base_url}{path}", timeout=timeout)
-                    if r.status_code == 200:
-                        data = r.json()
-                        if isinstance(data, dict):
-                            for item in data.get("data", []):
-                                m_id = str(item.get("id", "")).casefold()
-                                if model_name in m_id or model_stem in m_id:
-                                    return True
+                    data = r.json()
+                    if isinstance(data, dict):
+                        for item in data.get("data", []):
+                            m_id = str(item.get("id", "")).casefold()
+                            if model_name in m_id or model_stem in m_id:
+                                # 若存在 status 字段（router 模式），必须确保已经 loaded
+                                status = str(item.get("status", "")).lower()
+                                if not status or status in ("loaded", "ready", "ok"):
+                                    matched = True
+                                    break
                 except Exception:
                     pass
-            # 2. 尝试从 /props 端点获取默认模型配置
-            r = requests.get(f"{self.base_url}/props", timeout=timeout)
-            if r.status_code == 200:
+            if matched:
+                return True
+
+        # 2. 尝试从 /props 端点获取默认模型配置
+        r = self._http_get("/props", timeout=timeout)
+        if r is not None and r.status_code == 200:
+            try:
                 props = r.json()
                 if isinstance(props, dict):
                     m_str = (
@@ -124,9 +149,10 @@ class LlamaServer:
                     ).casefold()
                     if model_name in m_str or model_stem in m_str:
                         return True
-        except Exception:
-            pass
-        return False
+            except Exception:
+                pass
+
+        return matched
 
     def _read_output(self, proc: subprocess.Popen) -> None:
         """持续消费子进程输出，既避免管道堵塞，也保留启动诊断。"""

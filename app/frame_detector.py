@@ -85,6 +85,7 @@ class FrameChangeDetector:
                 changed_ratio=1.0,
                 changed_pixels=int(current.size),
                 roi_box=(0, 0, w, h),
+                invalidates_content=True,
             )
 
         s = self.step
