@@ -91,16 +91,28 @@ RUNTIME_DIR = ROOT / "runtime"
 RUNTIME_LLAMA = RUNTIME_DIR / "llama"
 RUNTIME_MODELS = RUNTIME_DIR / "models"
 RUNTIME_OCR = RUNTIME_DIR / "ocr"
+USER_MODELS = DATA_DIR / "models"
+USER_MODELS.mkdir(parents=True, exist_ok=True)
+
 DEFAULT_GGUF_NAME = "HY-MT1.5-1.8B-Q4_K_M.gguf"
 DEFAULT_MODEL_REL = f"runtime/models/{DEFAULT_GGUF_NAME}"
 DEFAULT_LLAMA_REL = "runtime/llama"
 
 
 def resolve_path(value: str | Path) -> Path:
-    """相对路径相对于 ROOT；绝对路径原样 resolve。"""
+    """相对路径优先相对于 ROOT，若不存在则尝试 DATA_DIR / USER_MODELS；绝对路径原样 resolve。"""
     p = Path(value)
     if not p.is_absolute():
-        p = ROOT / p
+        candidate_root = (ROOT / p).resolve()
+        if candidate_root.exists():
+            return candidate_root
+        candidate_user = (DATA_DIR / p).resolve()
+        if candidate_user.exists():
+            return candidate_user
+        candidate_model = (USER_MODELS / p.name).resolve()
+        if candidate_model.exists():
+            return candidate_model
+        return candidate_root
     return p.resolve()
 
 
@@ -114,7 +126,10 @@ def to_portable_path(value: str | Path) -> str:
     try:
         return str(p.relative_to(ROOT)).replace("\\", "/")
     except ValueError:
-        return str(p)
+        try:
+            return str(p.relative_to(DATA_DIR)).replace("\\", "/")
+        except ValueError:
+            return str(p)
 
 
 def is_gguf_model(path: str | Path) -> bool:
@@ -130,26 +145,37 @@ def is_gguf_model(path: str | Path) -> bool:
 
 
 def available_translation_models(models_dir: str | Path | None = None) -> list[Path]:
-    """列出 models 顶层可选择的有效 GGUF，避免把下载中的残缺文件放进设置。"""
-    directory = Path(models_dir) if models_dir is not None else RUNTIME_MODELS
-    try:
-        models = [path for path in directory.iterdir() if is_gguf_model(path)]
-    except OSError:
-        return []
-    return sorted(models, key=lambda path: path.name.casefold())
+    """列出 models 顶层可选择的有效 GGUF，支持同时扫描内置 runtime 与用户目录。"""
+    if models_dir is not None:
+        dirs = [Path(models_dir)]
+    else:
+        dirs = [RUNTIME_MODELS, USER_MODELS]
+    found: dict[str, Path] = {}
+    for d in dirs:
+        try:
+            for path in d.iterdir():
+                if is_gguf_model(path):
+                    if path.name not in found:
+                        found[path.name] = path
+        except OSError:
+            pass
+    return sorted(found.values(), key=lambda path: path.name.casefold())
 
 
 def runtime_status() -> dict:
     """诊断用：内置资源是否齐全。"""
-    gguf = RUNTIME_MODELS / DEFAULT_GGUF_NAME
+    models = available_translation_models()
+    gguf = resolve_path(DEFAULT_MODEL_REL)
+    model_file = gguf.is_file() or len(models) > 0
+    actual_model_path = str(gguf) if gguf.is_file() else (str(models[0]) if models else str(gguf))
     return {
         "root": str(ROOT),
         "llama_server": (RUNTIME_LLAMA / "llama-server.exe").is_file(),
-        "model": gguf.is_file(),
+        "model": model_file,
         "ocr_models": all((RUNTIME_OCR / name).is_file() for name in (
             "manifest.json", "det.onnx", "rec.onnx", "characters.txt"
         )),
         "llama_dir": str(RUNTIME_LLAMA),
-        "model_path": str(gguf),
+        "model_path": actual_model_path,
         "ocr": str(RUNTIME_OCR),
     }

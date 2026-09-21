@@ -109,30 +109,37 @@ class Storage:
     def _history_worker_loop(self) -> None:
         batch: list[tuple[float, str, str, str, Any]] = []
         last_flush = time.time()
-        while not self._stop_event.is_set() or not self._history_queue.empty():
-            try:
-                item = self._history_queue.get(timeout=0.05)
-                if item is not None:
-                    if isinstance(item, tuple) and len(item) == 2 and item[0] == "__FLUSH__":
-                        if batch:
-                            self._commit_history_batch(batch)
-                            batch = []
-                            last_flush = time.time()
-                        item[1].set()
-                        continue
-                    batch.append(item)
-            except queue.Empty:
-                pass
+        try:
+            while not self._stop_event.is_set() or not self._history_queue.empty():
+                try:
+                    item = self._history_queue.get(timeout=0.05)
+                    if item is not None:
+                        if isinstance(item, tuple) and len(item) == 2 and item[0] == "__FLUSH__":
+                            if batch:
+                                self._commit_history_batch(batch)
+                                batch = []
+                                last_flush = time.time()
+                            item[1].set()
+                            continue
+                        batch.append(item)
+                except queue.Empty:
+                    pass
 
-            now = time.time()
-            if (
-                (len(batch) >= self.batch_size)
-                or (batch and now - last_flush >= self.flush_interval)
-                or (self._stop_event.is_set() and batch)
-            ):
-                self._commit_history_batch(batch)
-                batch = []
-                last_flush = now
+                now = time.time()
+                if (
+                    (len(batch) >= self.batch_size)
+                    or (batch and now - last_flush >= self.flush_interval)
+                    or (self._stop_event.is_set() and batch)
+                ):
+                    self._commit_history_batch(batch)
+                    batch = []
+                    last_flush = now
+        finally:
+            if batch:
+                try:
+                    self._commit_history_batch(batch)
+                except Exception:
+                    pass
 
     def _commit_history_batch(self, batch: list) -> None:
         if not batch:

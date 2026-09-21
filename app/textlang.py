@@ -65,40 +65,34 @@ def is_already_target_language(text: str, target_language: str) -> bool:
     ratio = {k: v / total for k, v in c.items()}
 
     if "中文" in target:
-        # 简/繁体：汉字占优；允许少量英文缩写
+        # 中文目标：必须汉字明显占优，且不含假名/谚文/西里尔/泰文等，且英文字母不得占主导
         if c["hira"] or c["kata"] or c["hangul"] or c["cyr"] or c["arab"] or c["thai"]:
             return False
-        return ratio["cjk"] >= 0.55
-
-    if target in ("英语", "法语", "德语", "西班牙语", "葡萄牙语", "意大利语"):
-        if c["cjk"] or c["hira"] or c["kata"] or c["hangul"] or c["cyr"] or c["arab"] or c["thai"]:
+        # 如果包含较多拉丁字母（如未翻译的英文长句），不跳过
+        if c["latin"] > 2 and ratio["latin"] > 0.3:
             return False
-        return ratio["latin"] >= 0.7
+        return ratio["cjk"] >= 0.6
 
     if target == "日语":
-        # 假名是日语强特征；纯汉字也可能是中文，不跳过
+        # 假名是日语专属强特征；纯汉字也可能是中文，必须含假名才确认是日语
         kana = c["hira"] + c["kata"]
         if kana >= 1 and (kana + c["cjk"]) / total >= 0.5:
             return True
         return False
 
     if target == "韩语":
-        return ratio["hangul"] >= 0.55
+        return ratio["hangul"] >= 0.5
 
     if target == "俄语":
-        return ratio["cyr"] >= 0.55
+        return ratio["cyr"] >= 0.5
 
     if target == "阿拉伯语":
-        return ratio["arab"] >= 0.55
+        return ratio["arab"] >= 0.5
 
     if target == "泰语":
-        return ratio["thai"] >= 0.55
+        return ratio["thai"] >= 0.5
 
-    if target == "越南语":
-        # 国语字以拉丁+声调为主
-        if c["cjk"] or c["hira"] or c["hangul"]:
-            return False
-        return ratio["latin"] >= 0.65
-
-    # 未知目标语：不跳过
+    # 关键修复：拉丁语系（英语、法语、德语、西班牙语、葡萄牙语、意大利语、越南语）之间
+    # 字符集高度重叠，轻量字符计数无法区分具体语种。
+    # 严格遵循「宁可漏判多译，绝不误判跳过」原则，一律不执行跳过，确保英->西、法->英等正常翻译！
     return False

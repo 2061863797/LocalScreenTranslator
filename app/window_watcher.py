@@ -335,6 +335,17 @@ class WindowWatcher(QThread):
         self._last_processed_epoch = 0
         self.set_annotation_mask(None, reset_reference=True)
 
+    def on_target_language_changed(self) -> None:
+        """目标语言改变时重置检测器与缓存，强制当前帧重新翻译。"""
+        with self._content_epoch_lock:
+            self._content_epoch += 1
+        with self._state_lock:
+            self._text_change_detector.reset(clear_cache=True)
+        self._translation_manager.clear_cache()
+        self._ocr_stabilizer.reset()
+        self._last_frame = None
+        self._last_captured_frame = None
+
     def set_annotation_mask(
         self, mask: np.ndarray | None, *, reset_reference: bool = False
     ) -> None:
@@ -402,7 +413,10 @@ class WindowWatcher(QThread):
         self._last_processed_epoch = 0
         try:
             if hasattr(self._translator, "abort_inflight"):
-                self._translator.abort_inflight()
+                try:
+                    self._translator.abort_inflight(tag="watcher")
+                except TypeError:
+                    self._translator.abort_inflight()
         except Exception:
             pass
 
@@ -510,6 +524,8 @@ class WindowWatcher(QThread):
                 else:
                     with self._content_epoch_lock:
                         current_epoch = self._content_epoch
+                    if has_visual_change:
+                        self._last_captured_frame = img
 
                 packet = FramePacket(
                     frame=img,

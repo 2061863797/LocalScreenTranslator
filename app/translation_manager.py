@@ -90,9 +90,15 @@ class SubtitleIncrementalTranslator:
 
         if self.translator is not None:
             if hasattr(self.translator, "translate_lines"):
-                return self.translator.translate_lines(lines, target_language)
+                try:
+                    return self.translator.translate_lines(lines, target_language, session_tag="watcher")
+                except TypeError:
+                    return self.translator.translate_lines(lines, target_language)
             elif hasattr(self.translator, "translate"):
-                return [self.translator.translate(line, target_language) for line in lines]
+                try:
+                    return [self.translator.translate(line, target_language, session_tag="watcher") for line in lines]
+                except TypeError:
+                    return [self.translator.translate(line, target_language) for line in lines]
 
         # 默认回退（用于独立/测试环境）
         return [f"[{target_language}]{line}" for line in lines]
@@ -183,7 +189,10 @@ class TranslationManager:
         with self._cache_lock:
             if len(self._line_cache) > limit:
                 active = set(active_lines)
-                self._line_cache = {k: v for k, v in self._line_cache.items() if k in active}
+                self._line_cache = {
+                    k: v for k, v in self._line_cache.items()
+                    if (k[0] if isinstance(k, tuple) else k) in active
+                }
 
     def translate_subtitle_lines(
         self,
@@ -213,7 +222,10 @@ class TranslationManager:
                 return ""
             # 持续字幕模式下输入为视觉段落，优先保证跨行自然语意连贯性与两级持久化缓存
             if self.translator is not None and hasattr(self.translator, "translate"):
-                return str(self.translator.translate(raw_text, target_language))
+                try:
+                    return str(self.translator.translate(raw_text, target_language, session_tag="watcher"))
+                except TypeError:
+                    return str(self.translator.translate(raw_text, target_language))
             lines = [line.strip() for line in text_or_lines.splitlines() if line.strip()]
             sub, _ = self.subtitle_translator.translate_subtitle_lines(lines, target_language)
             return sub
@@ -265,10 +277,11 @@ class TranslationManager:
             for s in srcs:
                 if not s:
                     continue
-                if s in cache:
+                cache_key = (s, target_language)
+                if cache_key in cache or s in cache:
                     continue
                 if skip_target and is_already_target_language(s, target_language):
-                    cache[s] = _SKIP_TARGET
+                    cache[cache_key] = _SKIP_TARGET
                     skipped += 1
                     continue
                 todo_text.append(s)
@@ -277,16 +290,22 @@ class TranslationManager:
         if todo_text and can_run:
             unique = list(dict.fromkeys(todo_text))
             if self.translator is not None and hasattr(self.translator, "translate_lines"):
-                trs = self.translator.translate_lines(unique, target_language)
+                try:
+                    trs = self.translator.translate_lines(unique, target_language, session_tag="watcher")
+                except TypeError:
+                    trs = self.translator.translate_lines(unique, target_language)
             elif self.translator is not None and hasattr(self.translator, "translate"):
-                trs = [self.translator.translate(u, target_language) for u in unique]
+                try:
+                    trs = [self.translator.translate(u, target_language, session_tag="watcher") for u in unique]
+                except TypeError:
+                    trs = [self.translator.translate(u, target_language) for u in unique]
             else:
                 trs = [f"[{target_language}]{u}" for u in unique]
 
             with self._cache_lock:
                 for s, tr in zip(unique, trs):
                     if tr:
-                        self._line_cache[s] = tr
+                        self._line_cache[(s, target_language)] = tr
                 self.prune_cache(srcs)
 
         items: list[tuple[Any, str]] = []
@@ -297,7 +316,9 @@ class TranslationManager:
             for ln, s in zip(lines, srcs):
                 if not s:
                     continue
-                tr = cache.get(s, "")
+                tr = cache.get((s, target_language))
+                if tr is None:
+                    tr = cache.get(s, "")
                 if not tr or tr == _SKIP_TARGET:
                     continue
                 box = ln.box if hasattr(ln, "box") else getattr(ln, "box", None)

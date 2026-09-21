@@ -116,23 +116,17 @@ class FrameChangeDetector:
 
             diff = cv2.absdiff(curr_gray, prev_gray)
         else:
-            # Fallback pure NumPy integer arithmetic
+            # Fallback pure NumPy integer arithmetic (diff-first vectorization)
             if curr_sub.ndim == 3:
-                prev_gray = (
-                    prev_sub[:, :, 0].astype(np.int32) * 29
-                    + prev_sub[:, :, 1].astype(np.int32) * 150
-                    + prev_sub[:, :, 2].astype(np.int32) * 77
-                ) >> 8
-                curr_gray = (
-                    curr_sub[:, :, 0].astype(np.int32) * 29
-                    + curr_sub[:, :, 1].astype(np.int32) * 150
-                    + curr_sub[:, :, 2].astype(np.int32) * 77
-                ) >> 8
+                c0 = curr_sub[:, :, 0].astype(np.int32)
+                c1 = curr_sub[:, :, 1].astype(np.int32)
+                c2 = curr_sub[:, :, 2].astype(np.int32)
+                p0 = prev_sub[:, :, 0].astype(np.int32)
+                p1 = prev_sub[:, :, 1].astype(np.int32)
+                p2 = prev_sub[:, :, 2].astype(np.int32)
+                diff = np.abs(((c2 - p2) * 77 + (c1 - p1) * 150 + (c0 - p0) * 29) >> 8)
             else:
-                prev_gray = prev_sub.astype(np.int32)
-                curr_gray = curr_sub.astype(np.int32)
-
-            diff = np.abs(curr_gray - prev_gray)
+                diff = np.abs(curr_sub.astype(np.int32) - prev_sub.astype(np.int32))
 
         mask = diff > self.pixel_threshold
         changed_count = int(np.count_nonzero(mask))
@@ -157,8 +151,9 @@ class FrameChangeDetector:
                 max(1, int(total_sub_pixels * 0.05)),
             )
 
-        # 高敏感视觉失效检测：只要检测到哪怕微小但真实的像素变化，立即标记失效，杜绝旧译文短暂上屏
-        is_invalidated = changed_count >= 1
+        # 场景级画面突变检测：仅当全图出现大面积更迭（如翻页、切屏）时才判定内容失效
+        # 微小噪点、光标闪烁及普通局部文字增量绝对不使内容失效，根除 Result Starvation
+        is_major_scene_cut = ratio >= 0.35
 
         # Filter cursor blink and small video/compression noise for heavy OCR trigger
         if changed_count < effective_min_pixels or ratio < self.min_changed_ratio:
@@ -167,22 +162,27 @@ class FrameChangeDetector:
                 changed_ratio=ratio,
                 changed_pixels=changed_count,
                 roi_box=None,
-                invalidates_content=is_invalidated,
+                invalidates_content=False,
             )
 
-        # Compute ROI bounding box in downsampled space and scale back by step factor
-        y_indices, x_indices = np.nonzero(mask)
-        x1 = int(x_indices.min() * s)
-        y1 = int(y_indices.min() * s)
-        x2 = int((x_indices.max() + 1) * s)
-        y2 = int((y_indices.max() + 1) * s)
-
-        roi_box = (max(0, x1), max(0, y1), min(w, x2), min(h, y2))
+        # 投影法极速求 ROI bounding box（O(H+W) vs O(H*W)，无大数组内存分配）
+        row_mask = np.any(mask, axis=1)
+        col_mask = np.any(mask, axis=0)
+        row_indices = np.flatnonzero(row_mask)
+        col_indices = np.flatnonzero(col_mask)
+        if row_indices.size > 0 and col_indices.size > 0:
+            x1 = int(col_indices[0] * s)
+            y1 = int(row_indices[0] * s)
+            x2 = int((col_indices[-1] + 1) * s)
+            y2 = int((row_indices[-1] + 1) * s)
+            roi_box = (max(0, x1), max(0, y1), min(w, x2), min(h, y2))
+        else:
+            roi_box = None
 
         return FrameDiffResult(
             has_changed=True,
             changed_ratio=ratio,
             changed_pixels=changed_count,
             roi_box=roi_box,
-            invalidates_content=True,
+            invalidates_content=is_major_scene_cut,
         )

@@ -157,7 +157,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
     _SCROLL_W = 14
     _GRIP = 18
     _MIN_W = 100
-    _MIN_H = 32
+    _MIN_H = 40
     _DEFAULT_H = 100
     _DEFAULT_FONT_SIZE = 16
 
@@ -430,9 +430,11 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
 
     def _pad_top(self) -> int:
         ctrl_h = 28
-        if hasattr(self, "_ctrl"):
+        ctrl_bottom = 32
+        if hasattr(self, "_ctrl") and self._ctrl is not None:
             ctrl_h = self._ctrl.height() if self._ctrl.height() > 0 else 28
-        return max(34, ctrl_h + 6)
+            ctrl_bottom = self._ctrl.y() + ctrl_h
+        return max(34, ctrl_bottom + 2)
 
     def _text_rect_size(self) -> QSize:
         """正文可用区域（为滚动条留出右边距，为顶部控制条留出空间）。"""

@@ -434,7 +434,9 @@ class SettingsWindow(_DraggableMixin, QWidget):
         max_tokens_layout.addStretch(1)
 
         self._model_file = QComboBox()
-        self._model_file.setMinimumContentsLength(28)
+        self._model_file.setMinimumContentsLength(24)
+        self._btn_import_model = QPushButton()
+        self._btn_import_model.clicked.connect(self._on_import_model)
         self._model_note = QLabel()
         self._model_note.setWordWrap(True)
         self._model_note.setStyleSheet("color:#aaa;font-size:12px;")
@@ -626,6 +628,12 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._card_adv_title.setText(tr("card_advanced"))
         self._card_adv_hint.setText(tr("card_advanced_hint"))
         self._lab_model_file.setText(tr("model_file"))
+        self._btn_import_model.setText("导入模型" if self._lang == "zh" else "Import Model")
+        self._btn_import_model.setToolTip(
+            "选择本地 .gguf 模型文件并自动导入至用户模型目录"
+            if self._lang == "zh"
+            else "Select a local .gguf model and import to user models directory"
+        )
         self._model_file.setToolTip(
             tr("model_file_tip", directory=to_portable_path(RUNTIME_MODELS))
         )
@@ -824,7 +832,13 @@ class SettingsWindow(_DraggableMixin, QWidget):
 
     def _page_advanced(self) -> QWidget:
         card, lay, self._card_adv_title, self._card_adv_hint = _settings_card("", "")
-        r0, self._lab_model_file = _form_row("", self._model_file)
+        model_row_widget = QWidget()
+        model_row_lay = QHBoxLayout(model_row_widget)
+        model_row_lay.setContentsMargins(0, 0, 0, 0)
+        model_row_lay.setSpacing(6)
+        model_row_lay.addWidget(self._model_file, 1)
+        model_row_lay.addWidget(self._btn_import_model, 0)
+        r0, self._lab_model_file = _form_row("", model_row_widget)
         r1, self._lab_llama_device = _form_row("", self._llama_device)
         r2, self._lab_max_tokens = _form_row("max_tokens", self._max_tokens_widget)
         lay.addLayout(r0)
@@ -1018,6 +1032,53 @@ class SettingsWindow(_DraggableMixin, QWidget):
                 current_index = 0
         self._model_file.setCurrentIndex(current_index)
         self._model_file.blockSignals(False)
+
+    def _on_import_model(self):
+        """支持用户从任意位置选择 .gguf 模型文件并自动导入至 USER_MODELS。"""
+        from PySide6.QtWidgets import QFileDialog
+        from ..paths import USER_MODELS, is_gguf_model, to_portable_path
+        import shutil
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 GGUF 模型文件" if self._lang == "zh" else "Select GGUF Model File",
+            "",
+            "GGUF 模型 (*.gguf);;所有文件 (*.*)" if self._lang == "zh" else "GGUF Model (*.gguf);;All Files (*.*)",
+        )
+        if not file_path:
+            return
+        p = Path(file_path)
+        if not is_gguf_model(p):
+            topmost_message(
+                "warning",
+                self._tr("title_warning"),
+                "所选文件不是合法的 GGUF 模型文件。" if self._lang == "zh" else "Selected file is not a valid GGUF model.",
+                parent=self,
+            )
+            return
+
+        dest = USER_MODELS / p.name
+        if p.resolve() != dest.resolve():
+            try:
+                USER_MODELS.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(p, dest)
+            except Exception as e:
+                topmost_message(
+                    "warning",
+                    self._tr("title_warning"),
+                    f"复制模型文件失败: {e}" if self._lang == "zh" else f"Failed to copy model file: {e}",
+                    parent=self,
+                )
+                return
+
+        self._cfg["model_path"] = to_portable_path(dest)
+        self._reload_model_choices()
+        topmost_message(
+            "information",
+            self._tr("title_info"),
+            f"已成功导入模型: {p.name}" if self._lang == "zh" else f"Successfully imported model: {p.name}",
+            parent=self,
+        )
 
     def _on_hotkey_recording(self, on: bool):
         """录入热键时暂停全局监听，避免与输入框抢键。"""
@@ -1310,7 +1371,7 @@ class InputTranslateWindow(_DraggableMixin, QWidget):
     无边框半透明（与实时字幕同款），可拖动；点"固定"锁定位置防误拖。
     """
 
-    def __init__(self, translator, cfg: dict, ensure_server=None):
+    def __init__(self, translator, cfg: dict, ensure_server=None, on_target_language_changed=None):
         super().__init__()
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -1323,6 +1384,7 @@ class InputTranslateWindow(_DraggableMixin, QWidget):
         self._translator = translator
         self._cfg = cfg
         self._ensure_server = ensure_server  # 可选 () -> bool
+        self._on_target_language_changed = on_target_language_changed
         self._pinned = False
         self._worker: _TranslateWorker | None = None
         self._block_lang_signal = False
@@ -1430,6 +1492,11 @@ class InputTranslateWindow(_DraggableMixin, QWidget):
             return
         self._cfg["target_language"] = lang
         config.save(self._cfg)
+        if callable(self._on_target_language_changed):
+            try:
+                self._on_target_language_changed(lang)
+            except Exception:
+                pass
         self._go()
 
     def sync_language_from_cfg(self):

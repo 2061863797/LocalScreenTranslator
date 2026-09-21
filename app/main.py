@@ -4,6 +4,7 @@
 import sys
 import threading
 import time
+from typing import Any
 
 from PySide6.QtCore import QEventLoop, QMimeData, QObject, QSharedMemory, QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QPixmap
@@ -141,6 +142,7 @@ class App:
         # 当前会话是否备注模式（与 cfg 同步，便于运行中切换）
         self._watch_annotate: bool | None = None
         self._watch_paused = False
+        self._last_target_language = str(self.cfg.get("target_language", "简体中文"))
 
         # 热键先于设置窗：录入热键时需 pause 全局监听
         self.hotkeys = HotkeyManager(self.cfg)
@@ -156,7 +158,10 @@ class App:
             on_retry_runtime=self._retry_runtime,
         )
         self.translate_win = InputTranslateWindow(
-            self.translator, self.cfg, ensure_server=self._ensure_server
+            self.translator,
+            self.cfg,
+            ensure_server=self._ensure_server,
+            on_target_language_changed=self._on_target_language_changed,
         )
         self.history_win = HistoryWindow(
             self.storage,
@@ -196,6 +201,8 @@ class App:
         self._word_copy_phase = 0
         self._word_copy_kinds: tuple[str, ...] = ()
         self._watcher: WindowWatcher | None = None
+        self._watch_session_id: int = 0
+        self._last_target_language: str = str(self.cfg.get("target_language", "简体中文"))
         self._watch_hwnd: int | None = None
         self._watch_region: tuple[int, int, int, int] | None = None  # 区域监视时的选区
         self._watch_rect: tuple[int, int, int, int] | None = None  # 当前监视几何
@@ -310,7 +317,12 @@ class App:
         """只做快速就绪检查；启动/重试始终在后台，绝不阻塞 UI。"""
         if self._quitting:
             return False
-        if self.server.is_healthy(timeout=0.2):
+        is_ready = (
+            self.server.is_ready(timeout=0.2)
+            if hasattr(self.server, "is_ready")
+            else self.server.is_healthy(timeout=0.2)
+        )
+        if is_ready:
             return True
         state = self._preload_status.get("llama", "pending")
         if state == "fail" and not self._has_live_preload("llama-preload"):
@@ -806,6 +818,7 @@ class App:
         self._cancel_continuous_select()
         # 1) 先藏 UI，翻译卡在后台时用户也能马上关掉浮层
         self.generation_tracker.reset()
+        self._watch_session_id += 1
         self._hide_watch_ui()
         w = self._watcher
         self._watcher = None
@@ -969,19 +982,36 @@ class App:
             self._window_follow_timer.start()
         display = "annotate" if annotate else "subtitle"
         self.generation_tracker.reset()
-        self._watcher = WindowWatcher(
+        self._watch_session_id += 1
+        current_session = self._watch_session_id
+        watcher = WindowWatcher(
             self.ocr, self.translator, self.cfg,
             hwnd=hwnd, region=region, display_mode=display,
             profile=profile,
             generation_tracker=self.generation_tracker,
         )
-        self._watcher.subtitle_ready.connect(self.subtitle.set_text)
-        self._watcher.annotations_ready.connect(self._on_watch_annotations)
-        self._watcher.history_ready.connect(self._on_watch_history)
-        self._watcher.window_moved.connect(self._on_target_window_moved)
-        self._watcher.content_cleared.connect(self._on_watch_content_cleared)
-        self._watcher.stopped.connect(self._on_watch_stopped)
-        self._watcher.start()
+        self._watcher = watcher
+
+        # 会话双重守卫：仅当信号来自当前活跃 watcher 且 session 匹配时才执行 UI 操作
+        watcher.subtitle_ready.connect(
+            lambda text, s=current_session, w=watcher: self._on_watch_subtitle_guarded(text, s, w)
+        )
+        watcher.annotations_ready.connect(
+            lambda items, s=current_session, w=watcher: self._on_watch_annotations_guarded(items, s, w)
+        )
+        watcher.history_ready.connect(
+            lambda src, tr, m, s=current_session, w=watcher: self._on_watch_history_guarded(src, tr, m, s, w)
+        )
+        watcher.window_moved.connect(
+            lambda x, y, w_, h_, s=current_session, w=watcher: self._on_target_window_moved_guarded(x, y, w_, h_, s, w)
+        )
+        watcher.content_cleared.connect(
+            lambda s=current_session, w=watcher: self._on_watch_content_cleared_guarded(s, w)
+        )
+        watcher.stopped.connect(
+            lambda reason, s=current_session, w=watcher: self._on_watch_stopped_guarded(reason, s, w)
+        )
+        watcher.start()
 
     def _set_watch_paused(self, paused: bool):
         watcher = self._watcher
@@ -1015,6 +1045,44 @@ class App:
         if self.annotate_ctrl.isVisible():
             self.annotate_ctrl.place_above(rect)
         self.log.info("区域识别框更新 %s", rect)
+
+    def _is_active_watch_session(self, session_id: int, watcher: Any) -> bool:
+        return (
+            session_id == self._watch_session_id
+            and self._watcher is not None
+            and self._watcher is watcher
+        )
+
+    def _on_watch_subtitle_guarded(self, text: str, session_id: int, watcher: Any) -> None:
+        if not self._is_active_watch_session(session_id, watcher):
+            return
+        self.subtitle.set_text(text)
+
+    def _on_watch_annotations_guarded(self, items: list, session_id: int, watcher: Any) -> None:
+        if not self._is_active_watch_session(session_id, watcher):
+            return
+        self._on_watch_annotations(items)
+
+    def _on_watch_history_guarded(self, src: str, tr: str, mode: str, session_id: int, watcher: Any) -> None:
+        if not self._is_active_watch_session(session_id, watcher):
+            return
+        self._on_watch_history(src, tr, mode)
+
+    def _on_target_window_moved_guarded(self, x: int, y: int, w: int, h: int, session_id: int, watcher: Any) -> None:
+        if not self._is_active_watch_session(session_id, watcher):
+            return
+        self._on_target_window_moved(x, y, w, h)
+
+    def _on_watch_content_cleared_guarded(self, session_id: int, watcher: Any) -> None:
+        if not self._is_active_watch_session(session_id, watcher):
+            return
+        self._on_watch_content_cleared()
+
+    def _on_watch_stopped_guarded(self, reason: str, session_id: int, watcher: Any) -> None:
+        if not self._is_active_watch_session(session_id, watcher):
+            self.log.info("忽略过时监视会话的 stopped 信号 (session=%s vs %s)", session_id, self._watch_session_id)
+            return
+        self._on_watch_stopped(reason)
 
     def _on_watch_annotations(self, items: list) -> None:
         """主线程绘制备注，并把精确像素遮罩同步给下一轮 OCR。"""
@@ -1301,6 +1369,13 @@ class App:
         self.annotate_ctrl.set_skip_target(
             bool(self.cfg.get(self._annotate_skip_cfg_key()))
         )
+        # 目标语言热切换检测：通知 watcher 重置并强制重新翻译当前帧
+        new_target = str(self.cfg.get("target_language", "简体中文"))
+        if new_target != getattr(self, "_last_target_language", None):
+            self._last_target_language = new_target
+            if self._watcher and self._watcher.isRunning():
+                self._watcher.on_target_language_changed()
+
         # 若正在监视：仅当「显示模式」与当前会话不一致时才切换（避免只改颜色/热键也清缓存重译）
         if (
             self._watcher
@@ -1315,6 +1390,13 @@ class App:
             cur = self._watch_annotate
             if cur is None or bool(cur) != annotate:
                 self._switch_watch_display(annotate)
+
+    def _on_target_language_changed(self, new_lang: str):
+        """统一的目标语言热切换入口：更新内部跟踪并在持续监视时重置缓存与检测基准。"""
+        new_target = str(new_lang)
+        self._last_target_language = new_target
+        if self._watcher and self._watcher.isRunning():
+            self._watcher.on_target_language_changed()
 
     def _run_worker(self, worker: OcrTranslateWorker):
         if self._quitting:

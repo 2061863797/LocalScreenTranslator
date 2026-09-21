@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   本地屏译（LocalScreen Translator）一键环境安装 / 体检 / 按本机生成配置
@@ -239,14 +239,20 @@ function Test-Runtime {
                 $ok = $false
             }
         } elseif ($isDefaultModel) {
+
             Write-Err2 "默认翻译模型文件不完整: $model"
             $ok = $false
         } else {
             Write-Ok "自定义翻译模型: $model ($mb MB，GGUF 文件头正确)"
         }
     } else {
-        Write-Err2 "缺少 $model"
-        $ok = $false
+        $otherModels = @(Get-ChildItem -Path (Join-Path $Root "runtime\models") -Filter "*.gguf" -ErrorAction SilentlyContinue)
+        if ($otherModels.Count -gt 0) {
+            Write-Ok "检测到可用翻译模型: $($otherModels[0].FullName)"
+        } else {
+            Write-Warn2 "未检测到预置翻译模型: $model"
+            Write-Warn2 "提示: 本软件支持免模型安装。后续可从 Release 下载 models.zip 或在软件设置窗口一键导入 GGUF 模型。"
+        }
     }
 
     $ocrRequired = @("manifest.json", "det.onnx", "rec.onnx", "characters.txt")

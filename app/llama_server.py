@@ -90,6 +90,10 @@ class LlamaServer:
         except (requests.RequestException, ValueError):
             return False
 
+    def is_ready(self, timeout: float = 2.0) -> bool:
+        """检查服务是否存活且加载的模型与当前配置匹配。"""
+        return self.is_healthy(timeout=timeout) and self.check_model_match(timeout=timeout)
+
     def check_model_match(self, timeout: float = 2.0) -> bool:
         """检查已有运行实例加载的模型是否与当前配置的模型匹配。"""
         model_name = self.model_path.name.casefold()

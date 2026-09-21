@@ -103,11 +103,11 @@ class Translator:
         self.timeout = timeout
         # 共享配置引用，设置改 max_tokens 后立即生效
         self._cfg = cfg if cfg is not None else {}
-        self._session = requests.Session()
-        adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10, max_retries=1)
-        self._session.mount("http://", adapter)
-        self._session.mount("https://", adapter)
-        # llama-server 默认单 slot；同时也保护 Session 与 LRU 缓存。
+        self._sessions: dict[str, requests.Session] = {}
+        self._sessions_lock = threading.Lock()
+        # 初始化默认 session
+        self._get_session("default")
+        # llama-server 默认单 slot；同时也保护推理与 LRU 缓存。
         self._lock = threading.RLock()
         # 单行译文 LRU：保持向后兼容（测试与局部短期复用）
         self._line_cache: OrderedDict[tuple[str, str], str] = OrderedDict()
@@ -207,22 +207,52 @@ class Translator:
                 break
         return text
 
-    def abort_inflight(self) -> None:
-        """立即中断/取消当前正在执行中的网络推理请求，使旧 watcher 毫秒级释放锁并退出。"""
-        with self._lock:
+    def _get_session(self, tag: str = "default") -> requests.Session:
+        """获取指定会话标签的 HTTP Session（线程安全）。"""
+        with self._sessions_lock:
+            s = self._sessions.get(tag)
+            if s is None:
+                s = requests.Session()
+                adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10, max_retries=1)
+                s.mount("http://", adapter)
+                s.mount("https://", adapter)
+                self._sessions[tag] = s
+            return s
+
+    @property
+    def _session(self) -> requests.Session:
+        """保持向后兼容的默认 Session 访问器。"""
+        return self._get_session("default")
+
+    @_session.setter
+    def _session(self, s: requests.Session) -> None:
+        with self._sessions_lock:
+            self._sessions["default"] = s
+
+    def abort_inflight(self, tag: str | None = None) -> None:
+        """非阻塞立即中断正在执行中的网络推理请求，使旧 watcher 毫秒级释放锁并退出。
+
+        重要修复：绝不争抢 self._lock，确保 UI 线程毫秒级返回，彻底杜绝 UI 卡死。
+        tag: 为指定会话标签（如 'watcher'）时仅中断该会话；为 None 时中断所有活动会话。
+        """
+        with self._sessions_lock:
+            if tag is None:
+                to_close = list(self._sessions.values())
+                self._sessions.clear()
+            else:
+                s = self._sessions.pop(tag, None)
+                to_close = [s] if s is not None else []
+
+        for s in to_close:
             try:
-                self._session.close()
+                s.close()
             except Exception:
                 pass
-            adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10, max_retries=1)
-            self._session = requests.Session()
-            self._session.mount("http://", adapter)
-            self._session.mount("https://", adapter)
 
     def _ctx_budget(self) -> tuple[int, int]:
         """返回 (上下文 token 上限, 留给生成的 max_tokens 上限)。"""
         ctx = int(self._cfg.get("ctx_size", 2048) or 2048)
-        ctx = max(512, min(ctx, 131072))
+        ctx = max(512, min(ctx, 8192))
         cap = int(self._cfg.get("max_tokens", 512) or 512)
         cap = max(64, min(cap, 8192, ctx // 2))
         return ctx, cap
@@ -265,7 +295,7 @@ class Translator:
             chunks.append(rest.strip())
         return chunks
 
-    def translate(self, text: str, target_language: str = "简体中文") -> str:
+    def translate(self, text: str, target_language: str = "简体中文", session_tag: str = "default") -> str:
         """自动识别源语言，翻译为 target_language。"""
         with self._lock:
             text = self._sanitize(text)
@@ -287,7 +317,7 @@ class Translator:
             if len(chunks) > 1:
                 _log.info("长文本分块翻译 chars=%d chunks=%d", len(text), len(chunks))
             translation = "\n".join(
-                self._translate_complete(chunk, target_language) for chunk in chunks
+                self._translate_complete(chunk, target_language, session_tag=session_tag) for chunk in chunks
             )
             if len(text) <= self._text_cache_max_chars:
                 self._cache_put(text, target_language, translation)
@@ -298,10 +328,10 @@ class Translator:
         msg = str(exc).lower()
         return any(key in msg for key in ("context", "exceed", "n_ctx", "上下文"))
 
-    def _translate_complete(self, text: str, target_language: str) -> str:
+    def _translate_complete(self, text: str, target_language: str, session_tag: str = "default") -> str:
         """翻译完整文本块；真实 tokenizer 超预算时继续二分，不丢原文。"""
         try:
-            return self._translate_one(text, target_language)
+            return self._translate_one(text, target_language, session_tag=session_tag)
         except Exception as exc:
             if len(text) < 2 or not self._is_context_error(exc):
                 raise
@@ -322,12 +352,12 @@ class Translator:
             )
             return "\n".join(
                 (
-                    self._translate_complete(left, target_language),
-                    self._translate_complete(right, target_language),
+                    self._translate_complete(left, target_language, session_tag=session_tag),
+                    self._translate_complete(right, target_language, session_tag=session_tag),
                 )
             )
 
-    def _translate_one(self, text: str, target_language: str) -> str:
+    def _translate_one(self, text: str, target_language: str, session_tag: str = "default") -> str:
         """翻译一个已确认能放入上下文的文本块。"""
         if "中文" in target_language:
             prompt = _PROMPT_ZH.format(target=target_language, text=text)
@@ -338,7 +368,11 @@ class Translator:
         max_tokens = self._effective_max_tokens(text, prompt)
         t0 = time.time()
         try:
-            out = self._clean_translation_output(self._chat(prompt, max_tokens))
+            try:
+                raw_chat = self._chat(prompt, max_tokens, session_tag=session_tag)
+            except TypeError:
+                raw_chat = self._chat(prompt, max_tokens)
+            out = self._clean_translation_output(raw_chat)
             _log.info(
                 "翻译成功 target=%s max_tokens=%s chars=%d→%d %.2fs",
                 target_language, max_tokens, len(text), len(out),
@@ -364,7 +398,7 @@ class Translator:
             est = min(est, room)
         return max(64, est)
 
-    def _chat(self, prompt: str, max_tokens: int) -> str:
+    def _chat(self, prompt: str, max_tokens: int, session_tag: str = "default") -> str:
         """发 chat/completions；失败时带上服务端错误正文。
 
         遇 400 上下文超限时先收紧生成长度；仍失败则由上层缩小原文块。
@@ -377,21 +411,28 @@ class Translator:
         if used + 64 > ctx:
             raise ValueError("翻译提示超过上下文上限，未发送不完整内容")
 
+        session = self._get_session(session_tag)
         last_err: Exception | None = None
         for attempt in range(2):
-            resp = self._session.post(
-                f"{self.base_url}/v1/chat/completions",
-                json={
-                    "messages": [
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.0,
-                    "top_p": 1.0,
-                    "max_tokens": int(max_tokens),
-                },
-                timeout=(3.05, self.timeout),
-            )
+            try:
+                resp = session.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json={
+                        "messages": [
+                            {"role": "system", "content": _SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "max_tokens": int(max_tokens),
+                    },
+                    timeout=(3.05, self.timeout),
+                )
+            except Exception as exc:
+                # 若连接被 abort_inflight 关闭/中断，立即退出不重试
+                last_err = exc
+                break
+
             if resp.ok:
                 data = resp.json()
                 return data["choices"][0]["message"]["content"].strip()
@@ -416,12 +457,18 @@ class Translator:
             raise last_err
         raise last_err  # pragma: no cover
 
-    def _translate_prompt(self, prompt: str, target_language: str, preview: str) -> str:
+    def _translate_prompt(
+        self, prompt: str, target_language: str, preview: str, session_tag: str = "default"
+    ) -> str:
         prompt = self._sanitize(prompt)
         max_tokens = self._effective_max_tokens(preview, prompt)
         t0 = time.time()
         try:
-            out = self._clean_translation_output(self._chat(prompt, max_tokens))
+            try:
+                raw_chat = self._chat(prompt, max_tokens, session_tag=session_tag)
+            except TypeError:
+                raw_chat = self._chat(prompt, max_tokens)
+            out = self._clean_translation_output(raw_chat)
             _log.info(
                 "翻译成功 target=%s chars~%d→%d %.2fs",
                 target_language, len(preview), len(out),
@@ -467,13 +514,16 @@ class Translator:
         return None
 
     def _translate_numbered_batch(
-        self, batch: list[str], target_language: str
+        self, batch: list[str], target_language: str, session_tag: str = "default"
     ) -> list[str] | None:
         """编号批量翻译一批行；解析失败返回 None。"""
         if not batch:
             return []
         if len(batch) == 1:
-            tr = self.translate(batch[0], target_language)
+            try:
+                tr = self.translate(batch[0], target_language, session_tag=session_tag)
+            except TypeError:
+                tr = self.translate(batch[0], target_language)
             return [tr]
 
         numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(batch))
@@ -488,9 +538,14 @@ class Translator:
             > self._ctx_budget()[0]
         ):
             return None
-        raw = self._translate_prompt(
-            prompt, target_language, preview=numbered.replace("\n", " ")
-        )
+        try:
+            raw = self._translate_prompt(
+                prompt, target_language, preview=numbered.replace("\n", " "), session_tag=session_tag
+            )
+        except TypeError:
+            raw = self._translate_prompt(
+                prompt, target_language, preview=numbered.replace("\n", " ")
+            )
         parsed = self._parse_numbered(raw, len(batch))
         if parsed is not None:
             return parsed
@@ -505,17 +560,19 @@ class Translator:
             return cleaned
         return None
 
-    def translate_lines(self, lines: list[str], target_language: str = "简体中文") -> list[str]:
+    def translate_lines(
+        self, lines: list[str], target_language: str = "简体中文", session_tag: str = "default"
+    ) -> list[str]:
         """按行批量翻译（编号对齐一次请求；失败则分块，再逐行）。
 
         备注模式会频繁多行 OCR：优先一次请求，避免动辄 N 次 llama 调用。
         命中行缓存的原文直接复用。
         """
         with self._lock:
-            return self._translate_lines_locked(lines, target_language)
+            return self._translate_lines_locked(lines, target_language, session_tag=session_tag)
 
     def _translate_lines_locked(
-        self, lines: list[str], target_language: str
+        self, lines: list[str], target_language: str, session_tag: str = "default"
     ) -> list[str]:
         clean = [ln.strip() for ln in lines]
         results = ["" for _ in lines]
@@ -536,7 +593,10 @@ class Translator:
         # 先整批编号翻译
         batch_src = [ln for _, ln in need]
         try:
-            parsed = self._translate_numbered_batch(batch_src, target_language)
+            try:
+                parsed = self._translate_numbered_batch(batch_src, target_language, session_tag=session_tag)
+            except TypeError:
+                parsed = self._translate_numbered_batch(batch_src, target_language)
         except Exception as exc:
             if not self._is_context_error(exc):
                 raise
@@ -559,7 +619,10 @@ class Translator:
             chunk = need[start : start + chunk_size]
             chunk_src = [ln for _, ln in chunk]
             try:
-                got = self._translate_numbered_batch(chunk_src, target_language)
+                try:
+                    got = self._translate_numbered_batch(chunk_src, target_language, session_tag=session_tag)
+                except TypeError:
+                    got = self._translate_numbered_batch(chunk_src, target_language)
             except Exception as exc:
                 if not self._is_context_error(exc):
                     raise
@@ -575,7 +638,10 @@ class Translator:
         # 仍失败的才逐行
         for i, src in failed:
             try:
-                tr = self.translate(src, target_language)
+                try:
+                    tr = self.translate(src, target_language, session_tag=session_tag)
+                except TypeError:
+                    tr = self.translate(src, target_language)
             except Exception:
                 _log.exception("逐行翻译失败 index=%d chars=%d", i, len(src))
                 raise
@@ -591,6 +657,12 @@ class Translator:
     def close(self) -> None:
         """所有翻译任务结束后释放 HTTP 连接池与两级缓存资源。"""
         with self._lock:
-            self._session.close()
+            with self._sessions_lock:
+                for s in self._sessions.values():
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                self._sessions.clear()
             if self.cache is not None:
                 self.cache.close()
