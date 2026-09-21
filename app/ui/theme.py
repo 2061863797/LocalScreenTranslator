@@ -56,7 +56,7 @@ CTRL_STYLE = f"""
 #ctrl,#annCtrl,#regCtrl{{background:{PANEL_BG};border-radius:{PANEL_RADIUS}px;}}
 QLabel{{color:{TEXT};background:transparent;font-size:12px;}}
 QPushButton{{background:{BTN_BG};color:{TEXT};border:none;
-border-radius:4px;padding:1px 6px;font-size:11px;}}
+border-radius:3px;padding:1px 4px;font-size:10.5px;}}
 QPushButton:hover{{background:{BTN_HOVER};}}
 QPushButton:checked{{background:{BTN_CHECKED};}}
 """

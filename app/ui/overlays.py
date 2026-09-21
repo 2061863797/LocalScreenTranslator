@@ -429,10 +429,10 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         return pad_x, pad_y
 
     def _pad_top(self) -> int:
-        ctrl_h = 24
-        ctrl_bottom = 28
+        ctrl_h = 22
+        ctrl_bottom = 26
         if hasattr(self, "_ctrl") and self._ctrl is not None:
-            ctrl_h = self._ctrl.height() if self._ctrl.height() > 0 else 24
+            ctrl_h = self._ctrl.height() if self._ctrl.height() > 0 else 22
             ctrl_bottom = self._ctrl.y() + ctrl_h
         return max(34, ctrl_bottom + 2)
 
@@ -511,7 +511,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             self._ctrl.update()
             self._vscroll.update()
             self._grip.update()
-            self.update()
+            self.update(self.rect())
 
     def _show_chrome(self):
         """统一显示附属窗：仅在需要时 show，避免每轮 raise 闪烁。"""
@@ -577,8 +577,9 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # 1. 彻底擦除背景透明度，消除 DWM 下旧子控件位置与文字重影残影
+        # 1. 彻底擦除背景透明度，消除 DWM 下旧子控件位置与文字重影残影（必须取消局部剪裁）
         painter.save()
+        painter.setClipping(False)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
         painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
         painter.restore()
@@ -713,47 +714,48 @@ class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
         self._btns: dict[str, QPushButton] = {}
         container = QWidget(self)
         container.setObjectName("ctrl")
+        container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QHBoxLayout(container)
-        lay.setContentsMargins(5, 2, 5, 2)
-        lay.setSpacing(3)
+        lay.setContentsMargins(4, 1, 4, 1)
+        lay.setSpacing(2)
         self._handle = QLabel("⠿")
         self._handle.setStyleSheet(
-            "color:#fff;font-size:13px;padding:0 1px;background:transparent;"
+            "color:#fff;font-size:12px;padding:0 1px;background:transparent;"
         )
         lay.addWidget(self._handle)
         for key in ("follow", "free", "pinned"):
             btn = QPushButton()
             btn.setCheckable(True)
-            btn.setFixedHeight(20)
+            btn.setFixedHeight(18)
             btn.clicked.connect(
                 lambda _=False, k=key: self._bar.set_mode(k, emit=True)
             )
             self._btns[key] = btn
             lay.addWidget(btn)
         self._btn_ann = QPushButton()
-        self._btn_ann.setFixedHeight(20)
+        self._btn_ann.setFixedHeight(18)
         self._btn_ann.clicked.connect(self._bar.switch_to_annotate.emit)
         lay.addWidget(self._btn_ann)
         self._btn_pause = QPushButton()
         self._btn_pause.setCheckable(True)
-        self._btn_pause.setFixedHeight(20)
+        self._btn_pause.setFixedHeight(18)
         self._btn_pause.toggled.connect(self._bar.pause_changed.emit)
         lay.addWidget(self._btn_pause)
         self._btn_close = QPushButton()
-        self._btn_close.setFixedHeight(20)
+        self._btn_close.setFixedHeight(18)
         self._btn_close.clicked.connect(self._bar.stop_requested.emit)
         lay.addWidget(self._btn_close)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(container)
-        self.setFixedHeight(24)
+        self.setFixedHeight(22)
         self.setStyleSheet(CTRL_STYLE)
         self.sync_checked(bar.mode)
         self.apply_ui_language()
 
     def sizeHint(self) -> QSize:
-        w = self.layout().sizeHint().width() if self.layout() else 240
-        return QSize(max(240, w), 24)
+        w = self.layout().sizeHint().width() if self.layout() else 200
+        return QSize(max(200, w), 22)
 
     def apply_ui_language(self):
         self._handle.setToolTip(_t("sub_drag_tip"))
