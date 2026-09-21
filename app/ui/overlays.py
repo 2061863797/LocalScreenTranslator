@@ -439,10 +439,10 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         return pad_x, pad_y
 
     def _pad_top(self) -> int:
-        ctrl_h = 22
-        ctrl_bottom = 26
+        ctrl_h = 24
+        ctrl_bottom = 28
         if hasattr(self, "_ctrl") and self._ctrl is not None:
-            ctrl_h = self._ctrl.height() if self._ctrl.height() > 0 else 22
+            ctrl_h = self._ctrl.height() if self._ctrl.height() > 0 else 24
             ctrl_bottom = self._ctrl.y() + ctrl_h
         return max(34, ctrl_bottom + 2)
 
@@ -725,60 +725,76 @@ class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._bar = bar
         self._drag_offset = None
-        self._compact_mode = False
+        self._mode_compact = 0
 
         self._btns: dict[str, QPushButton] = {}
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(3, 1, 3, 1)
-        lay.setSpacing(1)
+        self._lay = QHBoxLayout(self)
+        self._lay.setContentsMargins(4, 2, 4, 2)
+        self._lay.setSpacing(2)
         self._handle = QLabel("⠿")
         self._handle.setStyleSheet(
-            "color:#fff;font-size:11px;padding:0;background:transparent;"
+            "color:#fff;font-size:12px;padding:0 1px;background:transparent;"
         )
-        lay.addWidget(self._handle)
+        self._lay.addWidget(self._handle)
         for key in ("follow", "free", "pinned"):
             btn = QPushButton()
             btn.setCheckable(True)
-            btn.setFixedHeight(18)
+            btn.setFixedHeight(20)
             btn.clicked.connect(
                 lambda _=False, k=key: self._bar.set_mode(k, emit=True)
             )
             self._btns[key] = btn
-            lay.addWidget(btn)
+            self._lay.addWidget(btn)
         self._btn_ann = QPushButton()
-        self._btn_ann.setFixedHeight(18)
+        self._btn_ann.setFixedHeight(20)
         self._btn_ann.clicked.connect(self._bar.switch_to_annotate.emit)
-        lay.addWidget(self._btn_ann)
+        self._lay.addWidget(self._btn_ann)
         self._btn_pause = QPushButton()
         self._btn_pause.setCheckable(True)
-        self._btn_pause.setFixedHeight(18)
+        self._btn_pause.setFixedHeight(20)
         self._btn_pause.toggled.connect(self._bar.pause_changed.emit)
-        lay.addWidget(self._btn_pause)
+        self._lay.addWidget(self._btn_pause)
         self._btn_close = QPushButton()
-        self._btn_close.setFixedHeight(18)
+        self._btn_close.setFixedHeight(20)
         self._btn_close.clicked.connect(self._bar.stop_requested.emit)
-        lay.addWidget(self._btn_close)
+        self._lay.addWidget(self._btn_close)
 
-        self.setFixedHeight(22)
+        self.setFixedHeight(24)
         self.setStyleSheet(CTRL_STYLE)
         self.sync_checked(bar.mode)
         self.apply_ui_language()
 
     def adapt_to_width(self, parent_w: int):
-        """根据父窗口可用宽度动态切换紧凑单字与标准文字，杜绝窄窗口右边缘截断。"""
-        should_compact = parent_w < 200
-        if should_compact != self._compact_mode:
-            self._compact_mode = should_compact
+        """根据父窗口可用宽度动态选择舒适呈现层级：
+        - >= 240px: 默认正常舒适双字大按钮（宽度 ~250px）
+        - 180 ~ 239px: 紧凑双字（保留双字不缩写，宽度 ~210px）
+        - < 180px: 极窄单字模式（宽度 ~116px）
+        """
+        if parent_w >= 240:
+            tier = 0
+        elif parent_w >= 180:
+            tier = 1
+        else:
+            tier = 2
+        if tier != self._mode_compact:
+            self._mode_compact = tier
             self.apply_ui_language()
         self.adjustSize()
 
     def sizeHint(self) -> QSize:
-        w = self.layout().sizeHint().width() if self.layout() else 180
-        return QSize(max(116, w), 22)
+        w = self.layout().sizeHint().width() if self.layout() else 240
+        return QSize(max(116, w), 24)
 
     def apply_ui_language(self):
         self._handle.setToolTip(_t("sub_drag_tip"))
-        if self._compact_mode:
+        all_btns = list(self._btns.values()) + [
+            self._btn_ann,
+            self._btn_pause,
+            self._btn_close,
+        ]
+        if self._mode_compact == 2:
+            self._lay.setContentsMargins(2, 1, 2, 1)
+            self._lay.setSpacing(1)
             self._btns["follow"].setText(_t("sub_follow")[:1])
             self._btns["free"].setText(_t("sub_free")[:1])
             self._btns["pinned"].setText(_t("sub_pinned")[:1])
@@ -787,7 +803,12 @@ class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
                 (_t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause"))[:1]
             )
             self._btn_close.setText(_t("sub_close")[:1])
-        else:
+            for btn in all_btns:
+                btn.setFixedHeight(18)
+                btn.setStyleSheet("padding:1px 2px;font-size:10px;")
+        elif self._mode_compact == 1:
+            self._lay.setContentsMargins(3, 1, 3, 1)
+            self._lay.setSpacing(1)
             self._btns["follow"].setText(_t("sub_follow"))
             self._btns["free"].setText(_t("sub_free"))
             self._btns["pinned"].setText(_t("sub_pinned"))
@@ -796,6 +817,24 @@ class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
                 _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
             )
             self._btn_close.setText(_t("sub_close"))
+            for btn in all_btns:
+                btn.setFixedHeight(19)
+                btn.setStyleSheet("padding:1px 3px;font-size:10.5px;")
+        else:
+            self._lay.setContentsMargins(4, 2, 4, 2)
+            self._lay.setSpacing(2)
+            self._btns["follow"].setText(_t("sub_follow"))
+            self._btns["free"].setText(_t("sub_free"))
+            self._btns["pinned"].setText(_t("sub_pinned"))
+            self._btn_ann.setText(_t("sub_annotate"))
+            self._btn_pause.setText(
+                _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
+            )
+            self._btn_close.setText(_t("sub_close"))
+            for btn in all_btns:
+                btn.setFixedHeight(20)
+                btn.setStyleSheet("")
+
         self._btns["follow"].setToolTip(_t("sub_follow"))
         self._btns["free"].setToolTip(_t("sub_free"))
         self._btns["pinned"].setToolTip(_t("sub_pinned"))

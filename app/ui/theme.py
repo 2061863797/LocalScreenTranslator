@@ -54,9 +54,9 @@ class CornerSizeGrip(QSizeGrip):
 # 浮层控制条（字幕 / 备注）
 CTRL_STYLE = f"""
 #ctrl,#annCtrl,#regCtrl{{background:{PANEL_BG};border-radius:{PANEL_RADIUS}px;}}
-QLabel{{color:{TEXT};background:transparent;font-size:11px;}}
+QLabel{{color:{TEXT};background:transparent;font-size:12px;}}
 QPushButton{{background:{BTN_BG};color:{TEXT};border:none;
-border-radius:2px;padding:1px 3px;font-size:10px;}}
+border-radius:3px;padding:1px 5px;font-size:11px;}}
 QPushButton:hover{{background:{BTN_HOVER};}}
 QPushButton:checked{{background:{BTN_CHECKED};}}
 """
