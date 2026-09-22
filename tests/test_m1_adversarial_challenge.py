@@ -106,13 +106,18 @@ class TestSubtitleOverlayAdversarial(unittest.TestCase):
             self.assertTrue(self.bar._ctrl.isVisible())
             self.assertTrue(self.bar._vscroll.isVisible())
 
-            # Clear with empty
+            # Clear with empty: keeps window visible without flickering hide
             self.bar.set_text("")
-            self.assertFalse(self.bar.isVisible())
+            self.assertTrue(self.bar.isVisible())
             self.assertEqual(self.bar._text, "")
-            # Chrome must be hidden when bar is hidden
-            self.assertFalse(self.bar._ctrl.isVisible())
-            self.assertFalse(self.bar._vscroll.isVisible())
+            # Chrome remains properly placed
+            self.assertTrue(self.bar._ctrl.isVisible())
+
+        # Explicit hide closes window and chrome
+        self.bar.hide()
+        self.assertFalse(self.bar.isVisible())
+        self.assertFalse(self.bar._ctrl.isVisible())
+        self.assertFalse(self.bar._vscroll.isVisible())
 
         self.qapp.processEvents()
 

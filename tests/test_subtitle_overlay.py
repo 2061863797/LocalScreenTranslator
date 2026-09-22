@@ -78,6 +78,14 @@ class ContractSubtitleBar(QWidget):
 
     def is_single_hwnd(self) -> bool:
         """Returns True if self is top-level window and all controls are child widgets."""
+        children_non_native = (
+            self._ctrl.windowHandle() is None
+            and not self._ctrl.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+            and self._vscroll.windowHandle() is None
+            and not self._vscroll.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+            and self._grip.windowHandle() is None
+            and not self._grip.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+        )
         return (
             self.isWindow()
             and not self._ctrl.isWindow()
@@ -86,6 +94,7 @@ class ContractSubtitleBar(QWidget):
             and self._vscroll.parent() is self
             and not self._grip.isWindow()
             and self._grip.parent() is self
+            and children_non_native
         )
 
     def prepare_layout(self, text: str) -> None:
@@ -270,6 +279,13 @@ class TestSubtitleOverlayTiers(unittest.TestCase):
         self.assertIs(self.bar._ctrl.parent(), self.bar)
         self.assertIs(self.bar._vscroll.parent(), self.bar)
         self.assertIs(self.bar._grip.parent(), self.bar)
+        # 严格验证：子部件绝不能被赋予 Win32 native HWND / QWindow
+        self.assertIsNone(self.bar._ctrl.windowHandle())
+        self.assertFalse(self.bar._ctrl.testAttribute(Qt.WidgetAttribute.WA_NativeWindow))
+        self.assertIsNone(self.bar._vscroll.windowHandle())
+        self.assertFalse(self.bar._vscroll.testAttribute(Qt.WidgetAttribute.WA_NativeWindow))
+        self.assertIsNone(self.bar._grip.windowHandle())
+        self.assertFalse(self.bar._grip.testAttribute(Qt.WidgetAttribute.WA_NativeWindow))
 
     def test_chrome_positioning_relative_to_parent_coordinates(self):
         """Tier 3: Controls must be placed inside parent client rectangle, not global screen coordinates."""
@@ -286,6 +302,13 @@ class TestSubtitleOverlayTiers(unittest.TestCase):
         self.assertTrue(self.bar.isVisible())
         self.assertTrue(self.bar._ctrl.isVisible())
         self.assertTrue(self.bar._grip.isVisible())
+        # 在激活显示状态下，子部件依然必须是 alien widget，绝对没有 native HWND
+        self.assertIsNone(self.bar._ctrl.windowHandle())
+        self.assertFalse(self.bar._ctrl.testAttribute(Qt.WidgetAttribute.WA_NativeWindow))
+        self.assertIsNone(self.bar._vscroll.windowHandle())
+        self.assertFalse(self.bar._vscroll.testAttribute(Qt.WidgetAttribute.WA_NativeWindow))
+        self.assertIsNone(self.bar._grip.windowHandle())
+        self.assertFalse(self.bar._grip.testAttribute(Qt.WidgetAttribute.WA_NativeWindow))
 
     # ==========================================
     # Tier 4: Real-World Scenarios
@@ -364,13 +387,17 @@ class TestProductionSubtitleBar(unittest.TestCase):
         self.bar.set_text(None)
         self.assertFalse(self.bar.isVisible())
 
-    def test_production_empty_text_hides_visible_overlay(self):
-        """Empty text clears and hides a currently visible SubtitleBar."""
+    def test_production_empty_text_clears_text_without_flicker_hide(self):
+        """持续翻译中，空文字清空正文但不销毁/隐藏窗口，避免反复 DWM 重构与闪烁。"""
         self.bar.set_text("Active subtitle")
         self.assertTrue(self.bar.isVisible())
         self.bar.set_text("")
-        self.assertFalse(self.bar.isVisible())
+        # 窗口平滑保持可见，消除忽隐忽现闪烁
+        self.assertTrue(self.bar.isVisible())
         self.assertEqual(self.bar._text, "")
+        # 显式 hide 时才真正关闭窗口
+        self.bar.hide()
+        self.assertFalse(self.bar.isVisible())
 
     def test_production_layout_precalculated_before_show(self):
         """Layout sizing and text reflow must be computed BEFORE self.show() is called."""

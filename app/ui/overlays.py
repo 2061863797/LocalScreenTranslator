@@ -198,7 +198,15 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         self._capture_visible = True
 
     def is_single_hwnd(self) -> bool:
-        """Returns True if self is top-level window and all controls are child widgets."""
+        """Returns True if self is top-level window and all controls are child widgets sharing its HWND."""
+        children_non_native = (
+            self._ctrl.windowHandle() is None
+            and not self._ctrl.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+            and self._vscroll.windowHandle() is None
+            and not self._vscroll.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+            and self._grip.windowHandle() is None
+            and not self._grip.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+        )
         return (
             self.isWindow()
             and not self._ctrl.isWindow()
@@ -207,6 +215,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             and self._vscroll.parent() is self
             and not self._grip.isWindow()
             and self._grip.parent() is self
+            and children_non_native
         )
 
     def nativeEvent(self, event_type, message):
@@ -545,7 +554,6 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         else:
             if self._grip.isVisible():
                 self._grip.hide()
-        self._apply_capture_affinity()
 
     def prepare_layout(self, text: str = "") -> None:
         """在向 DWM 呈现前执行完整的预排版与布局计算，杜绝脏矩形与二次重排闪烁。"""
@@ -565,12 +573,17 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         滚动位置跨轮次译文刷新保持（持续翻译改文时不把滑块打回顶部）；
         仅在 hide 结束会话或正文被清空时归零。_reflow_text 会夹紧到新范围。
         未显示前严格保持隐藏；首次显示前完成完整排版与布局计算，避免脏矩形闪烁。
+        持续翻译文字短暂清空时不 hide，仅刷新重绘，避免频繁销毁重构 DWM surface 与闪烁。
         """
         valid_text = (text or "").strip()
         if not valid_text:
             self._text = ""
+            self._scroll = 0
             if self.isVisible():
-                self.hide()
+                self._reflow_text()
+                if self._vscroll.isVisible():
+                    self._vscroll.hide()
+                self.update()
             return
 
         self._text = valid_text
@@ -581,12 +594,13 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
                 self.set_layer_owner(self._layer_owner)
             self.show()
             self._apply_capture_affinity()
+            self._show_chrome()
+            self.restack_layer()
         else:
             self._reflow_text()
             self._place_chrome()
+            self._show_chrome()
 
-        self._show_chrome()
-        self.restack_layer()
         self.update()
 
     def paintEvent(self, event):
@@ -634,7 +648,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         super().hide()
 
 
-class _SubtitleVScroll(_CaptureAllowedMixin, QWidget):
+class _SubtitleVScroll(QWidget):
     """字幕条右侧纵向滚动条（子部件，可点）。
 
     显隐只由 SubtitleBar._show_chrome 控制；set_range 绝不 hide，
@@ -670,7 +684,7 @@ class _SubtitleVScroll(_CaptureAllowedMixin, QWidget):
         self._bar_widget.setEnabled(bool(on))
 
 
-class _SubtitleResizeGrip(_CaptureAllowedMixin, QWidget):
+class _SubtitleResizeGrip(QWidget):
     """右下角缩放把手：子部件 + grabMouse，拖出按钮外仍跟手。"""
 
     def __init__(self, bar: SubtitleBar):
@@ -716,7 +730,7 @@ class _SubtitleResizeGrip(_CaptureAllowedMixin, QWidget):
             event.accept()
 
 
-class _SubtitleCtrl(_CaptureAllowedMixin, QWidget):
+class _SubtitleCtrl(QWidget):
     """字幕条控制小条：拖动把手 + 模式按钮 + 关闭（子部件，可点）。"""
 
     def __init__(self, bar: SubtitleBar):

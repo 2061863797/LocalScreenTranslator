@@ -113,7 +113,7 @@ class WindowWatcher(QThread):
 
     subtitle_ready = Signal((str,), (str, int, int))
     annotations_ready = Signal((list,), (list, int, int))
-    history_ready = Signal(str, str, str)
+    history_ready = Signal((str, str, str), (str, str, str, int, int))
     window_moved = Signal(int, int, int, int)
     content_cleared = Signal()
     stopped = Signal(str)
@@ -162,6 +162,7 @@ class WindowWatcher(QThread):
         self._polling_controller = AdaptivePollingController()
         self._ocr_service = OcrService(ocr_engine=self._ocr)
         self._ocr_stabilizer = OcrStabilizer()
+        self._ocr_reset_requested = threading.Event()
         self._text_change_detector = TextChangeDetector()
         self._translation_manager = TranslationManager(translator=self._translator)
         self._result_manager = ResultManager(generation_tracker=self._generation_tracker)
@@ -183,6 +184,12 @@ class WindowWatcher(QThread):
             pass
         self._result_manager.annotations_ready.connect(self.annotations_ready.emit)
 
+        try:
+            self._result_manager.history_ready[str, str, str, int, int].connect(
+                lambda s, t, m, g, r: self.history_ready[str, str, str, int, int].emit(s, t, m, g, r)
+            )
+        except Exception:
+            pass
         self._result_manager.history_ready.connect(self.history_ready.emit)
         self._result_manager.window_moved.connect(self.window_moved.emit)
         self._result_manager.content_cleared.connect(self.content_cleared.emit)
@@ -350,6 +357,7 @@ class WindowWatcher(QThread):
             self._text_change_detector.reset(clear_cache=True)
         self._translation_manager.clear_cache()
         self._ocr_stabilizer.reset()
+        self._ocr_reset_requested.set()
         self._last_skip_target = None
         self._last_frame = None
         self._skipped_frames = 0
@@ -370,6 +378,7 @@ class WindowWatcher(QThread):
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=False)
         self._ocr_stabilizer.reset()
+        self._ocr_reset_requested.set()
         self._last_frame = None
         self._skipped_frames = 0
         self._last_processed_epoch = 0
@@ -405,6 +414,7 @@ class WindowWatcher(QThread):
             self._text_change_detector.reset(clear_cache=True)
         self._translation_manager.clear_cache()
         self._ocr_stabilizer.reset()
+        self._ocr_reset_requested.set()
         self._last_frame = None
         self._last_captured_frame = None
 
@@ -690,15 +700,34 @@ class WindowWatcher(QThread):
             _log.exception("监视捕获线程异常")
             self._result_manager.dispatch_stopped("监视出错：\n" + traceback.format_exc(limit=3))
         finally:
-            # 若非显式 stop()（如测试中 _grab 将 _running 置 False），给予消费线程短暂排空缓冲时间
-            if not self._consumer_stop_event.is_set():
-                drain_deadline = time.time() + 1.0
-                while not self._frame_buffer.is_empty and time.time() < drain_deadline:
-                    time.sleep(0.01)
+            # 1. 显式置位消费停止事件并清空缓冲队列
             self._consumer_stop_event.set()
             self._frame_buffer.clear()
+
+            # 2. 强力主动打断任何底层阻塞的在途网络请求
+            try:
+                if hasattr(self._translator, "abort_inflight"):
+                    try:
+                        self._translator.abort_inflight(tag=self._translation_session_tag)
+                    except TypeError:
+                        self._translator.abort_inflight()
+            except Exception:
+                pass
+
+            # 3. 严格生命周期回收：必须等待推理线程彻底退出，才允许结束 QThread
             if self._inference_thread is not None and self._inference_thread.is_alive():
-                self._inference_thread.join(timeout=1.5)
+                self._inference_thread.join(timeout=2.0)
+                if self._inference_thread.is_alive():
+                    _log.warning("推理工作线程未在预定时间内退出，再次触发中断与等待")
+                    try:
+                        if hasattr(self._translator, "abort_inflight"):
+                            self._translator.abort_inflight(tag=self._translation_session_tag)
+                    except Exception:
+                        pass
+                    self._inference_thread.join(timeout=2.0)
+                    if self._inference_thread.is_alive():
+                        _log.error("推理工作线程未能在超时后正常退出")
+
             self._capture_service.release()
             try:
                 if hasattr(self._translator, "release_session"):
@@ -713,6 +742,10 @@ class WindowWatcher(QThread):
 
         while not self._consumer_stop_event.is_set():
             try:
+                if self._ocr_reset_requested.is_set():
+                    self._ocr_reset_requested.clear()
+                    self._ocr_stabilizer.reset()
+
                 # 1. 尝试从缓冲中拉取最新帧（带超时，超时后循环检查 stop_event）
                 pulled = self._frame_buffer.get(timeout=0.1)
                 if pulled is None:
@@ -851,7 +884,9 @@ class WindowWatcher(QThread):
                                 dispatched = self._result_manager.dispatch_annotations(items, frame_gen_id, content_rev=packet_epoch)
                                 if dispatched:
                                     if translation:
-                                        self._result_manager.dispatch_history(text, translation, mode_tag, frame_gen_id)
+                                        self._result_manager.dispatch_history(
+                                            text, translation, mode_tag, frame_gen_id, content_rev=packet_epoch
+                                        )
                                 else:
                                     with self._state_lock:
                                         self._text_change_detector.rollback(text)
@@ -877,7 +912,9 @@ class WindowWatcher(QThread):
                                 dispatched = self._result_manager.dispatch_subtitle(translation, frame_gen_id, content_rev=packet_epoch)
                                 if dispatched:
                                     if translation:
-                                        self._result_manager.dispatch_history(text, translation, mode_tag, frame_gen_id)
+                                        self._result_manager.dispatch_history(
+                                            text, translation, mode_tag, frame_gen_id, content_rev=packet_epoch
+                                        )
                                 else:
                                     with self._state_lock:
                                         self._text_change_detector.rollback(text)

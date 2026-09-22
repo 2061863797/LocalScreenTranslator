@@ -9,6 +9,7 @@ from triggering expensive downstream LLM translation calls.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 
@@ -105,6 +106,7 @@ class OcrStabilizer:
         self.debounce_frames = max(1, int(debounce_frames))
         self.max_jitter_dist = int(max_jitter_dist)
 
+        self._lock = threading.Lock()
         self._stable_lines: list[Any] | None = None
         self._candidate_lines: list[Any] = []
         self._candidate_repeat_count: int = 0
@@ -112,7 +114,8 @@ class OcrStabilizer:
     @property
     def has_pending_candidate(self) -> bool:
         """是否有正在等待防抖确认的候选文本。"""
-        return self._candidate_repeat_count > 0
+        with self._lock:
+            return self._candidate_repeat_count > 0
 
     def _extract_text(self, lines: list[Any]) -> str:
         """Extract joined text from list of OCR lines or strings."""
@@ -133,70 +136,72 @@ class OcrStabilizer:
         Returns:
             Tuple of (is_substantive_change, stabilized_lines).
         """
-        if self._stable_lines is None:
-            # Initial state: first frame establishes stable baseline
-            self._stable_lines = list(lines)
-            return True, self._stable_lines
+        with self._lock:
+            if self._stable_lines is None:
+                # Initial state: first frame establishes stable baseline
+                self._stable_lines = list(lines)
+                return True, self._stable_lines
 
-        # Handle empty input lines
-        if not lines:
+            # Handle empty input lines
+            if not lines:
+                if not self._stable_lines:
+                    # Consecutive empty frames: remain quiet, no substantive change
+                    return False, self._stable_lines
+                # Transitioning from non-empty text to empty: signal cleared content
+                self._stable_lines = []
+                self._candidate_lines = []
+                self._candidate_repeat_count = 0
+                return True, []
+
+            # If previous stable state was empty and current has content: substantive change
             if not self._stable_lines:
-                # Consecutive empty frames: remain quiet, no substantive change
-                return False, self._stable_lines
-            # Transitioning from non-empty text to empty: signal cleared content
-            self._stable_lines = []
-            self._candidate_lines = []
-            self._candidate_repeat_count = 0
-            return True, []
+                self._stable_lines = list(lines)
+                self._candidate_lines = []
+                self._candidate_repeat_count = 0
+                return True, self._stable_lines
 
-        # If previous stable state was empty and current has content: substantive change
-        if not self._stable_lines:
+            curr_text = self._extract_text(lines)
+            prev_text = self._extract_text(self._stable_lines)
+
+            # Immediate fast-path: identical text has zero jitter and requires no distance computation
+            if curr_text == prev_text:
+                self._candidate_repeat_count = 0
+                return False, self._stable_lines
+
+            # Early length difference exit: difference exceeding jitter threshold is substantive
+            if abs(len(curr_text) - len(prev_text)) > self.max_jitter_dist:
+                self._stable_lines = list(lines)
+                self._candidate_lines = []
+                self._candidate_repeat_count = 0
+                return True, self._stable_lines
+
+            dist = levenshtein_distance(curr_text, prev_text, max_dist=self.max_jitter_dist)
+
+            # Minor character jitter / flip under threshold
+            if dist <= self.max_jitter_dist:
+                # Candidate jitter: check if candidate repeats stably across debounce_frames
+                cand_text = self._extract_text(self._candidate_lines)
+                if curr_text == cand_text:
+                    self._candidate_repeat_count += 1
+                    if self._candidate_repeat_count >= self.debounce_frames:
+                        self._stable_lines = list(lines)
+                        self._candidate_repeat_count = 0
+                        return True, self._stable_lines
+                    return False, self._stable_lines
+                else:
+                    self._candidate_lines = list(lines)
+                    self._candidate_repeat_count = 1
+                    return False, self._stable_lines
+
+            # Substantive text change (distance exceeds jitter threshold)
             self._stable_lines = list(lines)
             self._candidate_lines = []
             self._candidate_repeat_count = 0
             return True, self._stable_lines
-
-        curr_text = self._extract_text(lines)
-        prev_text = self._extract_text(self._stable_lines)
-
-        # Immediate fast-path: identical text has zero jitter and requires no distance computation
-        if curr_text == prev_text:
-            self._candidate_repeat_count = 0
-            return False, self._stable_lines
-
-        # Early length difference exit: difference exceeding jitter threshold is substantive
-        if abs(len(curr_text) - len(prev_text)) > self.max_jitter_dist:
-            self._stable_lines = list(lines)
-            self._candidate_lines = []
-            self._candidate_repeat_count = 0
-            return True, self._stable_lines
-
-        dist = levenshtein_distance(curr_text, prev_text, max_dist=self.max_jitter_dist)
-
-        # Minor character jitter / flip under threshold
-        if dist <= self.max_jitter_dist:
-            # Candidate jitter: check if candidate repeats stably across debounce_frames
-            cand_text = self._extract_text(self._candidate_lines)
-            if curr_text == cand_text:
-                self._candidate_repeat_count += 1
-                if self._candidate_repeat_count >= self.debounce_frames:
-                    self._stable_lines = list(lines)
-                    self._candidate_repeat_count = 0
-                    return True, self._stable_lines
-                return False, self._stable_lines
-            else:
-                self._candidate_lines = list(lines)
-                self._candidate_repeat_count = 1
-                return False, self._stable_lines
-
-        # Substantive text change (distance exceeds jitter threshold)
-        self._stable_lines = list(lines)
-        self._candidate_lines = []
-        self._candidate_repeat_count = 0
-        return True, self._stable_lines
 
     def reset(self) -> None:
         """Reset stabilizer state."""
-        self._stable_lines = None
-        self._candidate_lines = []
-        self._candidate_repeat_count = 0
+        with self._lock:
+            self._stable_lines = None
+            self._candidate_lines = []
+            self._candidate_repeat_count = 0

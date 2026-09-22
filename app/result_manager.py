@@ -60,7 +60,7 @@ class ResultManager(QObject):
 
     subtitle_ready = Signal((str,), (str, int, int))
     annotations_ready = Signal((list,), (list, int, int))
-    history_ready = Signal(str, str, str)
+    history_ready = Signal((str, str, str), (str, str, str, int, int))
     window_moved = Signal(int, int, int, int)
     content_cleared = Signal()
     stopped = Signal(str)
@@ -156,7 +156,12 @@ class ResultManager(QObject):
         return True
 
     def dispatch_history(
-        self, source: str, translation: str, mode: str, gen_id: int | None = None
+        self,
+        source: str,
+        translation: str,
+        mode: str,
+        gen_id: int | None = None,
+        content_rev: int | None = None,
     ) -> bool:
         """派发历史记录。若指定了 gen_id 且已过期则丢弃。"""
         if gen_id is not None:
@@ -169,7 +174,14 @@ class ResultManager(QObject):
                     )
                     return False
 
+        try:
+            self.history_ready[str, str, str, int, int].emit(
+                source, translation, mode, gen_id or 0, content_rev or 0
+            )
+        except Exception:
+            pass
         self.history_ready.emit(source, translation, mode)
+
         if self._on_history is not None:
             try:
                 self._on_history(source, translation, mode)

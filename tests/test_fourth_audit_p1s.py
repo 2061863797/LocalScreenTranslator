@@ -347,6 +347,78 @@ class TestFourthAuditP1s(unittest.TestCase):
             if finished_args:
                 self.assertFalse(finished_args[0][0], "中断后必须发射失败/取消信号")
 
+    def test_history_ready_generation_and_content_rev_guard(self):
+        """P2 验证：History 信号受 generation_id 与 content_revision 双重防护，过期信号被丢弃。"""
+        from app.main import App
+
+        app = MagicMock(spec=App)
+        app._watch_session_id = 1
+        app._watch_paused = False
+        app.log = MagicMock()
+        recorded_histories = []
+        app._on_watch_history = lambda s, t, m: recorded_histories.append((s, t, m))
+        app._is_active_watch_session = lambda sid, w: sid == app._watch_session_id
+
+        mock_watcher = MagicMock()
+        mock_watcher._paused.is_set.return_value = False
+        mock_watcher.generation_tracker.is_active.side_effect = lambda g: g == 5
+        mock_watcher.content_revision = 10
+
+        # 用真实的 _on_watch_history_guarded 函数
+        func = App._on_watch_history_guarded.__get__(app, App)
+
+        # 1. 正常匹配：gen=5, rev=10 -> 记录
+        func("Hello", "你好", "subtitle", session_id=1, watcher=mock_watcher, gen_id=5, content_rev=10)
+        self.assertEqual(len(recorded_histories), 1)
+
+        # 2. 过期 generation: gen=4 (active=5) -> 丢弃
+        func("Hello", "你好2", "subtitle", session_id=1, watcher=mock_watcher, gen_id=4, content_rev=10)
+        self.assertEqual(len(recorded_histories), 1, "过时 generation 历史信号必须被丢弃！")
+
+        # 3. 过期 content_revision: gen=5, rev=9 (current=10) -> 丢弃
+        func("Hello", "你好3", "subtitle", session_id=1, watcher=mock_watcher, gen_id=5, content_rev=9)
+        self.assertEqual(len(recorded_histories), 1, "过时 content_revision 历史信号必须被丢弃！")
+
+        # 4. 暂停状态：watch_paused=True -> 丢弃
+        app._watch_paused = True
+        func("Hello", "你好4", "subtitle", session_id=1, watcher=mock_watcher, gen_id=5, content_rev=10)
+        self.assertEqual(len(recorded_histories), 1, "暂停期间到达的历史信号必须被丢弃！")
+
+    def test_ocr_stabilizer_thread_safe_concurrent_reset_and_process(self):
+        """P2 验证：OcrStabilizer 具备线程安全互斥保护，并发 reset 与 process 无竞态。"""
+        import threading
+        from app.ocr_stabilizer import OcrStabilizer
+
+        stabilizer = OcrStabilizer(debounce_frames=2, max_jitter_dist=2)
+        errors = []
+
+        def worker_process():
+            for i in range(500):
+                try:
+                    lines = [f"Text line {i % 10}", f"Sub line {i}"]
+                    stabilizer.process(lines)
+                except Exception as e:
+                    errors.append(e)
+
+        def worker_reset():
+            for _ in range(500):
+                try:
+                    stabilizer.reset()
+                except Exception as e:
+                    errors.append(e)
+
+        threads = [
+            threading.Thread(target=worker_process),
+            threading.Thread(target=worker_reset),
+            threading.Thread(target=worker_process),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=3.0)
+
+        self.assertEqual(len(errors), 0, f"并发 process 与 reset 发生异常: {errors}")
+
 
 if __name__ == "__main__":
     unittest.main()

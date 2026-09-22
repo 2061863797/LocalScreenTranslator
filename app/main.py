@@ -1012,9 +1012,16 @@ class App:
                 lambda items, s=current_session, w=watcher: self._on_watch_annotations_guarded(items, s, w)
             )
 
-        watcher.history_ready.connect(
-            lambda src, tr, m, s=current_session, w=watcher: self._on_watch_history_guarded(src, tr, m, s, w)
-        )
+        try:
+            watcher.history_ready[str, str, str, int, int].connect(
+                lambda src, tr, m, g, r, s=current_session, w=watcher: self._on_watch_history_guarded(
+                    src, tr, m, s, w, gen_id=g, content_rev=r
+                )
+            )
+        except Exception:
+            watcher.history_ready.connect(
+                lambda src, tr, m, s=current_session, w=watcher: self._on_watch_history_guarded(src, tr, m, s, w)
+            )
         watcher.window_moved.connect(
             lambda x, y, w_, h_, s=current_session, w=watcher: self._on_target_window_moved_guarded(x, y, w_, h_, s, w)
         )
@@ -1120,9 +1127,33 @@ class App:
                 return
         self._on_watch_annotations(items)
 
-    def _on_watch_history_guarded(self, src: str, tr: str, mode: str, session_id: int, watcher: Any) -> None:
+    def _on_watch_history_guarded(
+        self,
+        src: str,
+        tr: str,
+        mode: str,
+        session_id: int,
+        watcher: Any,
+        gen_id: int | None = None,
+        content_rev: int | None = None,
+    ) -> None:
         if not self._is_active_watch_session(session_id, watcher):
             return
+        if self._watch_paused or (hasattr(watcher, "_paused") and watcher._paused.is_set()):
+            self.log.debug("持续翻译已暂停，丢弃排队晚到的历史记录信号")
+            return
+        if gen_id is not None and hasattr(watcher, "generation_tracker"):
+            if not watcher.generation_tracker.is_active(gen_id):
+                self.log.debug("丢弃过时 generation 的历史记录信号: gen=%s", gen_id)
+                return
+        if content_rev is not None and hasattr(watcher, "content_revision"):
+            if watcher.content_revision != content_rev:
+                self.log.debug(
+                    "丢弃过时 content_revision 的历史记录信号: rev=%s current=%s",
+                    content_rev,
+                    watcher.content_revision,
+                )
+                return
         self._on_watch_history(src, tr, mode)
 
     def _on_target_window_moved_guarded(self, x: int, y: int, w: int, h: int, session_id: int, watcher: Any) -> None:

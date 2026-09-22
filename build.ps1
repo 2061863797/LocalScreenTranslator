@@ -13,7 +13,7 @@ Write-Host "==> 检查 PyInstaller"
 & $py -c "import PyInstaller" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "安装 PyInstaller..."
-    & $py -m pip install pyinstaller
+    & $py -m pip install "pyinstaller==6.19.0"
 }
 
 $icon = Join-Path $Root "icon.ico"

@@ -335,14 +335,18 @@ class TestSubtitleOverlayAdversarial(unittest.TestCase):
         self.assertIn("update #500", self.bar._text)
 
     def test_hide_on_empty_and_subsequent_reshow_settles_layout(self):
-        """Toggle cycle: text -> empty (hidden) -> new text (reshown with pre-layout)."""
+        """Toggle cycle: text -> empty (cleared text) -> hide -> new text (reshown with pre-layout)."""
         self.bar.set_text("Visible text 1")
         self.assertTrue(self.bar.isVisible())
 
-        # Clearing hides it
+        # Clearing text keeps window visible without flickering hide
         self.bar.set_text("")
-        self.assertFalse(self.bar.isVisible())
+        self.assertTrue(self.bar.isVisible())
         self.assertEqual(self.bar._text, "")
+
+        # Explicit hide closes window
+        self.bar.hide()
+        self.assertFalse(self.bar.isVisible())
 
         # Reshowing with new text
         show_called = False
