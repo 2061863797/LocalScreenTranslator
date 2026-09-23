@@ -110,12 +110,19 @@ class OcrStabilizer:
         self._stable_lines: list[Any] | None = None
         self._candidate_lines: list[Any] = []
         self._candidate_repeat_count: int = 0
+        self._last_change_was_debounced: bool = False
 
     @property
     def has_pending_candidate(self) -> bool:
         """是否有正在等待防抖确认的候选文本。"""
         with self._lock:
             return self._candidate_repeat_count > 0
+
+    @property
+    def last_change_was_debounced(self) -> bool:
+        """最近一次 process 是否晋升了连续两帧相同的细小文字变化。"""
+        with self._lock:
+            return self._last_change_was_debounced
 
     def _extract_text(self, lines: list[Any]) -> str:
         """Extract joined text from list of OCR lines or strings."""
@@ -137,6 +144,7 @@ class OcrStabilizer:
             Tuple of (is_substantive_change, stabilized_lines).
         """
         with self._lock:
+            self._last_change_was_debounced = False
             if self._stable_lines is None:
                 # Initial state: first frame establishes stable baseline
                 self._stable_lines = list(lines)
@@ -184,6 +192,7 @@ class OcrStabilizer:
                 if curr_text == cand_text:
                     self._candidate_repeat_count += 1
                     if self._candidate_repeat_count >= self.debounce_frames:
+                        self._last_change_was_debounced = True
                         self._stable_lines = list(lines)
                         self._candidate_repeat_count = 0
                         return True, self._stable_lines
@@ -205,3 +214,4 @@ class OcrStabilizer:
             self._stable_lines = None
             self._candidate_lines = []
             self._candidate_repeat_count = 0
+            self._last_change_was_debounced = False

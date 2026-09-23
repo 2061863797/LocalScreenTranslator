@@ -94,40 +94,60 @@ class SceneTextState:
         """增量融合局部 ROI 结果：剔除落在 ROI 范围内的旧行，合入新识别行。"""
         with self._lock:
             self._roi_update_count += 1
-            if not self._lines:
-                self._lines = list(roi_lines)
-                return list(self._lines)
-
-            # 保留未与本次变动 ROI 相交的旧行
-            retained: list[Any] = []
-            for item in self._lines:
-                box = getattr(item, "box", None)
-                if box is None and hasattr(item, "__getitem__"):
-                    try:
-                        box = item[1]  # 兼容 (text, box) 元组
-                    except Exception:
-                        pass
-                if box is not None and _boxes_intersect(box, roi_box):
-                    continue
-                retained.append(item)
-
-            # 注入新 ROI 识别行
-            retained.extend(roi_lines)
-
-            # 按 Y 坐标从上至下、X 坐标从左至右排序
-            def _sort_key(line: Any) -> tuple[int, int]:
-                box = getattr(line, "box", None)
-                if box is not None and len(box) >= 1:
-                    first = box[0]
-                    if isinstance(first, (list, tuple)) and len(first) >= 2:
-                        return (int(first[1]), int(first[0]))
-                    elif isinstance(first, (int, float)) and len(box) >= 2:
-                        return (int(box[1]), int(box[0]))
-                return (0, 0)
-
-            retained.sort(key=_sort_key)
-            self._lines = retained
+            self._lines = self._merge_roi_lines(self._lines, roi_lines, roi_box)
             return list(self._lines)
+
+    def preview_roi(
+        self,
+        roi_lines: list[Any],
+        roi_box: tuple[int, int, int, int],
+    ) -> list[Any]:
+        """预览局部识别后的全图文本，不提前发布未经防抖确认的结果。"""
+        with self._lock:
+            return self._merge_roi_lines(self._lines, roi_lines, roi_box)
+
+    def commit_roi(self, stable_lines: list[Any]) -> list[Any]:
+        """保存防抖后的全图文本，同时累计局部识别次数以供周期校准。"""
+        with self._lock:
+            self._lines = list(stable_lines)
+            self._roi_update_count += 1
+            return list(self._lines)
+
+    @staticmethod
+    def _merge_roi_lines(
+        existing_lines: list[Any],
+        roi_lines: list[Any],
+        roi_box: tuple[int, int, int, int],
+    ) -> list[Any]:
+        if not existing_lines:
+            return list(roi_lines)
+
+        retained: list[Any] = []
+        for item in existing_lines:
+            box = getattr(item, "box", None)
+            if box is None and hasattr(item, "__getitem__"):
+                try:
+                    box = item[1]  # 兼容 (text, box) 元组
+                except Exception:
+                    pass
+            if box is not None and _boxes_intersect(box, roi_box):
+                continue
+            retained.append(item)
+
+        retained.extend(roi_lines)
+
+        def _sort_key(line: Any) -> tuple[int, int]:
+            box = getattr(line, "box", None)
+            if box is not None and len(box) >= 1:
+                first = box[0]
+                if isinstance(first, (list, tuple)) and len(first) >= 2:
+                    return (int(first[1]), int(first[0]))
+                elif isinstance(first, (int, float)) and len(box) >= 2:
+                    return (int(box[1]), int(box[0]))
+            return (0, 0)
+
+        retained.sort(key=_sort_key)
+        return retained
 
     def clear(self) -> None:
         """清空所有场景状态。"""

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 import threading
-from typing import Any, List, Optional, Tuple
+import time
+from typing import Any, Callable, List, Optional, Tuple
 
 
 class TextChangeDetector:
@@ -16,7 +17,7 @@ class TextChangeDetector:
 
     职责：
     1. 观察当前 OCR 行，提取并规范化文本；
-    2. 连续两轮（默认阈值）无文字时判定为 "clear"；
+    2. 连续两轮（默认阈值）无文字且达到可选保留期时判定为 "clear"；
     3. 利用数学理论上限短路加速 SequenceMatcher 相似度比对；
     4. 相似度低于阈值时判定为 "change"，否则判定为 "none"；
     5. 维护逐行翻译缓存并支持定期修剪。
@@ -26,14 +27,19 @@ class TextChangeDetector:
         self,
         empty_clear_threshold: int = 2,
         candidate_confirm_frames: int = 2,
+        empty_clear_delay_s: float = 0.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.empty_clear_threshold = max(1, int(empty_clear_threshold))
         self.candidate_confirm_frames = max(1, int(candidate_confirm_frames))
+        self.empty_clear_delay_s = max(0.0, float(empty_clear_delay_s))
+        self._clock = clock
         self._lock = threading.RLock()
         self._last_text: str = ""
         self._candidate_text: str = ""
         self._candidate_count: int = 0
         self._empty_frames: int = 0
+        self._empty_started_at: float | None = None
         self._line_cache: dict[str, str] = {}
 
     @property
@@ -65,6 +71,7 @@ class TextChangeDetector:
     def empty_frames(self, value: int) -> None:
         with self._lock:
             self._empty_frames = int(value)
+            self._empty_started_at = self._clock() if self._empty_frames > 0 else None
 
     @property
     def line_cache(self) -> dict[str, str]:
@@ -87,7 +94,7 @@ class TextChangeDetector:
         """是否有正在等待确认的候选文本或待确认的清空帧。"""
         with self._lock:
             return self._candidate_count > 0 or (
-                bool(self._last_text) and 0 < self._empty_frames < self.empty_clear_threshold
+                bool(self._last_text) and self._empty_frames > 0
             )
 
     def reset(self, *, clear_cache: bool = True) -> None:
@@ -97,6 +104,7 @@ class TextChangeDetector:
             self._candidate_text = ""
             self._candidate_count = 0
             self._empty_frames = 0
+            self._empty_started_at = None
             if clear_cache:
                 self._line_cache.clear()
 
@@ -107,6 +115,7 @@ class TextChangeDetector:
                 self._last_text = ""
                 self._candidate_text = ""
                 self._candidate_count = 0
+                self._empty_started_at = None
 
     def observe(
         self,
@@ -142,15 +151,24 @@ class TextChangeDetector:
 
         with self._lock:
             if not text:
+                now = self._clock()
+                if self._empty_started_at is None:
+                    self._empty_started_at = now
                 self._empty_frames += 1
                 self._candidate_text = ""
                 self._candidate_count = 0
-                if self._empty_frames >= self.empty_clear_threshold and self._last_text:
+                if (
+                    self._empty_frames >= self.empty_clear_threshold
+                    and self._last_text
+                    and now - self._empty_started_at >= self.empty_clear_delay_s
+                ):
                     self._last_text = ""
+                    self._empty_started_at = None
                     return "clear", ""
                 return "none", ""
 
             self._empty_frames = 0
+            self._empty_started_at = None
             if text == self._last_text:
                 self._candidate_text = ""
                 self._candidate_count = 0

@@ -441,6 +441,7 @@ class TestMilestone4AdversarialStress(unittest.TestCase):
         cfg["target_language"] = "zh"
 
         watcher = WindowWatcher(ocr_mock, translator_mock, cfg, hwnd=42)
+        watcher.text_change_detector.empty_clear_delay_s = 0.0  # 此用例仅验证两帧计数条件
 
         # Spies
         emitted_subtitles = []

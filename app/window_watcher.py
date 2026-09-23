@@ -120,6 +120,7 @@ class WindowWatcher(QThread):
 
     # 画面无实质变化时最多连续跳过的 OCR 轮数（保险起见周期性强制识别）
     _MAX_SKIPPED_FRAMES = 5
+    _CLEAR_GRACE_SECONDS = 1.2
 
     def __init__(
         self,
@@ -163,7 +164,7 @@ class WindowWatcher(QThread):
         self._ocr_service = OcrService(ocr_engine=self._ocr)
         self._ocr_stabilizer = OcrStabilizer()
         self._ocr_reset_requested = threading.Event()
-        self._text_change_detector = TextChangeDetector()
+        self._text_change_detector = TextChangeDetector(empty_clear_delay_s=self._CLEAR_GRACE_SECONDS)
         self._translation_manager = TranslationManager(translator=self._translator)
         self._result_manager = ResultManager(generation_tracker=self._generation_tracker)
 
@@ -550,6 +551,89 @@ class WindowWatcher(QThread):
             region = self._region
         return self._capture_service.grab(self._hwnd, region)
 
+    @staticmethod
+    def _line_box_bounds(box: Any) -> tuple[int, int, int, int] | None:
+        """将 OCR 多边形或绝对矩形转换为包围框；未知格式回退全图识别。"""
+        try:
+            if box is None or len(box) != 4:
+                return None
+            if isinstance(box[0], (list, tuple)):
+                xs = [int(point[0]) for point in box]
+                ys = [int(point[1]) for point in box]
+                return min(xs), min(ys), max(xs), max(ys)
+            x1, y1, x2, y2 = (int(value) for value in box)
+            return min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    def _expand_roi_for_text(
+        self,
+        roi_box: tuple[int, int, int, int],
+        frame: np.ndarray,
+        existing_lines: list[Any],
+    ) -> tuple[int, int, int, int] | None:
+        """将变动区扩到相交旧文本的完整行，避免只识别被修改的几个字。"""
+        bounds = []
+        for line in existing_lines:
+            box = getattr(line, "box", None)
+            if box is None and isinstance(line, (tuple, list)) and len(line) > 1:
+                box = line[1]
+            parsed = self._line_box_bounds(box)
+            if parsed is None:
+                return None
+            bounds.append(parsed)
+
+        h, w = frame.shape[:2]
+        expanded = roi_box
+        for _ in range(len(bounds) + 1):
+            padded = self._ocr_service.compute_padded_roi(expanded, w, h)
+            next_box = expanded
+            for box in bounds:
+                if _boxes_intersect(box, padded):
+                    next_box = (
+                        min(next_box[0], box[0]),
+                        min(next_box[1], box[1]),
+                        max(next_box[2], box[2]),
+                        max(next_box[3], box[3]),
+                    )
+            if next_box == expanded:
+                return expanded
+            expanded = next_box
+        return None
+
+    def _recognize_live_lines(
+        self,
+        frame: np.ndarray,
+        roi_box: tuple[int, int, int, int] | None,
+        diff_ratio: float,
+    ) -> list[Any]:
+        """局部变动时识别完整相关行，并与画面其它稳定行合并。"""
+        existing = self._scene_text_state.lines
+        use_roi = (
+            roi_box is not None
+            and diff_ratio < 0.35
+            and bool(existing)
+            and not self._scene_text_state.should_force_full_refresh()
+        )
+        expanded_roi = self._expand_roi_for_text(roi_box, frame, existing) if use_roi else None
+        raw_lines = self._ocr_service.recognize_frame(frame, roi_box=expanded_roi)
+
+        if expanded_roi is not None and not self._ocr_service.last_was_fallback:
+            padded_roi = self._ocr_service.last_padded_roi
+            if not raw_lines and any(
+                _boxes_intersect(getattr(line, "box", None), padded_roi)
+                for line in existing
+            ):
+                # 局部空识别可能只是裁剪或 OCR 抖动，先用整图确认再进入清空状态机。
+                raw_lines = self._ocr_service.recognize_frame(frame, force_full=True)
+            else:
+                merged_lines = self._scene_text_state.preview_roi(raw_lines, padded_roi)
+                _, stable_lines = self._ocr_stabilizer.process(merged_lines)
+                return self._scene_text_state.commit_roi(stable_lines)
+
+        _, stable_lines = self._ocr_stabilizer.process(raw_lines)
+        return self._scene_text_state.update_full(stable_lines)
+
     def _annotate_translate(self, lines: list[Any], target: str) -> tuple[list[tuple[Any, str]], str]:
         """备注：按行增量翻译，委托 TranslationManager 处理。"""
         skip_key = f"{self._profile}_annotate_skip_target_lang"
@@ -819,13 +903,10 @@ class WindowWatcher(QThread):
                 ):
                     img = self._remove_annotation_overlay(img)
 
-                # 7. OCR 识别与防抖过滤，内部异常隔离防护
-                # 当前阶段保持安全可靠的全图 OCR，确保语义不被未成熟的局部 ROI 截断
+                # 7. 局部 OCR 与全图回退，防抖后再提交场景文本
                 lines: list[Any] = []
                 try:
-                    raw_lines = self._ocr_service.recognize_frame(img, roi_box=None)
-                    _, stable_lines = self._ocr_stabilizer.process(raw_lines)
-                    lines = self._scene_text_state.update_full(stable_lines)
+                    lines = self._recognize_live_lines(img, roi_box, diff_ratio)
                 except Exception as e:
                     _log.warning("OCR 识别异常 (gen=%s): %s", frame_gen_id, e)
                     if not self._running and self._frame_buffer.is_empty:
@@ -838,16 +919,17 @@ class WindowWatcher(QThread):
 
                 # 8. 文本变化检测与空帧清空判定
                 with self._state_lock:
-                    # 字幕模式下前面已有 OcrStabilizer 稳定层，传 exact_change=True（threshold=1.0），
-                    # 只要稳定文本变动立即触发翻译，彻底杜绝进入两帧候选延迟与首帧延迟！
+                    # 字幕及已由 OCR 连续帧确认的微变，直接派发；备注模式的其它小变化仍保留二次确认。
                     is_sub = (self._display_mode == "subtitle")
+                    confirmed = self._ocr_stabilizer.last_change_was_debounced is True
                     sim_threshold = 1.0 if is_sub else threshold
                     event, text = self._text_change_detector.observe(
-                        lines, sim_threshold, exact_change=is_sub
+                        lines, sim_threshold, exact_change=is_sub or confirmed
                     )
 
                 # 9. 结果派发与增量翻译，内部异常隔离防护
                 if event == "clear":
+                    _log.info("连续空 OCR 已确认，清空持续翻译显示")
                     self._scene_text_state.clear()
                     self._result_manager.dispatch_cleared(frame_gen_id)
                 elif event == "change":
