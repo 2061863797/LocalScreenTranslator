@@ -31,3 +31,30 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python scripts/smoke_import.py --skip-runtime-assets
+
+  windows-package:
+    needs: windows-python
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 安装发布依赖
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements-lock.txt
+          python scripts/verify_lock.py
+          python -m pip check
+      - name: 构建并检查冻结程序
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm package.spec
+          $appDir = Join-Path $PWD "dist\LocalScreenTranslator"
+          $exe = Join-Path $appDir "LocalScreenTranslator.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "冻结程序不存在" }
+          $polluted = Get-ChildItem -LiteralPath $appDir -Recurse -Filter "icuuc*.dll"
+          if ($polluted) { throw "冻结程序包含冲突 ICU DLL" }
+          $proc = Start-Process -FilePath $exe -ArgumentList "--smoke-check" -Wait -PassThru -WindowStyle Hidden
+          if ($proc.ExitCode -ne 0) { throw "冻结程序自检失败：$($proc.ExitCode)" }

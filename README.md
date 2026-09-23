@@ -136,7 +136,7 @@ venv\Scripts\pythonw.exe run.py
 
 启动后会自动打开设置，并显示 OCR 与翻译模型的加载状态；失败项可直接重试。托盘菜单仍可打开设置、历史和日志。窗口持续翻译与区域实时翻译同时只能运行一个，控制条可原地暂停或继续。
 
-翻译历史默认最多保存 50 条，以明文写入数据库 `data.db`（便携版位于软件根目录；安装版位于系统标准用户目录 `%LOCALAPPDATA%\LocalScreenTranslator\`）。可在“设置 → 常规”关闭后续记录；历史窗口支持搜索、复制、删除单条或确认后清空。设置、历史、翻译窗口以及字幕条会记住上次有效的位置和大小。
+翻译历史默认最多保存 50 条，翻译缓存默认最多保存 50,000 条，两者均以明文写入数据库 `data.db`（便携版位于软件根目录；安装版位于系统标准用户目录 `%LOCALAPPDATA%\LocalScreenTranslator\`）。可在“设置 → 常规”分别关闭后续写入；已有内容可在历史窗口分别确认后清空。历史窗口还支持搜索、复制和删除单条历史。设置、历史、翻译窗口以及字幕条会记住上次有效的位置和大小。
 
 ## 常见问题
 
@@ -156,9 +156,10 @@ venv\Scripts\pythonw.exe run.py
 
 ## 独立安装包构建
 
-若需要将软件（含 Python 运行环境与离线引擎资源）打包为独立安装包（`本地屏译-Setup.exe`），在满足已安装 Inno Setup 6 与基础 `runtime\` 资源的前提下执行：
+若需要将软件（含 Python 运行环境与离线引擎资源）打包为独立安装包（`本地屏译-Setup.exe`），在满足已安装 Inno Setup 6 与基础 `runtime\` 资源的前提下，使用 Python 3.12 的项目虚拟环境安装锁定依赖，再执行：
 
 ```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements-lock.txt
 # 默认 Model-Free 模式构建（模型与主程序解耦，符合开源分发与合规要求）
 .\package.ps1
 

@@ -378,11 +378,6 @@ class ModelCopyWorker(QThread):
                 self.copy_finished.emit(False, "", "拷贝后模型文件头校验失败（非合法 GGUF）")
                 return
 
-            if self.dest_path.exists():
-                try:
-                    self.dest_path.unlink()
-                except Exception:
-                    pass
             os.replace(temp_dest, self.dest_path)
             self.copy_finished.emit(True, str(self.dest_path), "")
         except Exception as e:
@@ -421,6 +416,7 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._target.addItems(LANGUAGES)
         self._translation_font_size = _font_size_combo()
         self._history_enabled = QCheckBox()
+        self._translation_cache_enabled = QCheckBox()
         self._history_privacy_tip = QLabel()
         self._history_privacy_tip.setWordWrap(True)
         self._history_privacy_tip.setStyleSheet("color:#aaa;font-size:12px;")
@@ -635,6 +631,7 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._translation_font_size.setItemText(0, tr("font_size_default"))
         self._translation_font_size.setToolTip(tr("translate_font_size_tip"))
         self._history_enabled.setText(tr("history_enabled"))
+        self._translation_cache_enabled.setText(tr("translation_cache_enabled"))
         self._history_privacy_tip.setText(tr("history_privacy_tip"))
         self._runtime_title.setText(tr("runtime_status"))
         self._runtime_retry.setText(tr("runtime_retry"))
@@ -821,6 +818,7 @@ class SettingsWindow(_DraggableMixin, QWidget):
         )
         lay.addLayout(r3)
         lay.addWidget(self._history_enabled)
+        lay.addWidget(self._translation_cache_enabled)
         lay.addWidget(self._history_privacy_tip)
         lay.addWidget(self._runtime_title)
         lay.addWidget(self._runtime_text)
@@ -1004,6 +1002,9 @@ class SettingsWindow(_DraggableMixin, QWidget):
             cfg.get("translate_window_font_size", 0),
         )
         self._history_enabled.setChecked(bool(cfg.get("history_enabled", True)))
+        self._translation_cache_enabled.setChecked(
+            bool(cfg.get("translation_cache_enabled", True))
+        )
         self._hk_shot.set_value(cfg["hotkey_screenshot"])
         self._hk_word.set_value(cfg["hotkey_word"])
         self._hk_win.set_value(cfg["hotkey_window"])
@@ -1168,6 +1169,18 @@ class SettingsWindow(_DraggableMixin, QWidget):
             )
             return
         elif clicked == btn_copy:
+            if dest.exists():
+                answer = QMessageBox.question(
+                    self,
+                    self._tr("title_warning"),
+                    f"模型目录中已有同名文件 {dest.name}。确定替换吗？"
+                    if self._lang == "zh"
+                    else f"A model named {dest.name} already exists. Replace it?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
             # 后台线程异步复制，彻底消除 UI 假死
             self._btn_import_model.setEnabled(False)
             self._btn_import_model.setText("正在后台复制..." if self._lang == "zh" else "Copying...")
@@ -1258,6 +1271,7 @@ class SettingsWindow(_DraggableMixin, QWidget):
             "ui_language": self._lang,
             "target_language": self._target.currentText(),
             "history_enabled": self._history_enabled.isChecked(),
+            "translation_cache_enabled": self._translation_cache_enabled.isChecked(),
             "translate_window_font_size": int(
                 self._translation_font_size.currentData() or 0
             ),
@@ -1319,7 +1333,7 @@ class HistoryWindow(_DraggableMixin, QWidget):
     视觉与截图/划词翻译结果窗一致。
     """
 
-    def __init__(self, storage, on_open=None):
+    def __init__(self, storage, on_open=None, on_clear_cache=None):
         super().__init__()
         apply_frameless_float(self)
         self.resize(640, 420)
@@ -1327,6 +1341,7 @@ class HistoryWindow(_DraggableMixin, QWidget):
         ensure_stays_on_top(self)
         self._storage = storage
         self._on_open = on_open
+        self._on_clear_cache = on_clear_cache
 
         self._table = QTableWidget(0, 2)
         self._table.horizontalHeader().setStretchLastSection(True)
@@ -1347,6 +1362,8 @@ class HistoryWindow(_DraggableMixin, QWidget):
         self._btn_delete.clicked.connect(self._delete_selected)
         self._btn_clear = QPushButton()
         self._btn_clear.clicked.connect(self._clear_history)
+        self._btn_clear_cache = QPushButton()
+        self._btn_clear_cache.clicked.connect(self._clear_translation_cache)
 
         title_bar = QHBoxLayout()
         title_bar.setContentsMargins(4, 2, 2, 2)
@@ -1357,6 +1374,7 @@ class HistoryWindow(_DraggableMixin, QWidget):
         btn_close.clicked.connect(self.hide)
         title_bar.addWidget(self._title_lbl)
         title_bar.addStretch()
+        title_bar.addWidget(self._btn_clear_cache)
         title_bar.addWidget(self._btn_clear)
         title_bar.addWidget(btn_close)
 
@@ -1391,6 +1409,7 @@ class HistoryWindow(_DraggableMixin, QWidget):
         self._title_lbl.setText(_ti("hist_title"))
         self._tip.setText(_ti("hist_tip"))
         self._btn_clear.setText(_ti("hist_clear"))
+        self._btn_clear_cache.setText(_ti("hist_clear_cache"))
         self._search.setPlaceholderText(_ti("hist_search"))
         self._btn_copy_src.setText(_ti("hist_copy_src"))
         self._btn_copy_dst.setText(_ti("hist_copy_dst"))
@@ -1449,8 +1468,31 @@ class HistoryWindow(_DraggableMixin, QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self._storage.clear_history()
+        if self._storage.clear_history() is False:
+            topmost_message(
+                "warning", _ti("hist_clear"), _ti("hist_clear_failed"), parent=self
+            )
+            return
         self._table.setRowCount(0)
+
+    def _clear_translation_cache(self):
+        answer = QMessageBox.question(
+            self,
+            _ti("hist_clear_cache"),
+            _ti("hist_clear_cache_confirm"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if self._on_clear_cache is not None:
+            if self._on_clear_cache() is False:
+                topmost_message(
+                    "warning", _ti("hist_clear_cache"),
+                    _ti("hist_clear_cache_busy"), parent=self,
+                )
+        else:
+            self._storage.clear_translation_cache()
 
     def _on_double_click(self, row: int, _column: int):
         src_item = self._table.item(row, 0)

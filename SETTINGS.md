@@ -8,7 +8,8 @@
 | 界面语言 | `ui_language` | `zh` / `en` |
 | 目标语言 | `target_language` | 如 简体中文 |
 | 翻译窗口字号 | `translate_window_font_size` | `0`=默认；否则 `12`–`20` px |
-| 保存本地历史 | `history_enabled` | 明文保存在 `data.db`，最多 50 条 |
+| 保存本地历史 | `history_enabled` | 明文保存在 `data.db`，最多 50 条；关闭后不再新增 |
+| 保存本地翻译缓存 | `translation_cache_enabled` | 明文保存在 `data.db`，最多 50,000 条；关闭后不再新增，可在历史窗口清空已有缓存 |
 | 备注译文颜色 | `annotate_text_color` | `#RRGGBB` |
 | 备注出现在截屏/录屏 | `annotate_capture_visible` | `false`（默认）=从截屏/录屏排除，速度最快；`true`=录屏可见，区域备注稍慢 |
 | 截屏翻译热键 | `hotkey_screenshot` | 默认 `<alt>+q` |

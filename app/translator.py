@@ -827,6 +827,18 @@ class Translator:
         )
         return results
 
+    def clear_cache(self) -> bool:
+        """清除内存与持久化翻译缓存；翻译忙碌时立即返回 False。"""
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            self._line_cache.clear()
+            if self.cache is not None:
+                self.cache.clear()
+            return True
+        finally:
+            self._lock.release()
+
     def close(self) -> None:
         """所有翻译任务结束后释放 HTTP 连接池与两级缓存资源。"""
         with self._lock:

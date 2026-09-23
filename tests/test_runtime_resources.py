@@ -21,6 +21,18 @@ class RuntimeResourcesTests(unittest.TestCase):
 
         self.assertEqual(events, ["http", "storage", "llama"])
 
+    def test_close_retries_storage_without_closing_translator_twice(self):
+        storage = mock.Mock()
+        storage.close.side_effect = [False, True]
+        translator = mock.Mock()
+        resources = RuntimeResources(storage, mock.Mock(), translator, mock.Mock())
+
+        self.assertFalse(resources.close_clients())
+        self.assertTrue(resources.close_clients())
+        self.assertTrue(resources.close_clients())
+        translator.close.assert_called_once_with()
+        self.assertEqual(storage.close.call_count, 2)
+
     def test_emergency_interrupt_only_stops_the_owned_server(self):
         storage = mock.Mock()
         translator = mock.Mock()

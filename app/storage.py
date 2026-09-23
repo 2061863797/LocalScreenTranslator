@@ -41,6 +41,7 @@ class Storage:
         self.batches_committed_count = 0
         self._history_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
+        self._queue_lock = threading.Lock()
         self._history_worker = threading.Thread(
             target=self._history_worker_loop, daemon=True, name="AsyncHistoryWorker"
         )
@@ -104,7 +105,18 @@ class Storage:
         on_complete: Callable[[], None] | None = None,
     ) -> None:
         """非阻塞异步记录历史 (<0.1ms)，由后台线程批量写入 SQLite (PR 12)."""
-        self._history_queue.put((time.time(), source, translation, mode, on_complete))
+        with self._queue_lock:
+            if not self._stop_event.is_set():
+                self._history_queue.put((time.time(), source, translation, mode, on_complete))
+                return
+        if on_complete is not None:
+            try:
+                try:
+                    on_complete(False)
+                except TypeError:
+                    on_complete()
+            except Exception:
+                pass
 
     def _history_worker_loop(self) -> None:
         batch: list[tuple[float, str, str, str, Any]] = []
@@ -183,19 +195,24 @@ class Storage:
             except Exception:
                 pass
 
-    def flush(self, timeout: float = 2.0) -> None:
-        """阻塞刷新队列中的所有暂存项并写入 SQLite 事务."""
-        if self._stop_event.is_set():
-            return
-        event = threading.Event()
-        self._history_queue.put(("__FLUSH__", event))
-        event.wait(timeout=timeout)
+    def flush(self, timeout: float = 2.0) -> bool:
+        """等待已排队的历史写入完成；超时或停止时返回 False。"""
+        with self._queue_lock:
+            if self._stop_event.is_set():
+                return False
+            event = threading.Event()
+            self._history_queue.put(("__FLUSH__", event))
+        return event.wait(timeout=timeout)
 
-    def flush_and_close(self, timeout: float = 2.0) -> None:
-        """刷新所有未提交的历史并安全关闭数据库连接."""
-        self._stop_event.set()
+    def flush_and_close(self, timeout: float = 2.0) -> bool:
+        """等待历史写入完成后关闭连接；超时则保留连接供下次重试。"""
+        with self._queue_lock:
+            self._stop_event.set()
         if hasattr(self, "_history_worker") and self._history_worker.is_alive():
             self._history_worker.join(timeout=timeout)
+            if self._history_worker.is_alive():
+                _log.warning("异步历史写入尚未结束，暂缓关闭数据库")
+                return False
         # 提交队列残余
         remaining = []
         while not self._history_queue.empty():
@@ -216,6 +233,7 @@ class Storage:
                 except Exception:
                     pass
                 self._conn = None
+        return True
 
     def count_records(self) -> int:
         """返回 history 表中的记录总数."""
@@ -274,11 +292,14 @@ class Storage:
             self._conn.execute("DELETE FROM history WHERE id = ?", (int(entry_id),))
             self._conn.commit()
 
-    def clear_history(self) -> None:
-        """只清空翻译历史；不触碰旧版本或其它功能的数据表。"""
+    def clear_history(self) -> bool:
+        """先完成已排队的写入，再清空历史；不触碰其它数据表。"""
+        if not self.flush(timeout=5.0):
+            return False
         with self._lock:
             self._conn.execute("DELETE FROM history")
             self._conn.commit()
+        return True
 
     def cache_get(self, cache_key: str) -> str | None:
         """从 translation_cache 表中查询缓存。
@@ -371,8 +392,8 @@ class Storage:
             cur = self._conn.execute("SELECT count(*) FROM translation_cache")
             return cur.fetchone()[0]
 
-    def close(self) -> None:
-        self.flush_and_close()
+    def close(self) -> bool:
+        return self.flush_and_close()
 
 
 class AsyncHistoryStorage(Storage):

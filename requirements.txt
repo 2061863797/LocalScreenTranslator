@@ -11,7 +11,7 @@ pyclipper==1.4.0
 mss==10.2.0
 pynput==1.8.2
 pywin32==312
-Pillow==12.1.0
+Pillow==12.3.0
 
 # HTTP client
 requests==2.34.2

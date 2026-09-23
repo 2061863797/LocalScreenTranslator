@@ -166,6 +166,7 @@ class App:
         self.history_win = HistoryWindow(
             self.storage,
             on_open=lambda s, t: self.translate_win.show_result(s, t),
+            on_clear_cache=self.translator.clear_cache,
         )
         from .ui.topmost import restore_window_geometry
 
@@ -1594,7 +1595,13 @@ class App:
             QTimer.singleShot(100, self._poll_shutdown)
             return
         if not self._shutdown_resources_closed:
-            self.resources.close_clients()
+            if not self.resources.close_clients():
+                if elapsed >= _SHUTDOWN_HARD_LIMIT_SECONDS:
+                    self.log.critical("异步历史写入超过退出上限，数据库连接保持打开")
+                    self.qapp.quit()
+                    return
+                QTimer.singleShot(100, self._poll_shutdown)
+                return
             self._shutdown_resources_closed = True
             # 所有请求线程退出、HTTP 会话关闭后，最后停止 llama 服务。
             self._shutdown_server_thread = threading.Thread(

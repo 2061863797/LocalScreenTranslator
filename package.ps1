@@ -43,10 +43,13 @@ Write-Ok "Python: $py"
 & $py -c "import PyInstaller" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Step "安装 PyInstaller"
-    & $py -m pip install "pyinstaller>=6.4.0,<7.0.0"
-    if ($LASTEXITCODE -ne 0) { throw "PyInstaller 安装失败" }
+    & $py -m pip install -r (Join-Path $Root "requirements-lock.txt")
+    if ($LASTEXITCODE -ne 0) { throw "锁定依赖安装失败" }
 }
 Write-Ok "PyInstaller 已就绪"
+& $py (Join-Path $Root "scripts\verify_lock.py")
+if ($LASTEXITCODE -ne 0) { throw "发布环境与 requirements-lock.txt 不一致；请先安装锁定依赖" }
+Write-Ok "发布依赖与锁定清单一致"
 
 # 2. 检查 Inno Setup ISCC.exe
 Write-Step "2. 查找 Inno Setup 编译器"

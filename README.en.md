@@ -136,7 +136,7 @@ The model directory is rescanned whenever Settings opens. Only `.gguf` files wit
 
 Use the tray menu for settings, history, and logs. Only one window or region live-translation session can run at a time.
 
-The app opens Settings at startup and shows OCR/translation-model readiness with retry for failed items. Continuous translation can be paused and resumed without selecting the target again. Up to 50 history entries are stored as plain text in `data.db`; the History window supports search, copy, single-entry deletion, and clearing all entries. Settings, History, Translate, and subtitle geometry are restored when still visible on a connected screen.
+The app opens Settings at startup and shows OCR/translation-model readiness with retry for failed items. Continuous translation can be paused and resumed without selecting the target again. Up to 50 history entries and 50,000 translation-cache entries are stored as plain text in `data.db`. Settings has separate switches for future history and cache writes; the History window can clear existing history or cache separately, and supports searching, copying, and deleting individual history entries. Settings, History, Translate, and subtitle geometry are restored when still visible on a connected screen.
 
 ## Troubleshooting
 
@@ -153,6 +153,17 @@ The app opens Settings at startup and shows OCR/translation-model readiness with
 Log file: `app.log`. See the Settings window and [SETTINGS.en.md](./SETTINGS.en.md) for advanced options.
 
 For the runtime directory layout, see [runtime/README.en.md](./runtime/README.en.md).
+
+## Standalone installer build
+
+With Inno Setup 6 and the base `runtime\` assets available, use the project's Python 3.12 environment and locked dependencies:
+
+```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements-lock.txt
+.\package.ps1
+```
+
+The packaging script verifies the locked dependency versions and checks that the frozen program starts before building the installer.
 
 ## Other
 

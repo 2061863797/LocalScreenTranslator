@@ -8,7 +8,8 @@ Key: `ui_language` = `zh` | `en` (whole UI).
 | UI language | `ui_language` | `zh` / `en` |
 | Target language | `target_language` | e.g. 简体中文 |
 | Translate window font | `translate_window_font_size` | `0`=default; otherwise `12`–`20` px |
-| Save local history | `history_enabled` | plain text in `data.db`, up to 50 entries |
+| Save local history | `history_enabled` | plain text in `data.db`, up to 50 entries; disabling stops new records |
+| Save local translation cache | `translation_cache_enabled` | plain text in `data.db`, up to 50,000 entries; disabling stops new writes, and existing cache can be cleared in History |
 | Annotation color | `annotate_text_color` | `#RRGGBB` |
 | Annotation in captures | `annotate_capture_visible` | `false` (default) = excluded from screenshots/recordings, fastest; `true` = visible in captures, region notes slightly slower |
 | Screenshot hotkey | `hotkey_screenshot` | default `<alt>+q` |

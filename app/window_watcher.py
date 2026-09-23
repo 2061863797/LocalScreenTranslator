@@ -714,19 +714,16 @@ class WindowWatcher(QThread):
             except Exception:
                 pass
 
-            # 3. 严格生命周期回收：必须等待推理线程彻底退出，才允许结束 QThread
-            if self._inference_thread is not None and self._inference_thread.is_alive():
+            # 推理线程可能仍在 OCR 中；保持 QThread 存活，避免提前释放共享资源。
+            while self._inference_thread is not None and self._inference_thread.is_alive():
                 self._inference_thread.join(timeout=2.0)
                 if self._inference_thread.is_alive():
-                    _log.warning("推理工作线程未在预定时间内退出，再次触发中断与等待")
+                    _log.warning("推理工作线程仍在退出，继续等待并中断在途翻译请求")
                     try:
                         if hasattr(self._translator, "abort_inflight"):
                             self._translator.abort_inflight(tag=self._translation_session_tag)
                     except Exception:
                         pass
-                    self._inference_thread.join(timeout=2.0)
-                    if self._inference_thread.is_alive():
-                        _log.error("推理工作线程未能在超时后正常退出")
 
             self._capture_service.release()
             try:
