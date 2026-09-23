@@ -56,6 +56,39 @@ class _FakeMss:
 
 
 class RuntimeSafetyTests(unittest.TestCase):
+    def _run_watcher_frames(self, watcher, ocr, images, progress):
+        """逐帧等待推理线程处理，避免停止监视时清空尚未消费的测试帧。"""
+        self.assertEqual(len(images), len(progress))
+        height, width = images[0].shape[:2]
+        frame_index = 0
+        failure = None
+
+        def _grab():
+            nonlocal frame_index, failure
+            if frame_index:
+                kind, expected = progress[frame_index - 1]
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline:
+                    if kind == "skip" and watcher._skipped_frames >= expected:
+                        break
+                    if kind == "ocr" and ocr.recognize.call_count >= expected:
+                        if expected != 1 or watcher._last_processed_work_rev >= 1:
+                            break
+                    time.sleep(0.005)
+                else:
+                    failure = f"第 {frame_index} 帧未完成预期处理：{kind} {expected}"
+                    watcher._running = False
+                    return ((0, 0, width, height), images[frame_index - 1])
+
+            frame_index += 1
+            if frame_index > len(images):
+                watcher._running = False
+            return ((0, 0, width, height), images[min(frame_index, len(images)) - 1])
+
+        watcher._grab = _grab
+        watcher.run()
+        self.assertIsNone(failure, failure)
+
     def test_llama_device_selects_gpu_layers_without_another_runtime(self):
         server = object.__new__(LlamaServer)
         server._cfg = {"llama_device": "cpu", "n_gpu_layers": 99}
@@ -300,18 +333,11 @@ class RuntimeSafetyTests(unittest.TestCase):
             profile="window",
         )
         image = np.zeros((20, 30, 3), dtype=np.uint8)
-        frames = 0
-
-        def _grab():
-            nonlocal frames
-            frames += 1
-            if frames >= 8:
-                watcher._running = False
-            return ((0, 0, 30, 20), image)
-
-        watcher._grab = _grab
         ocr.recognize.return_value = []
-        watcher.run()
+        self._run_watcher_frames(
+            watcher, ocr, [image] * 7,
+            [("ocr", 1), *[("skip", count) for count in range(1, 6)], ("ocr", 2)],
+        )
 
         # 8 帧逐字节相同：第 1 帧识别，连续跳过 5 帧后第 7 帧强制复检
         self.assertEqual(ocr.recognize.call_count, 2)
@@ -332,18 +358,11 @@ class RuntimeSafetyTests(unittest.TestCase):
         )
         blank = np.zeros((20, 30, 3), dtype=np.uint8)
         changed = np.full((20, 30, 3), 255, dtype=np.uint8)
-        frames = 0
-
-        def _grab():
-            nonlocal frames
-            frames += 1
-            if frames >= 3:
-                watcher._running = False
-            return ((0, 0, 30, 20), changed if frames == 3 else blank)
-
-        watcher._grab = _grab
         ocr.recognize.return_value = []
-        watcher.run()
+        self._run_watcher_frames(
+            watcher, ocr, [blank, blank, changed],
+            [("ocr", 1), ("skip", 1), ("ocr", 2)],
+        )
 
         # 第 1 帧与内容变化的第 3 帧各识别一次；相同的第 2 帧被跳过
         self.assertEqual(ocr.recognize.call_count, 2)
@@ -394,18 +413,10 @@ class RuntimeSafetyTests(unittest.TestCase):
         still = np.zeros((40, 60, 3), dtype=np.uint8)
         with_text = still.copy()
         with_text[10:24, 12:48] = 255 - with_text[10:24, 12:48]
-        frames = 0
-
-        def _grab():
-            nonlocal frames
-            frames += 1
-            if frames >= 4:
-                watcher._running = False
-                return ((0, 0, 60, 40), with_text)
-            return ((0, 0, 60, 40), still)
-
-        watcher._grab = _grab
-        watcher.run()
+        self._run_watcher_frames(
+            watcher, ocr, [still, still, still, with_text],
+            [("ocr", 1), ("skip", 1), ("skip", 2), ("ocr", 2)],
+        )
         # 第 1 帧识别；第 2、3 帧画面未变被跳过；第 4 帧出现文字立即识别
         self.assertEqual(ocr.recognize.call_count, 2)
 

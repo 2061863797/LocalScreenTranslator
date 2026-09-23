@@ -320,8 +320,10 @@ class TestPipelineMetricsTiers(unittest.TestCase):
         self.storage.add_history_async("Source A", "Trans A", "subtitle")
         self.storage.add_history_async("Source B", "Trans B", "subtitle")
 
-        # Wait for background flush interval (0.2s)
-        time.sleep(0.35)
+        # 等待后台定时刷盘完成，避免固定休眠受 CI 调度影响
+        deadline = time.monotonic() + 5.0
+        while self.storage.count_records() < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
 
         cnt = self.storage.count_records()
         self.assertEqual(cnt, 2)
@@ -369,8 +371,10 @@ class TestPipelineMetricsTiers(unittest.TestCase):
         for i in range(5):
             self.storage.add_history_async(f"Src {i}", f"Tr {i}", "sub")
 
-        # Wait briefly for batch trigger
-        time.sleep(0.1)
+        # 等待后台线程提交实际记录，避免固定休眠在繁忙 CI 上抢先断言
+        deadline = time.monotonic() + 5.0
+        while self.storage.count_records() < 5 and time.monotonic() < deadline:
+            time.sleep(0.01)
 
         self.assertGreaterEqual(self.storage.batches_committed_count, 1)
         self.assertEqual(self.storage.count_records(), 5)
