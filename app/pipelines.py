@@ -42,6 +42,14 @@ class GenerationTracker:
             self._current_gen += 1
             return self._current_gen
 
+    def next_generation_if_active(self, expected: int) -> int | None:
+        """仅在处理期间未被重置时原子地推进世代。"""
+        with self._lock:
+            if self._current_gen != expected:
+                return None
+            self._current_gen += 1
+            return self._current_gen
+
     def is_active(self, gen_id: int) -> bool:
         """Returns True if gen_id matches current active generation."""
         with self._lock:

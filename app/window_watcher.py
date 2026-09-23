@@ -848,8 +848,8 @@ class WindowWatcher(QThread):
                     has_visual_change = True
                     packet_diff_ratio = 1.0
 
-                # 2. 开启当前推理世代，确保异步结果与会话状态同步
-                frame_gen_id = self._generation_tracker.next_generation()
+                # 2. 记录当前世代；静止帧和无文本变化的 OCR 不应使排队中的译文过期。
+                frame_gen_id = self._generation_tracker.current_generation
 
                 # 3. 画面两阶段轻量差分检测（纯净算法，绝不被单像素噪声绕过）
                 # 双版本号加固 (PR 1 / Work Revision)：
@@ -926,6 +926,21 @@ class WindowWatcher(QThread):
                     event, text = self._text_change_detector.observe(
                         lines, sim_threshold, exact_change=is_sub or confirmed
                     )
+
+                # 只有真实文本变化或清空才开启新世代；区域移动等重置期间的旧帧直接丢弃。
+                if event in ("change", "clear"):
+                    with self._content_epoch_lock:
+                        is_fresh = (packet_epoch == self._content_epoch)
+                    if not is_fresh:
+                        with self._state_lock:
+                            self._text_change_detector.rollback(text)
+                        continue
+                    next_gen_id = self._generation_tracker.next_generation_if_active(frame_gen_id)
+                    if next_gen_id is None:
+                        with self._state_lock:
+                            self._text_change_detector.rollback(text)
+                        continue
+                    frame_gen_id = next_gen_id
 
                 # 9. 结果派发与增量翻译，内部异常隔离防护
                 if event == "clear":

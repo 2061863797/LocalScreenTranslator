@@ -1237,9 +1237,7 @@ class App:
             self.subtitle.set_interactive(False)
             self.subtitle.hide()
             self.annotation.update_geometry(rect)
-            # 备注层立即占位（有译文后 set_items 再显示）；不 raise 防闪
-            if not self.annotation.isVisible():
-                self.annotation.show()
+            # 首条有效译文到达前保持隐藏，避免空备注层闪现。
             # 备注模式控制条（跳过目标语 + 关闭）；按当前会话 profile 读配置
             self.annotate_ctrl.set_skip_target(
                 bool(self.cfg.get(self._annotate_skip_cfg_key()))
@@ -1308,7 +1306,7 @@ class App:
         if self._watch_hwnd is not None:
             self._set_watch_layer_owner(self._watch_hwnd)
         if annotate:
-            # 备注尚无新结果时先空层；下一轮监视会 set_items
+            # 清空旧结果，下一轮收到有效译文时才显示备注层。
             self.annotation.set_items([])
             self.log.info("已切换为备注模式 profile=%s", profile)
         else:

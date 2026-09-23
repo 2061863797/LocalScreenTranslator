@@ -1418,6 +1418,11 @@ class AnnotationOverlay(_CaptureAllowedMixin, QWidget):
 
     def set_items(self, items: list[tuple[tuple[int, int, int, int], str]]):
         self._items = items or []
+        if not any(text for _, text in self._items):
+            # 尚未显示时不创建空浮层；已显示时只清空画面，不反复隐藏窗口。
+            if self.isVisible():
+                self.update()
+            return
         first = not self.isVisible()
         _show_once(self)
         if first:
@@ -1494,9 +1499,12 @@ class AnnotationOverlay(_CaptureAllowedMixin, QWidget):
         return bgra[:, :, 3].copy()
 
     def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         if not self._items:
             return
-        painter = QPainter(self)
         font, layout = self._layout_items()
         painter.setFont(font)
         painter.setPen(self._text_color)

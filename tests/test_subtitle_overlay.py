@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
-from PySide6.QtGui import QFont, QFontMetrics
+from PySide6.QtGui import QFont, QFontMetrics, QImage
 from PySide6.QtWidgets import QApplication, QScrollBar, QWidget
 
 # Dynamic resolution of SubtitleBar
@@ -607,6 +607,72 @@ class TestProductionSubtitleBar(unittest.TestCase):
         # 2. 高度 60px 时，pad_y 紧凑优化为 2px，可用正文高度 >= 24px，保证 16px 字号文本（行高 20~22px）下边缘不被裁切
         text_rect = self.bar._text_rect_size()
         self.assertGreaterEqual(text_rect.height(), 24)
+
+
+class TestProductionAnnotationOverlay(unittest.TestCase):
+    """区域备注跨会话只在首条译文就绪时显示。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.qapp = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        from app.ui.overlays import AnnotationOverlay
+
+        self.overlay = AnnotationOverlay()
+
+    def tearDown(self):
+        self.overlay.close()
+        self.overlay.deleteLater()
+        self.qapp.processEvents()
+
+    def test_region_restart_keeps_annotation_hidden_until_translation(self):
+        from app.main import App
+
+        app = MagicMock()
+        app.annotation = self.overlay
+        app.cfg = {"region_annotate_skip_target_lang": False}
+        app._watch_paused = False
+        app._annotate_skip_cfg_key.return_value = "region_annotate_skip_target_lang"
+        rect = (100, 100, 300, 180)
+        item = ((10, 10, 80, 28), "译文")
+
+        for _ in range(2):
+            App._apply_watch_display(app, annotate=True, rect=rect)
+            self.assertFalse(self.overlay.isVisible())
+            self.overlay.set_items([])
+            self.assertFalse(self.overlay.isVisible())
+            self.overlay.set_items([item])
+            self.assertTrue(self.overlay.isVisible())
+            self.overlay.clear()
+            self.assertFalse(self.overlay.isVisible())
+
+    def test_empty_update_keeps_existing_window_without_old_text(self):
+        def has_visible_pixels():
+            self.qapp.processEvents()
+            image = self.overlay.grab().toImage().convertToFormat(
+                QImage.Format.Format_RGBA8888
+            )
+            return any(bytes(image.constBits())[3::4])
+
+        item = ((10, 10, 80, 28), "初次译文")
+        self.overlay.update_geometry((100, 100, 300, 180))
+        self.overlay.set_items([item])
+        self.assertTrue(self.overlay.isVisible())
+        self.assertTrue(has_visible_pixels())
+
+        self.overlay.set_items([])
+        self.assertTrue(self.overlay.isVisible())
+        self.assertFalse(has_visible_pixels())
+        self.assertEqual(self.overlay._items, [])
+        self.assertIsNone(self.overlay.capture_mask())
+
+        self.overlay.set_items([((10, 10, 80, 28), "再次译文")])
+        self.assertTrue(self.overlay.isVisible())
+        self.overlay.clear()
+        self.assertFalse(self.overlay.isVisible())
+        self.overlay.set_items([((10, 10, 80, 28), "")])
+        self.assertFalse(self.overlay.isVisible())
 
 
 if __name__ == "__main__":
