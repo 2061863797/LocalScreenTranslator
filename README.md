@@ -23,7 +23,7 @@ OCR 使用 PP-OCRv6 检测与识别模型，优先通过 DirectML 进行硬件�
 ### 方式一：直接下载运行（推荐普通用户）
 
 从 [GitHub Releases](https://github.com/2061863797/LocalScreenTranslator/releases) 获取发布资产：
-1. **下载安装包**：下载 `本地屏译-Setup.exe` 直接安装运行（安装包已内置 PP-OCRv6 离线识别模型与 `llama-native` 原生动态库，开箱即用）。
+1. **下载安装包**：下载 `LocalScreenTranslator-Setup.exe` 直接安装运行（安装包已内置 PP-OCRv6 离线识别模型与 `llama-native` 原生动态库，开箱即用）。
 2. **下载翻译模型**：下载 `HY-MT1.5-1.8B-Q4_K_M.gguf`（或其它兼容 GGUF 模型）。
 3. **导入并使用**：启动软件后，在“托盘 → 设置 → 高级”中导入该模型文件，保存后即可开启离线屏幕翻译。
 

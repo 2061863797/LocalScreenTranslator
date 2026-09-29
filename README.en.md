@@ -23,7 +23,7 @@ Translation automatically infers the source language from recognized text. The t
 ### Option 1: Quick start via GitHub Release (Recommended)
 
 Get release assets from [GitHub Releases](https://github.com/2061863797/LocalScreenTranslator/releases):
-1. **Download the installer**: Download and run `本地屏译-Setup.exe` (bundles PP-OCRv6 models and `llama-native` DLLs out of the box).
+1. **Download the installer**: Download and run `LocalScreenTranslator-Setup.exe` (bundles PP-OCRv6 models and `llama-native` DLLs out of the box).
 2. **Download the translation model**: Download `HY-MT1.5-1.8B-Q4_K_M.gguf` (or any compatible GGUF model).
 3. **Import and run**: Launch the app, import the model under "Tray → Settings → Advanced", and start translating.
 
