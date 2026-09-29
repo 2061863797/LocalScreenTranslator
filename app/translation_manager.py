@@ -221,9 +221,10 @@ class TranslationManager:
             values = self.translator.translate_lines(
                 texts, target_language, session_tag=session_tag
             )
-            if any(not value.strip() for value in values):
+            valid_values = [v.strip() for v in values if v and v.strip()]
+            if not valid_values:
                 raise RuntimeError("逐行翻译缺少有效结果")
-            return "\n".join(values)
+            return "\n".join(valid_values)
 
         if isinstance(text_or_lines, str):
             raw_text = text_or_lines.strip()
@@ -281,10 +282,15 @@ class TranslationManager:
                 [line.text.strip() for line in selected], target_language,
                 session_tag=session_tag,
             )
-            if any(not value.strip() for value in values):
+            valid_pairs = [
+                (line, value.strip())
+                for line, value in zip(selected, values)
+                if value and value.strip()
+            ]
+            if not valid_pairs:
                 raise RuntimeError("逐行翻译缺少有效结果")
-            items = [(line.box, value) for line, value in zip(selected, values)]
-            return items, "\n".join(values)
+            items = [(line.box, val) for line, val in valid_pairs]
+            return items, "\n".join(val for _, val in valid_pairs)
 
         srcs = [
             ln.text.strip() if hasattr(ln, "text") else str(ln).strip()
@@ -325,8 +331,8 @@ class TranslationManager:
                         self._line_cache[(s, target_language)] = tr
                         valid_count += 1
                 self.prune_cache(srcs)
-            if valid_count != len(unique):
-                # 空响应不能把 OCR 原文标记成已翻译；调用方回滚后会重试静止画面。
+            if valid_count == 0 and len(unique) > 0:
+                # 只有全量空响应才触发异常重试
                 raise RuntimeError(
                     f"逐行翻译缺少有效结果: expected={len(unique)} got={valid_count}"
                 )

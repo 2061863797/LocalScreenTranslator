@@ -42,6 +42,12 @@ class OutputCleaningTests(unittest.TestCase):
         )
         self.assertEqual(clean_output(echo_en), "Hello world")
 
+    def test_clean_output_preserves_single_line_with_chatter_prefix(self):
+        self.assertEqual(clean_output("好的，以下是翻译：确定"), "确定")
+        self.assertEqual(clean_output("好的，翻译结果为：开始"), "开始")
+        self.assertEqual(clean_output("Sure! Here is the translation: Confirm"), "Confirm")
+        self.assertEqual(clean_output("好的，这是翻译：\nHello World"), "Hello World")
+
 
 class RouterTests(unittest.TestCase):
     def setUp(self):

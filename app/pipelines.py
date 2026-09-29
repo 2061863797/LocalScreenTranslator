@@ -125,9 +125,10 @@ class OneShotPipeline:
                     [line.text for line in lines], target_language,
                     session_tag="one_shot",
                 )
-                if any(not value.strip() for value in values):
+                valid_values = [v.strip() for v in values if v and v.strip()]
+                if not valid_values:
                     raise RuntimeError("逐行翻译缺少有效结果")
-                translation = "\n".join(values)
+                translation = "\n".join(valid_values)
             else:
                 try:
                     translation = self._translator.translate(

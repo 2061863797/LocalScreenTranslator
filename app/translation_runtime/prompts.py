@@ -36,7 +36,10 @@ def clean_output(value: str) -> str:
     text = re.sub(label, "", text).strip()
     lines = [line.strip() for line in text.splitlines()
              if line.strip() and not re.fullmatch(r"```[^\r\n]*", line.strip())]
-    chatter = re.compile(r"(?i)^(?:sure|certainly|of course|好的|当然|没问题)[，,！!：:\s].*(?:translat|译文|翻译)")
+    chatter_prefix = re.compile(
+        r"(?i)^(?:sure|certainly|of course|好的|当然|没问题)[，,！!：:\s]*"
+        r"(?:(?:here is the |以下是|这是)?(?:translation|translated text|translation result|译文|翻译结果|翻译如下|翻译)[^：:\n]*[：:\s]*)?"
+    )
     refusal = re.compile(r"(?i)^(?:as an ai|作为(?:一个)?(?:ai|人工智能|语言模型)|i am an ai|我是一个?(?:ai|人工智能)).*(?:cannot|can't|unable|不能|无法|抱歉)")
     instruction_keywords = (
         "标签内的文本翻译成",
@@ -58,8 +61,15 @@ def clean_output(value: str) -> str:
     )
     while lines:
         first = lines[0]
-        if chatter.match(first) or refusal.match(first):
+        if refusal.match(first):
             lines.pop(0)
+            continue
+        if chatter_prefix.match(first):
+            stripped = chatter_prefix.sub("", first).strip()
+            if not stripped:
+                lines.pop(0)
+            else:
+                lines[0] = stripped
             continue
         if any(kw in first.lower() for kw in instruction_keywords):
             stripped = instruction_end_re.sub("", first).strip()
