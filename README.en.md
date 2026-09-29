@@ -10,11 +10,9 @@ LocalScreen Translator is a local Windows tray app for screenshot, selected-text
 | Translation | In-process llama.cpp v0.5.0; users import compatible GGUF models |
 | UI | PySide6 |
 
-OCR does not depend on Windows language packs. It uses the PP-OCRv6 detection and recognition models in `runtime\ocr`. It uses a compatible DirectML device when available and falls back to CPU. Language coverage depends on the model.
+OCR uses PP-OCRv6 detection and recognition models, leveraging DirectML hardware acceleration with automatic CPU fallback.
 
-Only the target language is selected for translation; the AI model infers the source language from OCR text. The target language synchronizes across the current session, and one target language is displayed at a time. Model and device changes load in the background without restarting; a failed load restores the previous selection.
-
-Annotations remain beside source text and are always excluded from screen capture to prevent OCR from reading translated text. Original-text replacement and complex blank-space placement are outside this stage.
+Translation automatically infers the source language from recognized text. The target language can be switched instantly from the control bar. Model and device settings apply smoothly in the background without restarting.
 
 ## Requirements and local setup
 
@@ -72,7 +70,7 @@ The tray opens Settings, History, Logs, and Quit. One window or region live sess
 - **Region annotation mode**: The control bar merges into a single strip docked on the top-left of the selection area, including drag handle, Pin, target language, subtitle switch, pause, and close.
 - **Instant language switching**: Click the language button directly on the control bar to open the target language menu and retranslate immediately.
 
-Valid window geometry is restored. History stores up to 50 items and the translation cache up to 50,000, in plain text in local `data.db`. You can disable future writes separately and clear existing entries in History.
+Window geometry and settings are persisted. Translation history and cache can be viewed and cleared under History or Settings.
 
 ## Troubleshooting
 
@@ -80,7 +78,6 @@ Valid window geometry is restored. History stores up to 50 items and the transla
 |---|---|
 | OCR model missing or invalid | Extract `ocr.zip` from GitHub Releases into the `runtime` directory, then restart the app |
 | AI model fails to load | Check GGUF and its chat template; try CPU in Settings |
-| Annotation is absent from screen recordings | The overlay is excluded so translated text does not reenter OCR |
-| Need data or logs | Portable mode uses the app root; a plain EXE normally uses %LOCALAPPDATA%\LocalScreenTranslator |
+| Data and logs location | Portable mode uses app directory; installer uses `%LOCALAPPDATA%\LocalScreenTranslator` |
 
 [Settings](./SETTINGS.en.md) · [Runtime files](./runtime/README.en.md) · [Third-party notices](./NOTICE) · [Source license](./LICENSE)
