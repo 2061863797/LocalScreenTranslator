@@ -55,7 +55,10 @@ Each build creates a new `dist\local-timestamp\LocalScreenTranslator\` directory
 | Region live translation | Alt+R |
 
 The tray opens Settings, History, Logs, and Quit. One window or region live session can run at a time. Window translation always uses annotations beside the source text; region translation can switch between subtitles and annotations:
-- **Region subtitle mode**: The subtitle bar and region frame have separate control bars, each starting with a `⠿` drag handle and a Pin button. When resizing the subtitle box via its bottom-right grip, the top control bar (350×30 px, 12 px font) remains stable and keeps full button titles without truncation.
+- **Input & text translation**: Press `Ctrl+Enter` inside the input box to trigger translation instantly; view real-time source and translation character counters; one-click clear, copy feedback Toast, and window pinning.
+- **Window live translation**: Supports real-time fuzzy title search filtering when selecting a target window, with full HWND tooltips for long titles.
+- **HUD region selection**: Features luminous cyan framing, 4-corner HUD viewfinder crosshairs, and a dynamic dimension badge (real-time W × H px indicator).
+- **Region subtitle mode**: The subtitle bar and region frame have separate control bars, each starting with a clean borderless `⠿` drag handle and a Pin button. When resizing the subtitle box via its bottom-right grip, the top control bar (350×30 px, 12 px font) remains stable and keeps full button titles without truncation.
 - **Region annotation mode**: The control bar merges into a single strip docked on the top-left of the selection area, including drag handle, Pin, target language, subtitle switch, pause, and close.
 - **Instant language switching**: Click the language button directly on the control bar to open the target language menu and retranslate immediately.
 
