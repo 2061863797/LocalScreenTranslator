@@ -38,6 +38,13 @@ class TestWordSelectionService(unittest.TestCase):
         started = service.fetch_selection()
         self.assertFalse(started)
 
+    def test_init_with_non_qobject_parent_is_safe(self):
+        class DummyApp:
+            pass
+
+        service = WordSelectionService(DummyApp())
+        self.assertIsNone(service.parent())
+
     def test_successful_fetch_lifecycle(self):
         service = WordSelectionService()
         captured = []

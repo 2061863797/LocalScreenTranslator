@@ -209,7 +209,7 @@ class App:
         self._shutdown_started_at: float | None = None
         self._shutdown_resources_closed = False
         from .selection import WordSelectionService
-        self._word_selection_service = WordSelectionService(self)
+        self._word_selection_service = WordSelectionService(self.qapp)
         self._word_selection_service.text_ready.connect(self._on_word_text_ready)
         self._word_selection_service.failed.connect(self._on_word_fetch_failed)
         self._watcher: WindowWatcher | None = None

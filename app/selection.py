@@ -123,7 +123,8 @@ class WordSelectionService(QObject):
     failed = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
+        q_parent = parent if isinstance(parent, QObject) else None
+        super().__init__(q_parent)
         self.is_busy: bool = False
         self._old_mime: QMimeData | None = None
         self._marker: str = ""
