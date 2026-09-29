@@ -16,7 +16,6 @@ import threading
 from typing import Any, Callable
 
 from .translation_cache import TranslationCache
-from .translation_runtime.languages import is_translatable_text
 
 _log = logging.getLogger("st.trans_mgr")
 
@@ -219,7 +218,7 @@ class TranslationManager:
             line_items = text_or_lines.splitlines() if isinstance(text_or_lines, str) else text_or_lines
             selected = [
                 line for line in line_items
-                if is_translatable_text(line.text if hasattr(line, "text") else str(line), target_language)
+                if (line.text if hasattr(line, "text") else str(line)).strip()
             ]
             if not selected:
                 return ""
@@ -283,14 +282,14 @@ class TranslationManager:
         if isinstance(self.translator, TranslationRouter):
             selected = [
                 line for line in lines
-                if is_translatable_text(getattr(line, "text", str(line)), target_language)
+                if getattr(line, "text", str(line)).strip()
             ]
             if not selected:
                 return [], ""
             if is_running_fn is not None and not is_running_fn():
                 return [], ""
             values = self.translator.translate_lines(
-                [line.text.strip() for line in selected], target_language,
+                [getattr(line, "text", str(line)).strip() for line in selected], target_language,
                 session_tag=session_tag,
             )
             valid_pairs = [
