@@ -9,9 +9,8 @@ single-HWND child hierarchy, and realistic multi-window scenarios.
 """
 
 import os
-import sys
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -526,9 +525,13 @@ class TestProductionSubtitleBar(unittest.TestCase):
 
             # 窗口比例必须与翻译框 (450, 150) 一致（3:1）
             self.assertEqual(app.subtitle.width(), 450)
-            self.assertEqual(app.subtitle.height(), 150)
+            self.assertEqual(app.subtitle.content_height(), 150)
             self.assertEqual(app.subtitle.x(), 100)
             self.assertEqual(app.subtitle.y(), 100 + 150 + 4)
+            self.assertEqual(
+                app.subtitle.content_geometry().y(),
+                100 + 150 + 4 + app.subtitle._FRAME_TOP,
+            )
         finally:
             app.subtitle.close()
             app.subtitle.deleteLater()
@@ -538,31 +541,36 @@ class TestProductionSubtitleBar(unittest.TestCase):
         # 1. 宽屏比例 3:1 (480 x 160)，不再受旧逻辑 <=120 的截断限制
         self.bar.attach_below((50, 60, 480, 160), outside=True)
         self.assertEqual(self.bar.width(), 480)
-        self.assertEqual(self.bar.height(), 160)
-        self.assertAlmostEqual(self.bar.width() / self.bar.height(), 480 / 160, places=2)
+        self.assertEqual(self.bar.content_height(), 160)
+        self.assertAlmostEqual(self.bar.width() / self.bar.content_height(), 480 / 160, places=2)
 
         # 2. 正方形比例 1:1 (240 x 240)
         self.bar.attach_below((50, 60, 240, 240), outside=True)
         self.assertEqual(self.bar.width(), 240)
-        self.assertEqual(self.bar.height(), 240)
-        self.assertEqual(self.bar.width() / self.bar.height(), 1.0)
+        self.assertEqual(self.bar.content_height(), 240)
+        self.assertEqual(self.bar.width() / self.bar.content_height(), 1.0)
 
         # 3. 窄长条比例 1:2 (60 x 120)，宽度被 _MIN_W (100) 夹紧时，高度等比伸缩为 200
         self.bar.attach_below((50, 60, 60, 120), outside=True)
         self.assertEqual(self.bar.width(), self.bar._MIN_W)
-        self.assertEqual(self.bar.height(), 200)
-        self.assertAlmostEqual(self.bar.width() / self.bar.height(), 60 / 120, places=2)
+        self.assertEqual(self.bar.content_height(), 200)
+        self.assertAlmostEqual(self.bar.width() / self.bar.content_height(), 60 / 120, places=2)
 
     def test_subtitle_text_rect_strictly_below_control_bar(self):
-        """验证字幕文字区域物理隔离在控制栏下方，严禁出现控制栏覆盖第一二行文字。"""
-        self.bar.resize(400, 150)
+        """状态栏处于字幕框外侧，框内正文保留完整可用高度。"""
+        self.bar.resize_to(400, 150)
         self.bar._place_chrome()
         ctrl_bottom = self.bar._ctrl.y() + self.bar._ctrl.height()
-        pad_top = self.bar._pad_top()
         text_size = self.bar._text_rect_size()
 
-        self.assertGreaterEqual(pad_top, ctrl_bottom + 2, "正文顶部边距必须严格位于控制栏底部下方")
-        self.assertGreaterEqual(pad_top, 34)
+        self.assertEqual(self.bar._ctrl.y(), 0)
+        self.assertEqual(self.bar._ctrl.height(), self.bar._STATUS_BAR_H)
+        self.assertLessEqual(ctrl_bottom, self.bar._FRAME_TOP)
+        self.assertEqual(self.bar.content_height(), 150)
+        self.assertEqual(
+            text_size.height(),
+            self.bar.content_height() - self.bar._pad_top() - self.bar._effective_pads()[1],
+        )
         self.assertGreaterEqual(text_size.height(), 10)
 
     def test_paint_event_clears_background_and_renders_cleanly(self):
@@ -570,43 +578,165 @@ class TestProductionSubtitleBar(unittest.TestCase):
         from PySide6.QtGui import QPaintEvent
         from PySide6.QtCore import QRect
 
-        self.bar.resize(400, 150)
+        self.bar.resize_to(400, 150)
         self.bar.set_text("测试清除重影与正常排版\n第二行内容")
         ev = QPaintEvent(QRect(0, 0, 400, 150))
         # 执行绘制事件不抛出任何异常
         self.bar.paintEvent(ev)
 
-    def test_window_watch_apply_display_attaches_outside(self):
-        """验证无论是区域翻译还是窗口翻译，字幕条均严格 outside=True 吸附于目标外侧，绝不遮盖画面。"""
+    def test_window_watch_forces_annotation_instead_of_subtitle(self):
+        """窗口模式固定备注，即使调用方请求字幕也不能显示字幕条。"""
         from app.main import App
-        from app.ui.overlays import SubtitleBar
         app = MagicMock()
         app.cfg = {}
-        app.subtitle = SubtitleBar()
+        app.subtitle = MagicMock()
+        app.annotation = MagicMock()
+        app.annotate_ctrl = MagicMock()
         app._watch_paused = False
         app._watch_region = None
         app._watch_profile = "window"
 
-        try:
-            # 窗口监视模式下调用 _apply_watch_display
-            App._apply_watch_display(app, annotate=False, rect=(50, 50, 400, 150), announce=False)
-            # 字幕条 Y 坐标必须严格位于目标窗口底边缘下方 (50 + 150 + 4 = 204)
-            self.assertEqual(app.subtitle.y(), 50 + 150 + 4)
-            self.assertGreaterEqual(app.subtitle.y(), 50 + 150)
-        finally:
-            app.subtitle.close()
-            app.subtitle.deleteLater()
+        App._apply_watch_display(
+            app, annotate=False, rect=(50, 50, 400, 150), announce=False
+        )
+
+        app.subtitle.attach_below.assert_not_called()
+        app.subtitle.hide.assert_called_once()
+        app.annotate_ctrl.set_subtitle_button_visible.assert_called_once_with(False)
 
     def test_compact_control_bar_prevents_overflow_and_occlusion(self):
-        """验证紧凑化控制栏在常见窗口宽度下不溢出父窗口，且在 60px 高度时保留完整文本垂直空间。"""
-        self.bar.resize(270, 60)
+        """缩小翻译框时，状态栏按钮与文字保持稳定不变（不变成单字缩写），且保留完整文本垂直空间。"""
+        self.bar.resize_to(270, 60)
         self.bar._place_chrome()
-        # 1. 控制条宽度由 322px 收敛至 <= 265px，在 270px 宽度下不溢出父窗口
-        self.assertLessEqual(self.bar._ctrl.width(), 265)
+        # 1. 翻译框面板尺寸收缩至指定大小 270x60
+        self.assertEqual(self.bar.panel_width(), 270)
+        self.assertEqual(self.bar.content_height(), 60)
+        # 2. 状态栏保持完整呈现（不压缩为单字缩写，保持全部 8 个按钮与 12px 大字号），且不溢出宿主窗口
+        self.assertGreaterEqual(self.bar._ctrl.width(), 320)
+        self.assertEqual(self.bar._ctrl.height(), self.bar._STATUS_BAR_H)
         self.assertLessEqual(self.bar._ctrl.x() + self.bar._ctrl.width(), self.bar.width())
-        # 2. 高度 60px 时，pad_y 紧凑优化为 2px，可用正文高度 >= 24px，保证 16px 字号文本（行高 20~22px）下边缘不被裁切
+        btn_texts = [
+            self.bar._ctrl._lay.itemAt(i).widget().text()
+            for i in range(self.bar._ctrl._lay.count())
+        ]
+        self.assertEqual(
+            btn_texts,
+            ["⠿", "固定", "跟随", "自由", "简体中文", "备注", "暂停", "关闭"],
+        )
+        # 3. 高度 60px 时，pad_y 紧凑优化为 2px，可用正文高度 >= 24px，保证 16px 字号文本（行高 20~22px）下边缘不被裁切
         text_rect = self.bar._text_rect_size()
         self.assertGreaterEqual(text_rect.height(), 24)
+
+    def test_annotation_region_and_subtitle_status_bars_share_height(self):
+        """备注、区域和字幕模式的状态栏保持同一高度。"""
+        from app.ui.overlays import AnnotateCtrl, RegionWatchFrame
+
+        annotation = AnnotateCtrl()
+        region = RegionWatchFrame()
+        try:
+            self.bar._place_chrome()
+            annotation.adjustSize()
+            region._ctrl.adjustSize()
+
+            expected = self.bar._STATUS_BAR_H
+            self.assertEqual(self.bar._ctrl.height(), expected)
+            self.assertEqual(annotation.height(), expected)
+            self.assertEqual(region._ctrl.height(), expected)
+            for button in (
+                annotation._btn_region_pin,
+                annotation._btn_sub,
+                annotation._btn_pause,
+                annotation._btn_close,
+            ):
+                self.assertEqual(button.height(), 26)
+        finally:
+            annotation.close()
+            region._ctrl.close()
+            region.close()
+
+    def test_region_mode_status_bars_are_single_ordered_rows(self):
+        """字幕模式翻译框控制栏加拖动手柄和固定；备注模式控制栏合并为一个条不分开。"""
+        from app.ui.overlays import AnnotateCtrl, RegionWatchFrame
+
+        annotation = AnnotateCtrl()
+        region = RegionWatchFrame()
+        try:
+            self.bar.resize_to(700, 150)
+            self.bar.set_region_frame(region)
+            self.bar.set_region_controls_visible(True)
+            annotation.set_region_frame(region)
+            annotation.set_region_controls_visible(True)
+
+            subtitle_labels = [
+                self.bar._ctrl._lay.itemAt(i).widget().text()
+                for i in range(self.bar._ctrl._lay.count())
+            ]
+            region_layout = region._ctrl.layout().itemAt(0).widget().layout()
+            region_labels = [
+                region_layout.itemAt(i).widget().text()
+                for i in range(region_layout.count())
+            ]
+            annotate_layout = annotation.layout().itemAt(0).widget().layout()
+            annotate_labels = [
+                annotate_layout.itemAt(i).widget().text()
+                for i in range(annotate_layout.count())
+            ]
+
+            # 1. 翻译框控制栏：拖动手柄 + 固定在最前，随后是跟随、自由、语言、备注、暂停、关闭
+            self.assertEqual(
+                subtitle_labels,
+                ["⠿", "固定", "跟随", "自由", "简体中文", "备注", "暂停", "关闭"],
+            )
+            self.assertEqual(self.bar._ctrl._lay.count(), 8)
+
+            # 2. 识别框在字幕模式下具备独立控制条：手柄在最前，紧随固定按钮
+            self.assertEqual(
+                region_labels,
+                ["⠿", "固定"],
+            )
+            self.assertEqual(region_layout.count(), 2)
+
+            # 3. 备注模式控制栏合并为一个条（不分开）：手柄 + 固定 + 语言 + 字幕 + 暂停 + 关闭
+            self.assertEqual(
+                annotate_labels,
+                ["⠿", "固定", "简体中文", "字幕", "暂停", "关闭"],
+            )
+            self.assertEqual(annotate_layout.count(), 6)
+
+            # 4. 验证备注模式状态栏靠左定位
+            annotation.place_above((100, 200, 400, 200))
+            self.assertEqual(annotation.x(), 100)
+        finally:
+            annotation.close()
+            region._ctrl.close()
+            region.close()
+
+    def test_saved_frame_geometry_excludes_status_bar(self):
+        """保存/恢复使用字幕框坐标，额外状态栏不会改变用户设定的框高。"""
+        from app.ui.topmost import restore_window_geometry
+
+        saved_geometry = [40, 200, 320, 90]
+        self.assertTrue(
+            restore_window_geometry(
+                self.bar,
+                saved_geometry,
+                geometry_setter=self.bar.set_content_geometry,
+            )
+        )
+
+        self.assertEqual(list(self.bar.content_geometry().getRect()), saved_geometry)
+        self.assertEqual(self.bar.geometry().y(), 200 - self.bar._FRAME_TOP)
+        self.assertEqual(self.bar.height(), 90 + self.bar._FRAME_TOP)
+
+        self.assertTrue(
+            restore_window_geometry(
+                self.bar,
+                [40, 0, 320, 90],
+                geometry_setter=self.bar.set_content_geometry,
+            )
+        )
+        self.assertGreaterEqual(self.bar.y(), 0)
+        self.assertEqual(self.bar.content_height(), 90)
 
 
 class TestProductionAnnotationOverlay(unittest.TestCase):
@@ -631,9 +761,8 @@ class TestProductionAnnotationOverlay(unittest.TestCase):
 
         app = MagicMock()
         app.annotation = self.overlay
-        app.cfg = {"region_annotate_skip_target_lang": False}
+        app.cfg = {}
         app._watch_paused = False
-        app._annotate_skip_cfg_key.return_value = "region_annotate_skip_target_lang"
         rect = (100, 100, 300, 180)
         item = ((10, 10, 80, 28), "译文")
 
@@ -665,7 +794,6 @@ class TestProductionAnnotationOverlay(unittest.TestCase):
         self.assertTrue(self.overlay.isVisible())
         self.assertFalse(has_visible_pixels())
         self.assertEqual(self.overlay._items, [])
-        self.assertIsNone(self.overlay.capture_mask())
 
         self.overlay.set_items([((10, 10, 80, 28), "再次译文")])
         self.assertTrue(self.overlay.isVisible())

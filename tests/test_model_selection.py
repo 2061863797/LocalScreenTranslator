@@ -38,7 +38,7 @@ class ModelSettingsTests(unittest.TestCase):
     def setUpClass(cls):
         cls.qapp = QApplication.instance() or QApplication([])
 
-    def test_selected_model_is_saved_and_requires_restart(self):
+    def test_selected_model_is_saved_and_loads_without_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
             models = Path(tmp)
             first = models / "first.gguf"
@@ -73,9 +73,9 @@ class ModelSettingsTests(unittest.TestCase):
             self.assertEqual(resolve_path(cfg["model_path"]), second.resolve())
             save_cfg.assert_called_once_with(cfg)
             on_saved.assert_called_once_with()
-            self.assertIn("重启软件", show_toast.call_args.args[0])
+            self.assertNotIn("重启", show_toast.call_args.args[0])
 
-    def test_translation_device_is_saved_and_requires_restart(self):
+    def test_translation_device_is_saved_and_loads_without_restart(self):
         cfg = dict(DEFAULTS)
         with (
             patch("app.ui.windows.available_translation_models", return_value=[]),
@@ -96,7 +96,7 @@ class ModelSettingsTests(unittest.TestCase):
 
         self.assertEqual(cfg["llama_device"], "cpu")
         save_cfg.assert_called_once_with(cfg)
-        self.assertIn("重启软件", show_toast.call_args.args[0])
+        self.assertNotIn("重启", show_toast.call_args.args[0])
 
     def test_saved_translation_device_is_restored_without_becoming_auto(self):
         for device in ("cpu", "gpu"):
@@ -113,7 +113,6 @@ class ModelSettingsTests(unittest.TestCase):
                     window.close()
                     window.deleteLater()
                     self.qapp.processEvents()
-
 
 class MaxTokensSettingsTests(unittest.TestCase):
     @classmethod
@@ -200,6 +199,7 @@ class SetupConfigTests(unittest.TestCase):
                 json.dumps({
                     "ocr_lang": "ch",
                     "hotkey_silent_ocr": "<alt>+s",
+                    "source_language": "英语",
                 }),
                 encoding="utf-8",
             )
@@ -211,6 +211,7 @@ class SetupConfigTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertNotIn("ocr_lang", saved)
         self.assertNotIn("hotkey_silent_ocr", saved)
+        self.assertNotIn("source_language", saved)
 
 
 if __name__ == "__main__":

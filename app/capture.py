@@ -234,7 +234,7 @@ def grab_window(hwnd: int) -> np.ndarray | None:
 
 
 def get_window_rect(hwnd: int) -> tuple[int, int, int, int]:
-    """返回窗口客户区在屏幕上的位置 (x, y, w, h)，用于放置字幕层。"""
+    """返回窗口客户区在屏幕上的位置 (x, y, w, h)，用于放置翻译浮层。"""
     import win32gui
 
     left, top, right, bottom = win32gui.GetClientRect(hwnd)

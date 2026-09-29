@@ -5,44 +5,43 @@ from app.runtime_resources import RuntimeResources
 
 
 class RuntimeResourcesTests(unittest.TestCase):
-    def test_clients_close_once_before_server_is_stopped(self):
+    def test_clients_close_once_in_dependency_order(self):
         events = []
         storage = mock.Mock()
         translator = mock.Mock()
-        server = mock.Mock()
+        ocr = mock.Mock()
+        translator.close.side_effect = lambda: events.append("translation")
+        ocr.close.side_effect = lambda: events.append("ocr")
         storage.close.side_effect = lambda: events.append("storage")
-        translator.close.side_effect = lambda: events.append("http")
-        server.stop.side_effect = lambda: events.append("llama")
-        resources = RuntimeResources(storage, server, translator, mock.Mock())
+        resources = RuntimeResources(storage, translator, ocr)
 
-        resources.close_clients()
-        resources.close_clients()
-        resources.stop_server()
+        self.assertTrue(resources.close_clients())
+        self.assertTrue(resources.close_clients())
+        self.assertEqual(events, ["translation", "ocr", "storage"])
 
-        self.assertEqual(events, ["http", "storage", "llama"])
-
-    def test_close_retries_storage_without_closing_translator_twice(self):
+    def test_storage_close_can_retry_without_releasing_model_twice(self):
         storage = mock.Mock()
         storage.close.side_effect = [False, True]
         translator = mock.Mock()
-        resources = RuntimeResources(storage, mock.Mock(), translator, mock.Mock())
+        ocr = mock.Mock()
+        resources = RuntimeResources(storage, translator, ocr)
 
         self.assertFalse(resources.close_clients())
-        self.assertTrue(resources.close_clients())
         self.assertTrue(resources.close_clients())
         translator.close.assert_called_once_with()
         self.assertEqual(storage.close.call_count, 2)
 
-    def test_emergency_interrupt_only_stops_the_owned_server(self):
+    def test_interrupt_only_cancels_translation(self):
         storage = mock.Mock()
         translator = mock.Mock()
-        server = mock.Mock()
-        resources = RuntimeResources(storage, server, translator, mock.Mock())
+        ocr = mock.Mock()
+        resources = RuntimeResources(storage, translator, ocr)
 
-        resources.interrupt_server()
+        resources.interrupt_translation()
 
-        server.stop.assert_called_once_with()
+        translator.abort_inflight.assert_called_once_with()
         translator.close.assert_not_called()
+        ocr.close.assert_not_called()
         storage.close.assert_not_called()
 
 

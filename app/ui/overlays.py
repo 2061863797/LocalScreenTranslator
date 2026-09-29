@@ -9,7 +9,6 @@
 
 import ctypes
 from ctypes import wintypes
-import numpy as np
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (
@@ -17,7 +16,6 @@ from PySide6.QtGui import (
     QFont,
     QFontMetrics,
     QGuiApplication,
-    QImage,
     QPainter,
     QPen,
     QRegion,
@@ -26,6 +24,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QScrollBar,
     QSizePolicy,
@@ -35,12 +34,10 @@ from PySide6.QtWidgets import (
 
 from ..capture import set_window_capture_excluded
 from ..i18n import t as _t
+from ..translation_runtime.languages import LANGUAGES
 from .theme import (
-    ACCENT_QCOLOR,
     BORDER_QCOLOR,
     CTRL_STYLE,
-    FIELD_QCOLOR,
-    MUTED_QCOLOR,
     PANEL_QCOLOR,
     SCROLLBAR_STYLE,
     TEXT_QCOLOR,
@@ -53,6 +50,7 @@ _FLAGS_TOP = (
     | Qt.WindowType.WindowStaysOnTopHint
     | Qt.WindowType.Tool
 )
+_STATUS_BAR_HEIGHT = 30
 
 
 class MSG(ctypes.Structure):
@@ -155,13 +153,14 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
     - 文字层：鼠标穿透，固定尺寸，长文在框内滚动（不随译文自动改大小）
     - 右侧滚动条：独立可点窗口
     - 右下角缩放把手：独立窗口，grabMouse 保证拖出后仍跟手
-    - 控制小条：跟随 / 自由 / 固定 / 备注 / 关闭
+    - 状态栏：区域固定 / 跟随 / 自由 / 目标语言 / 备注 / 暂停 / 关闭
     """
 
     mode_changed = Signal(str)  # follow / free / pinned
     stop_requested = Signal()   # 用户点关闭，停止持续翻译
     switch_to_annotate = Signal()  # 运行中切换到备注模式
     pause_changed = Signal(bool)
+    language_changed = Signal(str, str)
 
     _PAD = 10
     _SCROLL_W = 14
@@ -170,6 +169,9 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
     _MIN_H = 60
     _DEFAULT_H = 100
     _DEFAULT_FONT_SIZE = 16
+    _STATUS_BAR_H = _STATUS_BAR_HEIGHT
+    _STATUS_BAR_GAP = 4
+    _FRAME_TOP = _STATUS_BAR_H + _STATUS_BAR_GAP
 
     def __init__(self):
         super().__init__()
@@ -188,12 +190,16 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         self.setWindowFlags(_FLAGS_TOP)
 
         self._ctrl = _SubtitleCtrl(self)
+        self._drag_handle = self._ctrl._drag_handle
+        self._region_frame = None
         self._vscroll = _SubtitleVScroll(self)
         self._grip = _SubtitleResizeGrip(self)
         self._ctrl.hide()
         self._vscroll.hide()
         self._grip.hide()
-        self.resize(self._MIN_W, self._DEFAULT_H)
+        # Keep the subtitle panel at its requested height; the status strip gets
+        # a separate area above the panel inside this single overlay window.
+        self.resize(self._MIN_W, self._DEFAULT_H + self._FRAME_TOP)
         self._layer_owner: int | None = None
         self._capture_visible = True
 
@@ -202,6 +208,8 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         children_non_native = (
             self._ctrl.windowHandle() is None
             and not self._ctrl.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+            and self._drag_handle.windowHandle() is None
+            and not self._drag_handle.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
             and self._vscroll.windowHandle() is None
             and not self._vscroll.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
             and self._grip.windowHandle() is None
@@ -211,6 +219,8 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             self.isWindow()
             and not self._ctrl.isWindow()
             and self._ctrl.parent() is self
+            and not self._drag_handle.isWindow()
+            and self._ctrl.isAncestorOf(self._drag_handle)
             and not self._vscroll.isWindow()
             and self._vscroll.parent() is self
             and not self._grip.isWindow()
@@ -282,10 +292,23 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
 
     def apply_ui_language(self):
         self._ctrl.apply_ui_language()
+        self._drag_handle.apply_ui_language()
         try:
             self._grip.apply_ui_language()
         except Exception:
             pass
+        self._place_chrome()
+
+    def sync_languages(self, source: str, target: str) -> None:
+        self._ctrl._language_button.sync_languages(source, target)
+        self._place_chrome()
+
+    def set_region_frame(self, frame) -> None:
+        self._region_frame = frame
+        self._ctrl.bind_region_frame(frame)
+
+    def set_region_controls_visible(self, visible: bool) -> None:
+        self._ctrl.set_region_controls_visible(visible)
         self._place_chrome()
 
     def set_paused(self, paused: bool):
@@ -369,18 +392,24 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
                 avail = screen.availableGeometry()
                 if avail.contains(center_pt):
                     # 若计算高度过大（超过屏幕可用工作区），在可用高度内等比缩放避免撑爆屏幕
-                    max_allowed_h = max(self._MIN_H, avail.height() - 60)
+                    max_allowed_h = max(
+                        self._MIN_H, avail.height() - 60 - self._FRAME_TOP
+                    )
                     if bar_h > max_allowed_h:
                         bar_h = max_allowed_h
                         if h > 0:
                             bar_w = max(self._MIN_W, min(bar_w, round(bar_h * w / h)))
+                        if self._user_size is not None:
+                            self._user_size = (bar_w, bar_h)
         except Exception:
             pass
 
+        host_h = bar_h + self._FRAME_TOP
+
         if outside:
-            nx, ny, nw, nh = x, y + h + 4, bar_w, bar_h
+            nx, ny, nw, nh = x, y + h + 4, bar_w, host_h
         else:
-            nx, ny, nw, nh = x, y + h - bar_h - 10, bar_w, bar_h
+            nx, ny, nw, nh = x, y + h - host_h - 10, bar_w, host_h
 
         try:
             if screen and avail and avail.contains(center_pt):
@@ -397,7 +426,17 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         except Exception:
             pass
 
-        changed = _set_geo_if_changed(self, nx, ny, nw, nh)
+        # Here nx/ny identify the top status strip. Bypass setGeometry(), which
+        # accepts the saved subtitle-panel rectangle and maps it to the host.
+        current = self.geometry()
+        changed = (
+            current.x() != nx
+            or current.y() != ny
+            or current.width() != nw
+            or current.height() != nh
+        )
+        if changed:
+            QWidget.setGeometry(self, nx, ny, nw, nh)
         if changed:
             self._reflow_text()
         self._place_chrome()
@@ -412,13 +451,15 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             self._show_chrome()
 
     def resize_to(self, w: int, h: int):
-        """右下角把手缩放：改框大小并记住，不随译文自动改。"""
+        """右下角把手缩放：改框大小并记住，状态栏保持不变。"""
         w = max(self._MIN_W, int(w))
         h = max(self._MIN_H, int(h))
-        if self.width() == w and self.height() == h and self._user_size == (w, h):
-            return
-        self.setFixedSize(w, h)
         self._user_size = (w, h)
+        self._panel_w = w
+        ctrl_w = self._ctrl.sizeHint().width() if hasattr(self, "_ctrl") else 340
+        host_w = max(w, ctrl_w)
+        host_h = h + self._FRAME_TOP
+        QWidget.resize(self, host_w, host_h)
         self._reflow_text()
         self._place_chrome()
         if self.isVisible():
@@ -426,42 +467,84 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # 不用 setFixedSize 时仍同步（attach_below 用 setGeometry）
+        # 宿主尺寸变化时，同步字幕正文、状态栏和滚动控件。
         if self.isVisible():
             self._reflow_text()
             self._place_chrome()
             self._show_chrome()
 
-    def setGeometry(self, *args):
-        # 兼容 QRect / x,y,w,h；跟随后不锁死 fixed，方便拖目标窗改默认宽
-        super().setGeometry(*args)
+    def set_content_geometry(self, *args):
+        """按字幕面板矩形定位；上方状态栏占用独立区域。"""
+        if len(args) == 1:
+            rect = QRect(args[0])
+            x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+        elif len(args) == 4:
+            x, y, w, h = (int(value) for value in args)
+        else:
+            raise TypeError("set_content_geometry expects a QRect or x, y, width, height")
         if self._user_size is not None:
-            # 用户缩放过：强制保持记忆尺寸（位置可随 attach 变）
-            g = self.geometry()
-            uw, uh = self._user_size
-            if g.width() != uw or g.height() != uh:
-                super().setGeometry(g.x(), g.y(), uw, uh)
+            w, h = self._user_size
+        self._panel_w = w
+        ctrl_w = self._ctrl.sizeHint().width() if hasattr(self, "_ctrl") else 340
+        host_w = max(w, ctrl_w)
+        host_h = h + self._FRAME_TOP
+        host_y = y - self._FRAME_TOP
+        frame_rect = QRect(x, y, host_w, host_h)
+        for screen in QGuiApplication.screens():
+            avail = screen.availableGeometry()
+            visible = frame_rect.intersected(avail)
+            if visible.width() < 80 or visible.height() < 40:
+                continue
+            max_x = max(avail.left(), avail.right() - host_w + 1)
+            max_y = max(avail.top(), avail.bottom() - host_h + 1)
+            x = max(avail.left(), min(x, max_x))
+            host_y = max(avail.top(), min(host_y, max_y))
+            break
+        QWidget.setGeometry(self, x, host_y, host_w, host_h)
+        self._reflow_text()
+        self._place_chrome()
+        if self.isVisible():
+            self._show_chrome()
+
+    def panel_width(self) -> int:
+        if self._user_size is not None:
+            return max(self._MIN_W, int(self._user_size[0]))
+        return max(self._MIN_W, getattr(self, "_panel_w", self.width()))
+
+    def content_width(self) -> int:
+        return self.panel_width()
+
+    def content_height(self) -> int:
+        """字幕面板高度，不包含上方状态栏。"""
+        return max(0, self.height() - self._FRAME_TOP)
+
+    def content_size(self) -> QSize:
+        return QSize(self.panel_width(), self.content_height())
+
+    def content_geometry(self) -> QRect:
+        """字幕面板的屏幕坐标，状态栏位于面板上方。"""
+        return QRect(
+            self.x(), self.y() + self._FRAME_TOP, self.panel_width(), self.content_height()
+        )
 
     def _effective_pads(self) -> tuple[int, int]:
-        pad_x = min(self._PAD, max(4, self.width() // 10))
-        pad_y = 2 if self.height() <= 70 else min(self._PAD, max(2, self.height() // 8))
+        pad_x = min(self._PAD, max(4, self.panel_width() // 10))
+        content_h = self.content_height()
+        pad_y = 2 if content_h <= 70 else min(self._PAD, max(2, content_h // 8))
         return pad_x, pad_y
 
     def _pad_top(self) -> int:
-        ctrl_h = 24
-        ctrl_bottom = 28
-        if hasattr(self, "_ctrl") and self._ctrl is not None:
-            ctrl_h = self._ctrl.height() if self._ctrl.height() > 0 else 24
-            ctrl_bottom = self._ctrl.y() + ctrl_h
-        return max(34, ctrl_bottom + 2)
+        """字幕面板内部留白；状态栏已经移至面板之外。"""
+        return min(self._PAD, max(2, self.content_height() // 8))
 
     def _text_rect_size(self) -> QSize:
-        """正文可用区域（为滚动条留出右边距，为顶部控制条留出空间）。"""
+        """正文可用区域（为滚动条和字幕面板自身留白）。"""
         px, py = self._effective_pads()
         pt = self._pad_top()
+        panel_w = self.panel_width()
         return QSize(
-            max(20, self.width() - px * 2 - self._SCROLL_W - 4),
-            max(10, self.height() - pt - py),
+            max(20, panel_w - px * 2 - self._SCROLL_W - 4),
+            max(10, self.content_height() - pt - py),
         )
 
     def _reflow_text(self):
@@ -497,29 +580,28 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         self.update()
 
     def _place_chrome(self):
-        """控制条 / 滚动条 / 缩放把手贴在文字层周围（client 相对坐标）。"""
+        """状态栏置于字幕框上方保持完整呈现，滚动条和缩放把手位于翻译框内。"""
         if hasattr(self._ctrl, "adapt_to_width"):
             self._ctrl.adapt_to_width(self.width())
         self._ctrl.adjustSize()
-        ctrl_w = self._ctrl.width()
+        ctrl_w = self._ctrl.sizeHint().width()
         ctrl_h = self._ctrl.height()
-        target_x = max(2, self.width() - ctrl_w - 4)
-        if self.width() < ctrl_w + 4:
-            target_x = max(0, (self.width() - ctrl_w) // 2)
         changed = _set_geo_if_changed(
             self._ctrl,
-            target_x,
-            4,
+            0,
+            0,
             ctrl_w,
             ctrl_h,
         )
+        self._drag_handle.show()
         self._ctrl.raise_()
         sw = max(self._SCROLL_W, 16)
-        vscroll_y = ctrl_h + 4
-        vscroll_h = max(10, self.height() - vscroll_y - self._GRIP - 4)
+        vscroll_y = self._FRAME_TOP + 4
+        vscroll_h = max(10, self.content_height() - self._GRIP - 8)
+        panel_w = self.panel_width()
         changed |= _set_geo_if_changed(
             self._vscroll,
-            max(0, self.width() - sw),
+            max(0, panel_w - sw),
             vscroll_y,
             sw,
             vscroll_h,
@@ -527,7 +609,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         self._vscroll.raise_()
         changed |= _move_if_changed(
             self._grip,
-            max(0, self.width() - self._GRIP - 2),
+            max(0, panel_w - self._GRIP - 2),
             max(0, self.height() - self._GRIP - 2),
         )
         self._grip.raise_()
@@ -542,6 +624,8 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         if not self.isVisible():
             return
         _show_once(self._ctrl)
+        _show_once(self._drag_handle)
+        self._drag_handle.show()
         if self._text:
             _show_once(self._vscroll)
             need = self._content_h > self._text_rect_size().height()
@@ -560,9 +644,15 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         if text:
             self._text = text.strip()
         if self._user_size:
-            self.resize(*self._user_size)
-        elif self.width() < self._MIN_W or self.height() < self._MIN_H:
-            self.resize(max(self.width(), self._MIN_W), max(self.height(), self._MIN_H))
+            QWidget.resize(
+                self, self._user_size[0], self._user_size[1] + self._FRAME_TOP
+            )
+        elif self.width() < self._MIN_W or self.content_height() < self._MIN_H:
+            QWidget.resize(
+                self,
+                max(self.width(), self._MIN_W),
+                max(self.content_height(), self._MIN_H) + self._FRAME_TOP,
+            )
         self._reflow_text()
         self._place_chrome()
         self._layout_calculated_before_show = True
@@ -615,7 +705,10 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         # 2. 绘制半透明圆角底板
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(PANEL_QCOLOR)
-        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 8, 8)
+        panel_w = self.panel_width()
+        frame_rect = QRect(0, self._FRAME_TOP, panel_w, self.content_height())
+        if frame_rect.width() > 1 and frame_rect.height() > 1:
+            painter.drawRoundedRect(frame_rect.adjusted(0, 0, -1, -1), 8, 8)
 
         if not self._text:
             return
@@ -623,9 +716,9 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         pt = self._pad_top()
         text_rect = QRect(
             px,
-            pt,
-            max(20, self.width() - px * 2 - self._SCROLL_W - 4),
-            max(10, self.height() - pt - py),
+            self._FRAME_TOP + pt,
+            max(20, panel_w - px * 2 - self._SCROLL_W - 4),
+            max(10, self.content_height() - pt - py),
         )
         painter.setFont(self._font)
         painter.setPen(TEXT_QCOLOR)
@@ -709,8 +802,8 @@ class _SubtitleResizeGrip(QWidget):
             return
         self._origin = (
             event.globalPosition().toPoint(),
-            self._bar.width(),
-            self._bar.height(),
+            self._bar.panel_width(),
+            self._bar.content_height(),
         )
         self.grabMouse()
         event.accept()
@@ -730,8 +823,104 @@ class _SubtitleResizeGrip(QWidget):
             event.accept()
 
 
+class LanguagePairButton(QPushButton):
+    """紧凑的目标语言菜单，适合窄的持续翻译控制条。"""
+
+    changed = Signal(str, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._target = "简体中文"
+        self._compact = False
+        self.setFixedHeight(26)
+        self.setStyleSheet("padding:3px 8px;font-size:12px;")
+        self.clicked.connect(self._open_menu)
+        self.sync_languages("自动", self._target)
+
+    def sync_languages(self, source: str, target: str) -> None:
+        del source
+        self._target = target
+        self.setText("译" if self._compact else target)
+        self.setToolTip(f"目标语言：{target}；点击选择目标语言")
+
+    def set_compact(self, compact: bool) -> None:
+        self._compact = compact
+        self.setFixedWidth(26) if compact else self.setMinimumWidth(0)
+        self.setFixedHeight(26)
+        self.setStyleSheet(
+            "padding:2px 3px;font-size:12px;"
+            if compact
+            else "padding:2px 8px;font-size:12px;"
+        )
+        if not compact:
+            self.setMaximumWidth(16777215)
+        self.sync_languages("自动", self._target)
+
+    def _open_menu(self) -> None:
+        menu = QMenu()
+        menu.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        menu.setStyleSheet(
+            "QMenu{font-size:12px;} QMenu::item{padding:6px 20px;}"
+        )
+        for name in LANGUAGES:
+            action = menu.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(name == self._target)
+            action.triggered.connect(lambda _checked=False, value=name: self.changed.emit("自动", value))
+        menu.exec(self.mapToGlobal(self.rect().bottomLeft()))
+
+
+class _SubtitleDragHandle(QLabel):
+    """字幕条最左侧的六点拖动手柄，按住拖动移动翻译框自身。"""
+
+    def __init__(self, bar, parent=None):
+        super().__init__("⠿", parent or bar)
+        self._bar = bar
+        self._drag_offset = None
+        self.setObjectName("dragHandle")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedSize(20, 26)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setStyleSheet(
+            "QLabel#dragHandle{background:transparent;border:none;color:rgba(255,255,255,180);font-size:15px;padding:0;}"
+            "QLabel#dragHandle:hover{color:#ffffff;}"
+        )
+        self.apply_ui_language()
+
+    def apply_ui_language(self):
+        self.setToolTip(_t("sub_drag_tip"))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._bar.mode == "follow" or self._bar.mode == "pinned":
+                self._bar.set_mode("free", emit=True)
+            self._drag_offset = event.globalPosition().toPoint() - self._bar.pos()
+            self.grabMouse()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._drag_offset is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            if self._bar.mode == "free":
+                p = event.globalPosition().toPoint() - self._drag_offset
+                self._bar.move_to(p.x(), p.y())
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_offset is not None:
+            self._drag_offset = None
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+            event.accept()
+
+
 class _SubtitleCtrl(QWidget):
-    """字幕条控制小条：拖动把手 + 模式按钮 + 关闭（子部件，可点）。"""
+    """字幕状态栏：拖动手柄/固定、跟随/自由、语言及会话操作。"""
 
     def __init__(self, bar: SubtitleBar):
         super().__init__(bar)
@@ -740,118 +929,120 @@ class _SubtitleCtrl(QWidget):
         self._bar = bar
         self._drag_offset = None
         self._mode_compact = 0
+        self._region_frame = None
+        self._region_controls_visible = False
 
         self._btns: dict[str, QPushButton] = {}
         self._lay = QHBoxLayout(self)
         self._lay.setContentsMargins(4, 2, 4, 2)
         self._lay.setSpacing(2)
-        self._handle = QLabel("⠿")
-        self._handle.setStyleSheet(
-            "color:#fff;font-size:12px;padding:0 1px;background:transparent;"
-        )
-        self._lay.addWidget(self._handle)
-        for key in ("follow", "free", "pinned"):
+
+        # 1. 拖动手柄在最前面，拖动移动翻译框自身
+        self._drag_handle = _SubtitleDragHandle(bar, self)
+        self._lay.addWidget(self._drag_handle)
+
+        # 2. 固定按钮，点击锁定/解锁翻译框位置
+        self._btn_pin = QPushButton()
+        self._btn_pin.setCheckable(True)
+        self._btn_pin.setFixedHeight(26)
+        self._btn_pin.clicked.connect(self._toggle_bar_pin)
+        self._lay.addWidget(self._btn_pin)
+        self._btn_region_pin = self._btn_pin
+
+        for key in ("follow", "free"):
             btn = QPushButton()
             btn.setCheckable(True)
-            btn.setFixedHeight(20)
+            btn.setFixedHeight(26)
             btn.clicked.connect(
                 lambda _=False, k=key: self._bar.set_mode(k, emit=True)
             )
             self._btns[key] = btn
             self._lay.addWidget(btn)
+        self._language_button = LanguagePairButton(self)
+        self._language_button.changed.connect(self._bar.language_changed.emit)
+        self._lay.addWidget(self._language_button)
         self._btn_ann = QPushButton()
-        self._btn_ann.setFixedHeight(20)
+        self._btn_ann.setFixedHeight(26)
         self._btn_ann.clicked.connect(self._bar.switch_to_annotate.emit)
         self._lay.addWidget(self._btn_ann)
         self._btn_pause = QPushButton()
         self._btn_pause.setCheckable(True)
-        self._btn_pause.setFixedHeight(20)
+        self._btn_pause.setFixedHeight(26)
         self._btn_pause.toggled.connect(self._bar.pause_changed.emit)
         self._lay.addWidget(self._btn_pause)
         self._btn_close = QPushButton()
-        self._btn_close.setFixedHeight(20)
+        self._btn_close.setFixedHeight(26)
         self._btn_close.clicked.connect(self._bar.stop_requested.emit)
         self._lay.addWidget(self._btn_close)
 
-        self.setFixedHeight(24)
+        self.setFixedHeight(self._bar._STATUS_BAR_H)
         self.setStyleSheet(CTRL_STYLE)
         self.sync_checked(bar.mode)
         self.apply_ui_language()
 
+    def bind_region_frame(self, frame) -> None:
+        self._region_frame = frame
+        self.apply_ui_language()
+
+    def set_region_controls_visible(self, visible: bool) -> None:
+        self._region_controls_visible = bool(visible)
+        self._drag_handle.setVisible(True)
+        self.apply_ui_language()
+
+    def _toggle_bar_pin(self) -> None:
+        new_mode = "free" if self._bar.mode == "pinned" else "pinned"
+        self._bar.set_mode(new_mode, emit=True)
+
+    def _toggle_region_pin(self) -> None:
+        self._toggle_bar_pin()
+
+    def _sync_region_pin(self) -> None:
+        pass
+
     def adapt_to_width(self, parent_w: int):
-        """根据父窗口可用宽度动态选择舒适呈现层级：
-        - >= 240px: 默认正常舒适双字大按钮（宽度 ~250px）
-        - 180 ~ 239px: 紧凑双字（保留双字不缩写，宽度 ~210px）
-        - < 180px: 极窄单字模式（宽度 ~116px）
-        """
-        if parent_w >= 240:
-            tier = 0
-        elif parent_w >= 180:
-            tier = 1
-        else:
-            tier = 2
-        if tier != self._mode_compact:
-            self._mode_compact = tier
-            self.apply_ui_language()
+        """缩小翻译框时，状态栏按钮与文字保持稳定不变。"""
+        self._mode_compact = 0
+        self.apply_ui_language()
         self.adjustSize()
 
     def sizeHint(self) -> QSize:
-        w = self.layout().sizeHint().width() if self.layout() else 240
-        return QSize(max(116, w), 24)
+        w = self.layout().sizeHint().width() if self.layout() else 350
+        return QSize(max(320, w), self._bar._STATUS_BAR_H)
 
     def apply_ui_language(self):
-        self._handle.setToolTip(_t("sub_drag_tip"))
-        all_btns = list(self._btns.values()) + [
+        self._drag_handle.show()
+        self._drag_handle.apply_ui_language()
+        self._language_button.set_compact(False)
+        pinned = (self._bar.mode == "pinned")
+        self._btn_pin.blockSignals(True)
+        self._btn_pin.setChecked(pinned)
+        self._btn_pin.blockSignals(False)
+        self._btn_pin.setText(_t("sub_pinned"))
+        self._btn_pin.setToolTip(_t("sub_pinned_tip"))
+        self._btns["follow"].setText(_t("sub_follow"))
+        self._btns["free"].setText(_t("sub_free"))
+        self._btn_ann.setText(_t("sub_annotate"))
+        self._btn_pause.setText(
+            _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
+        )
+        self._btn_close.setText(_t("sub_close"))
+
+        all_btns = [
+            self._btn_pin,
+            *self._btns.values(),
             self._btn_ann,
             self._btn_pause,
             self._btn_close,
         ]
-        if self._mode_compact == 2:
-            self._lay.setContentsMargins(2, 1, 2, 1)
-            self._lay.setSpacing(1)
-            self._btns["follow"].setText(_t("sub_follow")[:1])
-            self._btns["free"].setText(_t("sub_free")[:1])
-            self._btns["pinned"].setText(_t("sub_pinned")[:1])
-            self._btn_ann.setText(_t("sub_annotate")[:1])
-            self._btn_pause.setText(
-                (_t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause"))[:1]
-            )
-            self._btn_close.setText(_t("sub_close")[:1])
-            for btn in all_btns:
-                btn.setFixedHeight(18)
-                btn.setStyleSheet("padding:1px 2px;font-size:10px;")
-        elif self._mode_compact == 1:
-            self._lay.setContentsMargins(3, 1, 3, 1)
-            self._lay.setSpacing(1)
-            self._btns["follow"].setText(_t("sub_follow"))
-            self._btns["free"].setText(_t("sub_free"))
-            self._btns["pinned"].setText(_t("sub_pinned"))
-            self._btn_ann.setText(_t("sub_annotate"))
-            self._btn_pause.setText(
-                _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
-            )
-            self._btn_close.setText(_t("sub_close"))
-            for btn in all_btns:
-                btn.setFixedHeight(19)
-                btn.setStyleSheet("padding:1px 3px;font-size:10.5px;")
-        else:
-            self._lay.setContentsMargins(4, 2, 4, 2)
-            self._lay.setSpacing(2)
-            self._btns["follow"].setText(_t("sub_follow"))
-            self._btns["free"].setText(_t("sub_free"))
-            self._btns["pinned"].setText(_t("sub_pinned"))
-            self._btn_ann.setText(_t("sub_annotate"))
-            self._btn_pause.setText(
-                _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
-            )
-            self._btn_close.setText(_t("sub_close"))
-            for btn in all_btns:
-                btn.setFixedHeight(20)
-                btn.setStyleSheet("")
+        self._lay.setContentsMargins(4, 2, 4, 2)
+        self._lay.setSpacing(2)
+        self.setFixedHeight(self._bar._STATUS_BAR_H)
+        for btn in all_btns:
+            btn.setFixedHeight(26)
+            btn.setStyleSheet("padding:2px 8px;font-size:12px;")
 
         self._btns["follow"].setToolTip(_t("sub_follow"))
         self._btns["free"].setToolTip(_t("sub_free"))
-        self._btns["pinned"].setToolTip(_t("sub_pinned"))
         self._btn_ann.setToolTip(_t("sub_annotate_tip"))
         self._btn_pause.setToolTip(
             _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
@@ -866,6 +1057,9 @@ class _SubtitleCtrl(QWidget):
         self.apply_ui_language()
 
     def sync_checked(self, mode: str):
+        self._btn_pin.blockSignals(True)
+        self._btn_pin.setChecked(mode == "pinned")
+        self._btn_pin.blockSignals(False)
         for k, btn in self._btns.items():
             btn.setChecked(k == mode)
 
@@ -888,8 +1082,54 @@ class _SubtitleCtrl(QWidget):
         self._drag_offset = None
 
 
+class _RegionFrameDragHandle(QLabel):
+    """识别框最左侧的六点拖动手柄。"""
+
+    def __init__(self, frame, parent=None):
+        super().__init__("⠿", parent)
+        self._frame = frame
+        self._drag_offset = None
+        self.setObjectName("dragHandle")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedSize(20, 26)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setStyleSheet(
+            "QLabel#dragHandle{background:transparent;border:none;color:rgba(255,255,255,180);font-size:15px;padding:0;}"
+            "QLabel#dragHandle:hover{color:#ffffff;}"
+        )
+        self.setToolTip(_t("frame_drag"))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self._frame.pinned:
+            cr = self._frame.content_rect()
+            self._drag_offset = event.globalPosition().toPoint() - QPoint(cr[0], cr[1])
+            self.grabMouse()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._drag_offset is not None
+            and not self._frame.pinned
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            p = event.globalPosition().toPoint() - self._drag_offset
+            self._frame.move_content_to(p.x(), p.y())
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_offset is not None:
+            self._drag_offset = None
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+            self._frame._emit_moved()
+            event.accept()
+
+
 class _RegionCtrl(_CaptureAllowedMixin, QWidget):
-    """区域识别框控制条：与窗口翻译字幕/备注条同一套 CTRL_STYLE。"""
+    """区域识别框控制条：拖动手柄 + 固定/取消固定。"""
 
     def __init__(self, frame: "RegionWatchFrame"):
         super().__init__()
@@ -900,18 +1140,15 @@ class _RegionCtrl(_CaptureAllowedMixin, QWidget):
         container = QWidget()
         container.setObjectName("regCtrl")
         lay = QHBoxLayout(container)
-        lay.setContentsMargins(8, 3, 8, 3)
-        lay.setSpacing(6)
-        self._handle = QLabel("⠿")
-        self._handle.setStyleSheet(
-            "color:#fff;font-size:14px;padding:0 2px;background:transparent;"
-        )
+        lay.setContentsMargins(4, 2, 4, 2)
+        lay.setSpacing(2)
+        container.setFixedHeight(_STATUS_BAR_HEIGHT)
+        self._handle = _RegionFrameDragHandle(frame, self)
         lay.addWidget(self._handle)
-        self._tip = QLabel()
-        lay.addWidget(self._tip)
         self._btn_pin = QPushButton()
         self._btn_pin.setCheckable(True)
-        self._btn_pin.setFixedHeight(20)
+        self._btn_pin.setFixedHeight(26)
+        self._btn_pin.setStyleSheet("padding:2px 8px;font-size:12px;")
         self._btn_pin.clicked.connect(self._on_pin)
         lay.addWidget(self._btn_pin)
         root = QVBoxLayout(self)
@@ -922,8 +1159,7 @@ class _RegionCtrl(_CaptureAllowedMixin, QWidget):
         self._layer_owner: int | None = None
 
     def apply_ui_language(self):
-        self._handle.setToolTip(_t("sub_drag_tip"))
-        self._tip.setText(_t("hk_region"))
+        self._handle.setToolTip(_t("frame_drag"))
         self._sync_pin_text()
         self.adjustSize()
 
@@ -954,7 +1190,7 @@ class _RegionCtrl(_CaptureAllowedMixin, QWidget):
         self._sync_pin_text()
 
     def place_above(self, rect: tuple[int, int, int, int]):
-        """贴在识别区上方左侧（右侧留给备注/字幕控制条，与窗口翻译一致不抢位）。"""
+        """贴在识别区上方左侧（右侧留给备注控制条，与窗口翻译一致不抢位）。"""
         x, y, w, h = rect
         self.adjustSize()
         nx = x
@@ -1013,7 +1249,17 @@ class RegionWatchFrame(_CaptureAllowedMixin, QWidget):
         self._pinned = False
         self._resize_edge: str | None = None
         self._resize_origin = None
+        self._external_control_bar = False
         self._ctrl = _RegionCtrl(self)
+
+    def set_control_bar_external(self, enabled: bool) -> None:
+        """区域模式把识别框操作并入当前字幕/备注状态栏。"""
+        self._external_control_bar = bool(enabled)
+        if self._external_control_bar:
+            self._ctrl.hide()
+        elif self.isVisible():
+            self._place_ctrl()
+        self.restack_layer()
 
     def apply_ui_language(self):
         self._ctrl.apply_ui_language()
@@ -1022,7 +1268,8 @@ class RegionWatchFrame(_CaptureAllowedMixin, QWidget):
 
     def restack_layer(self) -> None:
         """识别框和控制条始终处在全局 TOPMOST 层最前，且不抢焦点。"""
-        for widget in (self, self._ctrl):
+        widgets = (self,) if self._external_control_bar else (self, self._ctrl)
+        for widget in widgets:
             if widget.isVisible():
                 set_overlay_layer(widget, None)
                 _allow_capture(widget)
@@ -1049,7 +1296,9 @@ class RegionWatchFrame(_CaptureAllowedMixin, QWidget):
         self.update()
 
     def _place_ctrl(self):
-        if self.isVisible():
+        if self._external_control_bar:
+            self._ctrl.hide()
+        elif self.isVisible():
             self._ctrl.place_above(self.content_rect())
 
     def content_rect(self) -> tuple[int, int, int, int]:
@@ -1230,41 +1479,99 @@ class RegionWatchFrame(_CaptureAllowedMixin, QWidget):
             painter.restore()
 
 
+class _RegionDragHandle(QLabel):
+    """备注状态栏中的识别区拖动手柄。"""
+
+    def __init__(self, owner):
+        super().__init__("⠿", owner)
+        self._owner = owner
+        self._drag_offset = None
+        self.setObjectName("dragHandle")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedSize(20, 24)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setStyleSheet(
+            "QLabel#dragHandle{background:transparent;border:none;color:rgba(255,255,255,180);font-size:15px;padding:0;}"
+            "QLabel#dragHandle:hover{color:#ffffff;}"
+        )
+
+    def mousePressEvent(self, event):
+        frame = self._owner._region_frame
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and frame is not None
+            and frame.isVisible()
+            and not frame.pinned
+        ):
+            x, y, _, _ = frame.content_rect()
+            self._drag_offset = event.globalPosition().toPoint() - QPoint(x, y)
+            self.grabMouse()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        frame = self._owner._region_frame
+        if (
+            self._drag_offset is not None
+            and frame is not None
+            and not frame.pinned
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            point = event.globalPosition().toPoint() - self._drag_offset
+            frame.move_content_to(point.x(), point.y())
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_offset is not None:
+            self._drag_offset = None
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+            event.accept()
+
+
 class AnnotateCtrl(_CaptureAllowedMixin, QWidget):
-    """备注模式控制小条：字幕 / 跳过目标语 / 关闭（可点，贴在目标外侧）。"""
+    """备注模式控制条：区域拖动/固定、目标语言、切换字幕、暂停与关闭。"""
 
     stop_requested = Signal()
-    skip_target_changed = Signal(bool)  # 不翻译已是目标语言的文字
     switch_to_subtitle = Signal()  # 运行中切换到字幕条模式
     pause_changed = Signal(bool)
+    language_changed = Signal(str, str)
 
     def __init__(self):
         super().__init__()
         self.setWindowFlags(_FLAGS_TOP)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._region_frame = None
+        self._region_controls_visible = False
         container = QWidget()
         container.setObjectName("annCtrl")
         lay = QHBoxLayout(container)
-        lay.setContentsMargins(8, 3, 8, 3)
-        lay.setSpacing(6)
-        self._tip = QLabel()
-        lay.addWidget(self._tip)
+        lay.setContentsMargins(4, 2, 4, 2)
+        lay.setSpacing(2)
+        container.setFixedHeight(_STATUS_BAR_HEIGHT)
+        self._handle = _RegionDragHandle(self)
+        lay.addWidget(self._handle)
+        self._btn_region_pin = QPushButton()
+        self._btn_region_pin.setCheckable(True)
+        self._btn_region_pin.setFixedHeight(26)
+        self._btn_region_pin.clicked.connect(self._toggle_region_pin)
+        lay.addWidget(self._btn_region_pin)
+        self._language_button = LanguagePairButton(self)
+        self._language_button.changed.connect(self.language_changed.emit)
+        lay.addWidget(self._language_button)
         self._btn_sub = QPushButton()
-        self._btn_sub.setFixedHeight(20)
+        self._btn_sub.setFixedHeight(26)
         self._btn_sub.clicked.connect(self.switch_to_subtitle.emit)
         lay.addWidget(self._btn_sub)
-        self._btn_skip = QPushButton()
-        self._btn_skip.setCheckable(True)
-        self._btn_skip.setFixedHeight(20)
-        self._btn_skip.clicked.connect(self._on_skip_clicked)
-        lay.addWidget(self._btn_skip)
         self._btn_pause = QPushButton()
         self._btn_pause.setCheckable(True)
-        self._btn_pause.setFixedHeight(20)
+        self._btn_pause.setFixedHeight(26)
         self._btn_pause.toggled.connect(self.pause_changed.emit)
         lay.addWidget(self._btn_pause)
         self._btn_close = QPushButton()
-        self._btn_close.setFixedHeight(20)
+        self._btn_close.setFixedHeight(26)
         self._btn_close.clicked.connect(self.stop_requested.emit)
         lay.addWidget(self._btn_close)
         root = QVBoxLayout(self)
@@ -1272,26 +1579,61 @@ class AnnotateCtrl(_CaptureAllowedMixin, QWidget):
         root.addWidget(container)
         self.setStyleSheet(CTRL_STYLE)
         self.apply_ui_language()
+        self.set_region_controls_visible(False)
         self._layer_owner: int | None = None
 
     def apply_ui_language(self):
-        self._tip.setText(_t("ann_label"))
+        self._handle.setToolTip(_t("frame_drag"))
+        self._sync_region_pin()
         self._btn_sub.setText(_t("ann_subtitle"))
         self._btn_sub.setToolTip(_t("ann_subtitle_tip"))
-        self._btn_skip.setText(_t("ann_skip"))
-        self._btn_skip.setToolTip(_t("ann_skip_tip"))
         self._btn_pause.setText(
             _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
         )
         self._btn_close.setText(_t("sub_close"))
         self._btn_close.setToolTip(_t("ann_close_tip"))
+        for btn in (self._btn_sub, self._btn_pause, self._btn_close):
+            btn.setFixedHeight(26)
+            btn.setStyleSheet("padding:2px 8px;font-size:12px;")
         self.adjustSize()
+
+    def set_region_frame(self, frame) -> None:
+        self._region_frame = frame
+        self._handle.setVisible(self._region_controls_visible)
+        self._btn_region_pin.setVisible(self._region_controls_visible)
+        self.apply_ui_language()
+
+    def set_region_controls_visible(self, visible: bool) -> None:
+        self._region_controls_visible = bool(visible and self._region_frame is not None)
+        self._handle.setVisible(self._region_controls_visible)
+        self._btn_region_pin.setVisible(self._region_controls_visible)
+        self.adjustSize()
+
+    def _toggle_region_pin(self) -> None:
+        if self._region_frame is None:
+            return
+        self._region_frame.set_pinned(not self._region_frame.pinned)
+        self._sync_region_pin()
+
+    def _sync_region_pin(self) -> None:
+        pinned = bool(self._region_frame and self._region_frame.pinned)
+        self._btn_region_pin.blockSignals(True)
+        self._btn_region_pin.setChecked(pinned)
+        self._btn_region_pin.blockSignals(False)
+        self._btn_region_pin.setText(_t("frame_pin_off"))
+        self._btn_region_pin.setToolTip(
+            _t("frame_pinned") if pinned else _t("frame_drag")
+        )
 
     def set_paused(self, paused: bool):
         self._btn_pause.blockSignals(True)
         self._btn_pause.setChecked(bool(paused))
         self._btn_pause.blockSignals(False)
         self.apply_ui_language()
+
+    def sync_languages(self, source: str, target: str) -> None:
+        self._language_button.sync_languages(source, target)
+        self.adjustSize()
 
     def set_layer_owner(self, owner_hwnd: int | None) -> None:
         self._layer_owner = int(owner_hwnd) if owner_hwnd else None
@@ -1307,22 +1649,16 @@ class AnnotateCtrl(_CaptureAllowedMixin, QWidget):
         else:
             set_overlay_layer(self, None)
 
-    def _on_skip_clicked(self):
-        self.skip_target_changed.emit(self._btn_skip.isChecked())
-
-    def set_skip_target(self, on: bool):
-        """与配置/设置页同步，不触发 signal。"""
-        on = bool(on)
-        if self._btn_skip.isChecked() != on:
-            self._btn_skip.blockSignals(True)
-            self._btn_skip.setChecked(on)
-            self._btn_skip.blockSignals(False)
+    def set_subtitle_button_visible(self, visible: bool) -> None:
+        """窗口模式不提供字幕切换；区域备注模式保留该按钮。"""
+        self._btn_sub.setVisible(bool(visible))
+        self.adjustSize()
 
     def place_above(self, win_rect: tuple[int, int, int, int]):
-        """贴在目标右上角外侧，不挡内容。"""
+        """贴在目标左上角外侧，不挡内容。"""
         x, y, w, h = win_rect
         self.adjustSize()
-        nx = x + max(0, w - self.width())
+        nx = x
         ny = y - self.height() - 4
         first = not self.isVisible()
         _move_if_changed(self, nx, ny)
@@ -1351,23 +1687,11 @@ class AnnotationOverlay(_CaptureAllowedMixin, QWidget):
         self._text_color = QColor("#00F0FF")
         self._font_size = self._DEFAULT_FONT_SIZE
         self._layer_owner: int | None = None
-        # 是否允许系统截图/录屏拍到译文。关闭（默认配置）时浮层从屏幕
-        # 捕获排除，区域备注的 OCR 抓屏天然看不到译文，无需遮罩还原。
-        self._capture_visible = True
-
-    def set_capture_visible(self, visible: bool) -> None:
-        """备注译文是否参与屏幕捕获；立即应用到当前原生窗口。"""
-        self._capture_visible = bool(visible)
-        self._apply_capture_affinity()
-
     def _apply_capture_affinity(self) -> None:
-        if self._capture_visible:
-            _allow_capture(self)
-        else:
-            _exclude_from_capture(self)
+        _exclude_from_capture(self)
 
     def showEvent(self, event: QShowEvent):
-        # 覆盖 mixin 的「显示即允许捕获」：按开关决定显示亲和性
+        # 备注层始终排除捕获，避免译文被下一轮 OCR 识别。
         QWidget.showEvent(self, event)
         self._apply_capture_affinity()
 
@@ -1461,42 +1785,6 @@ class AnnotationOverlay(_CaptureAllowedMixin, QWidget):
                 text,
             ))
         return font, layout
-
-    def capture_mask(self) -> np.ndarray | None:
-        """按实际字体和布局渲染译文透明度遮罩，供区域 OCR 恢复底图。"""
-        if not self.isVisible() or not self._items:
-            return None
-        width, height = self.width(), self.height()
-        if width <= 0 or height <= 0:
-            return None
-        image = QImage(
-            width,
-            height,
-            QImage.Format.Format_ARGB32_Premultiplied,
-        )
-        image.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(image)
-        font, layout = self._layout_items()
-        painter.setFont(font)
-        painter.setPen(Qt.GlobalColor.white)
-        for (x1, y1, x2, y2), text in layout:
-            painter.drawText(
-                x1,
-                y1,
-                x2 - x1,
-                y2 - y1,
-                Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextSingleLine,
-                text,
-            )
-        painter.end()
-        stride = image.bytesPerLine()
-        pixels = np.frombuffer(
-            image.constBits(),
-            dtype=np.uint8,
-            count=image.sizeInBytes(),
-        ).reshape(height, stride)
-        bgra = pixels[:, : width * 4].reshape(height, width, 4)
-        return bgra[:, :, 3].copy()
 
     def paintEvent(self, event):
         painter = QPainter(self)

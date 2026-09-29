@@ -57,7 +57,7 @@ class TestRegionWatchStartup(unittest.TestCase):
         app._watch_paused = False
         app._watch_region = (0, 0, 64, 32)
         app._watch_annotate = True
-        app.cfg = {"annotate_capture_visible": False}
+        app.cfg = {}
         app.annotation = Mock()
         app.log = Mock()
         App._on_watch_annotations_guarded(app, items, 1, watcher, queued_gen, 1)

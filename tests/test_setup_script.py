@@ -6,16 +6,23 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class SetupScriptTests(unittest.TestCase):
-    def test_runtime_uses_slim_onnx_dependencies_without_paddle(self):
+    def test_runtime_uses_restored_onnx_ocr_dependencies(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         setup_script = (ROOT / "setup.ps1").read_text(encoding="utf-8")
 
         self.assertIn("numpy>=1.24,<2.4", requirements)
-        self.assertIn("onnxruntime-directml", requirements)
+        self.assertIn("onnxruntime-directml==1.24.4", requirements)
+        self.assertIn("pyclipper==1.4.0", requirements)
         self.assertIn("PySide6_Essentials", requirements)
-        self.assertNotIn("paddleocr", requirements.lower())
+        self.assertNotIn("winrt-Windows.Media.Ocr", requirements)
         self.assertNotIn("Install-Paddle", setup_script)
         self.assertNotIn("SkipPaddle", setup_script)
+        self.assertIn('$ocrDir = Join-Path $Root "runtime\\ocr"', setup_script)
+        self.assertIn(
+            '$ocrRequired = @("manifest.json", "det.onnx", "rec.onnx", "characters.txt")',
+            setup_script,
+        )
+        self.assertIn("Get-FileHash -LiteralPath (Join-Path $ocrDir $name)", setup_script)
 
     def test_install_and_check_modes_verify_dependency_consistency(self):
         setup_script = (ROOT / "setup.ps1").read_text(encoding="utf-8")

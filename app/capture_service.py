@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
-from typing import Any, Callable, Optional, Tuple
+from typing import Callable
 import numpy as np
 
 from . import capture

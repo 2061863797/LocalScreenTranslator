@@ -18,30 +18,29 @@ import threading
 import time
 import traceback
 import uuid
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from .adaptive_polling import AdaptivePollingController
 from .applog import get_logger
-from .capture_service import CaptureService, is_invalid_window_handle_error
+from .capture_service import CaptureService
 from .frame_detector import FrameChangeDetector
 from .latest_frame_buffer import LatestFrameBuffer, FramePacket
 from .ocr_engine import OcrEngine
 from .ocr_service import OcrService
 from .ocr_stabilizer import OcrStabilizer
-from .pipelines import GenerationTracker, WatchCycleContext
+from .pipelines import GenerationTracker
 from .result_manager import ResultManager
 from .scene_text_state import SceneTextState, _boxes_intersect
 from .text_change_detector import TextChangeDetector
 from .translation_manager import TranslationManager
-from .translator import Translator
+from .translation_runtime.router import TranslationRouter
 
 _log = get_logger("watch")
 
 # 兼容常量与辅助函数
-_SKIP_TARGET = "\x00SKIP_TARGET"
 _FRAME_SAMPLE_STEP = 4
 _FRAME_DIFF_TOLERANCE = 12
 
@@ -58,43 +57,6 @@ def _frame_changed(previous: np.ndarray, current: np.ndarray) -> bool:
     # int16 避免 uint8 相减回绕把小差当成大差
     diff = np.abs(before.astype(np.int16) - after).max()
     return bool(diff > _FRAME_DIFF_TOLERANCE)
-
-
-def _is_invalid_window_handle_error(exc: BaseException) -> bool:
-    """目标窗在检查与截图之间关闭时，pywin32 返回错误 1400 (兼容导出)。"""
-    return is_invalid_window_handle_error(exc)
-
-
-def _dilate_mask(mask: np.ndarray, radius: int = 2) -> np.ndarray:
-    """扩张少量像素，覆盖 DWM 缩放和文字抗锯齿产生的边缘。"""
-    active = np.asarray(mask, dtype=bool)
-    if not active.any() or radius <= 0:
-        return active.copy()
-    try:
-        import cv2
-
-        ksize = 2 * radius + 1
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ksize, ksize))
-        m_u8 = active.view(np.uint8) if active.dtype == bool else active.astype(np.uint8)
-        dilated = cv2.dilate(m_u8, kernel)
-        return dilated > 0
-    except Exception:
-        height, width = active.shape
-        expanded = active.copy()
-        for dy in range(-radius, radius + 1):
-            src_y1 = max(0, -dy)
-            src_y2 = min(height, height - dy)
-            dst_y1 = max(0, dy)
-            dst_y2 = min(height, height + dy)
-            for dx in range(-radius, radius + 1):
-                src_x1 = max(0, -dx)
-                src_x2 = min(width, width - dx)
-                dst_x1 = max(0, dx)
-                dst_x2 = min(width, width + dx)
-                expanded[dst_y1:dst_y2, dst_x1:dst_x2] |= active[
-                    src_y1:src_y2, src_x1:src_x2
-                ]
-        return expanded
 
 
 class WindowWatcher(QThread):
@@ -125,7 +87,7 @@ class WindowWatcher(QThread):
     def __init__(
         self,
         ocr: OcrEngine,
-        translator: Translator,
+        translator: TranslationRouter,
         cfg: dict,
         hwnd: int | None = None,
         region: tuple[int, int, int, int] | None = None,
@@ -141,10 +103,6 @@ class WindowWatcher(QThread):
         self._hwnd = hwnd
         self._region = region
         self._region_lock = threading.Lock()
-        self._annotation_mask_lock = threading.Lock()
-        self._annotation_mask: np.ndarray | None = None
-        self._annotation_clean_frame: np.ndarray | None = None
-
         self._ocr = ocr
         self._translator = translator
         self._cfg = cfg
@@ -163,7 +121,6 @@ class WindowWatcher(QThread):
         self._polling_controller = AdaptivePollingController()
         self._ocr_service = OcrService(ocr_engine=self._ocr)
         self._ocr_stabilizer = OcrStabilizer()
-        self._ocr_reset_requested = threading.Event()
         self._text_change_detector = TextChangeDetector(empty_clear_delay_s=self._CLEAR_GRACE_SECONDS)
         self._translation_manager = TranslationManager(translator=self._translator)
         self._result_manager = ResultManager(generation_tracker=self._generation_tracker)
@@ -201,7 +158,6 @@ class WindowWatcher(QThread):
         self._inference_thread: threading.Thread | None = None
         self._consumer_stop_event = threading.Event()
         self._state_lock = threading.RLock()
-        self._last_skip_target: bool | None = None
         self._last_frame: np.ndarray | None = None
         self._skipped_frames = 0
         self._work_revision: int = 0
@@ -358,11 +314,8 @@ class WindowWatcher(QThread):
             self._text_change_detector.reset(clear_cache=True)
         self._translation_manager.clear_cache()
         self._ocr_stabilizer.reset()
-        self._ocr_reset_requested.set()
-        self._last_skip_target = None
         self._last_frame = None
         self._skipped_frames = 0
-        self.set_annotation_mask(None, reset_reference=True)
 
     def set_region(self, region: tuple[int, int, int, int] | None) -> None:
         """区域监视时拖动选区后更新（线程安全）。"""
@@ -379,11 +332,9 @@ class WindowWatcher(QThread):
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=False)
         self._ocr_stabilizer.reset()
-        self._ocr_reset_requested.set()
         self._last_frame = None
         self._skipped_frames = 0
         self._last_processed_epoch = 0
-        self.set_annotation_mask(None, reset_reference=True)
 
     def _rotate_translation_session(self) -> str:
         """轮转翻译会话标签并中断上一代未完成的在途请求。
@@ -415,54 +366,8 @@ class WindowWatcher(QThread):
             self._text_change_detector.reset(clear_cache=True)
         self._translation_manager.clear_cache()
         self._ocr_stabilizer.reset()
-        self._ocr_reset_requested.set()
         self._last_frame = None
         self._last_captured_frame = None
-
-    def set_annotation_mask(
-        self, mask: np.ndarray | None, *, reset_reference: bool = False
-    ) -> None:
-        """更新译文像素遮罩；布局重置时同时丢弃旧干净帧。"""
-        prepared = None
-        if mask is not None and mask.ndim == 2 and mask.size:
-            prepared = _dilate_mask(mask > 0)
-        with self._annotation_mask_lock:
-            self._annotation_mask = prepared
-            if reset_reference:
-                self._annotation_clean_frame = None
-
-    def _remove_annotation_overlay(self, image: np.ndarray) -> np.ndarray:
-        """用上一张干净帧恢复译文像素，OCR 永远只看到原始区域。"""
-        with self._annotation_mask_lock:
-            mask = self._annotation_mask
-            reference = self._annotation_clean_frame
-
-        clean = image
-        if reference is None or reference.shape != image.shape:
-            with self._annotation_mask_lock:
-                self._annotation_clean_frame = image.copy()
-            return clean
-
-        if mask is not None:
-            clean = image.copy()
-            clean[mask] = reference[mask]
-        return clean
-
-    def _sync_clean_frame(self, image: np.ndarray) -> None:
-        """在更新遮罩前保存干净底图。"""
-        with self._annotation_mask_lock:
-            self._annotation_clean_frame = image.copy()
-
-    def _check_and_notify_cleared(self) -> None:
-        """连续两轮无文字才清空，兼顾及时消失和单帧 OCR 抖动。"""
-        with self._state_lock:
-            event, _ = self._text_change_detector.observe([], 0.0)
-        if event == "clear":
-            self._notify_cleared()
-
-    def _notify_cleared(self) -> None:
-        self._result_manager.dispatch_cleared()
-        _log.info("连续两轮未识别到文字，已清空持续翻译显示")
 
     def stop(self) -> None:
         """停止监视并清空缓冲与世代。"""
@@ -634,14 +539,6 @@ class WindowWatcher(QThread):
         _, stable_lines = self._ocr_stabilizer.process(raw_lines)
         return self._scene_text_state.update_full(stable_lines)
 
-    def _annotate_translate(self, lines: list[Any], target: str) -> tuple[list[tuple[Any, str]], str]:
-        """备注：按行增量翻译，委托 TranslationManager 处理。"""
-        skip_key = f"{self._profile}_annotate_skip_target_lang"
-        skip_target = bool(self._cfg.get(skip_key))
-        return self._translation_manager.translate_annotations(
-            lines, target, skip_target=skip_target, is_running_fn=lambda: self._running
-        )
-
     # ==========================================
     # 核心管线编排循环
     # ==========================================
@@ -669,16 +566,6 @@ class WindowWatcher(QThread):
                 p = self._profile
                 cfg_interval = float(self._cfg.get(f"{p}_watch_interval_ms", 120)) / 1000.0
 
-                # 备注「跳过目标语」开关变化响应
-                if self._display_mode == "annotate":
-                    skip_key = f"{self._profile}_annotate_skip_target_lang"
-                    skip_now = bool(self._cfg.get(skip_key))
-                    if skip_now != self._last_skip_target:
-                        self._last_skip_target = skip_now
-                        with self._state_lock:
-                            self._text_change_detector.reset(clear_cache=True)
-                        self._translation_manager.clear_cache()
-
                 t0 = time.time()
 
                 # 阶段 1: 画面捕获与窗口验证
@@ -700,14 +587,6 @@ class WindowWatcher(QThread):
                     time.sleep(0.05)
                     continue
                 self._consecutive_grab_fails = 0
-
-                # 备注浮层像素剔除：在画面差分与缓冲压入前先剔除自身译文浮层，彻底杜绝自反馈与假变动
-                if (
-                    self._profile == "region"
-                    and self._display_mode == "annotate"
-                    and bool(self._cfg.get("annotate_capture_visible"))
-                ):
-                    img = self._remove_annotation_overlay(img)
 
                 # 阶段 2: 目标位移追踪
                 if self._capture_service.has_moved(rect):
@@ -823,10 +702,6 @@ class WindowWatcher(QThread):
 
         while not self._consumer_stop_event.is_set():
             try:
-                if self._ocr_reset_requested.is_set():
-                    self._ocr_reset_requested.clear()
-                    self._ocr_stabilizer.reset()
-
                 # 1. 尝试从缓冲中拉取最新帧（带超时，超时后循环检查 stop_event）
                 pulled = self._frame_buffer.get(timeout=0.1)
                 if pulled is None:
@@ -895,14 +770,6 @@ class WindowWatcher(QThread):
                 self._skipped_frames = 0
                 self._last_frame = img
 
-                # 6. 备注浮层像素剔除
-                if (
-                    self._profile == "region"
-                    and self._display_mode == "annotate"
-                    and bool(self._cfg.get("annotate_capture_visible"))
-                ):
-                    img = self._remove_annotation_overlay(img)
-
                 # 7. 局部 OCR 与全图回退，防抖后再提交场景文本
                 lines: list[Any] = []
                 try:
@@ -956,12 +823,10 @@ class WindowWatcher(QThread):
                     )
                     try:
                         if self._display_mode == "annotate":
-                            skip_target = bool(self._cfg.get(f"{self._profile}_annotate_skip_target_lang"))
                             items, translation = self._translation_manager.translate_annotations(
                                 lines,
                                 target,
                                 frame_gen_id,
-                                skip_target=skip_target,
                                 is_running_fn=lambda: self._running and not self._consumer_stop_event.is_set(),
                                 session_tag=self._translation_session_tag,
                             )
@@ -988,7 +853,7 @@ class WindowWatcher(QThread):
                             if not self._running or self._consumer_stop_event.is_set():
                                 break
                             translation = self._translation_manager.translate_subtitle(
-                                text,
+                                lines if isinstance(self._translator, TranslationRouter) else text,
                                 target,
                                 frame_gen_id,
                                 session_tag=self._translation_session_tag,

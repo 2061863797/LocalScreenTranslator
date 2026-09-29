@@ -12,7 +12,6 @@ import numpy as np
 
 from app.config import DEFAULTS
 from app.storage import Storage
-from app.translator import Translator
 from app.ui.windows import ModelCopyWorker
 from app.window_watcher import WindowWatcher
 
@@ -130,43 +129,6 @@ class AuditRegressionTests(unittest.TestCase):
             ModelCopyWorker(src, dest).run()
             self.assertEqual(dest.read_bytes(), b"GGUFnew")
 
-    def test_clear_cache_removes_memory_and_sqlite_entries(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = Storage(Path(tmp) / "cache.db")
-            translator = Translator(
-                base_url="http://127.0.0.1:8080",
-                cfg={"translation_cache_enabled": True},
-                storage=storage,
-            )
-            try:
-                translator._cache_put("private text", "en", "translated")
-                storage.add_history("history source", "history translation", "test")
-                self.assertEqual(storage.count_translation_cache(), 1)
-                self.assertTrue(translator._line_cache)
-                held = threading.Event()
-                release = threading.Event()
-
-                def hold_translation_lock():
-                    with translator._lock:
-                        held.set()
-                        release.wait(3)
-
-                owner = threading.Thread(target=hold_translation_lock)
-                owner.start()
-                try:
-                    self.assertTrue(held.wait(1))
-                    self.assertFalse(translator.clear_cache())
-                    self.assertEqual(storage.count_translation_cache(), 1)
-                finally:
-                    release.set()
-                    owner.join(3)
-                self.assertTrue(translator.clear_cache())
-                self.assertEqual(storage.count_translation_cache(), 0)
-                self.assertEqual(storage.count_records(), 1)
-                self.assertFalse(translator._line_cache)
-            finally:
-                translator.close()
-                storage.close()
 
 
 if __name__ == "__main__":

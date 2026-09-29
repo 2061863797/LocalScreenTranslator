@@ -304,7 +304,7 @@ def window_geometry_value(widget: QWidget) -> list[int]:
     return [geo.x(), geo.y(), geo.width(), geo.height()]
 
 
-def restore_window_geometry(widget: QWidget, value) -> bool:
+def restore_window_geometry(widget: QWidget, value, *, geometry_setter=None) -> bool:
     """仅恢复仍与当前任一屏幕相交的几何，避免窗口落在已移除的副屏。"""
     if not isinstance(value, list) or len(value) != 4:
         return False
@@ -321,7 +321,7 @@ def restore_window_geometry(widget: QWidget, value) -> bool:
         for screen in QGuiApplication.screens()
     ):
         return False
-    widget.setGeometry(rect)
+    (geometry_setter or widget.setGeometry)(rect)
     return True
 
 
@@ -388,15 +388,18 @@ def show_toast(
     )
     toast.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
     toast.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+    from PySide6.QtWidgets import QGraphicsOpacityEffect
+
     toast.setStyleSheet(
         """
         QLabel {
-            background: rgba(20, 22, 28, 220);
-            color: #e8f8ff;
-            border: 1px solid rgba(0, 200, 255, 90);
-            border-radius: 10px;
-            padding: 12px 22px;
-            font-size: 14px;
+            background: rgba(18, 22, 32, 235);
+            color: #ffffff;
+            border: 1px solid rgba(0, 180, 255, 110);
+            border-radius: 18px;
+            padding: 8px 22px;
+            font-size: 13px;
             font-weight: 600;
         }
         """
@@ -420,17 +423,61 @@ def show_toast(
     except Exception:
         center_on_cursor_screen(toast)
 
-    toast.show()
-    toast.raise_()
-    show_toast._current = toast  # type: ignore[attr-defined]
+    try:
+        effect = QGraphicsOpacityEffect(toast)
+        toast.setGraphicsEffect(effect)
+        effect.setOpacity(0.0)
+        toast.show()
+        toast.raise_()
+        show_toast._current = toast  # type: ignore[attr-defined]
 
-    def _close():
-        try:
-            if getattr(show_toast, "_current", None) is toast:
-                show_toast._current = None  # type: ignore[attr-defined]
-            toast.close()
-            toast.deleteLater()
-        except Exception:
-            pass
+        anim_in = QPropertyAnimation(effect, b"opacity", toast)
+        anim_in.setDuration(120)
+        anim_in.setStartValue(0.0)
+        anim_in.setEndValue(1.0)
+        anim_in.setEasingCurve(QEasingCurve.Type.OutQuad)
+        anim_in.start()
+        toast._anim_in = anim_in  # type: ignore[attr-defined]
 
-    QTimer.singleShot(max(600, int(msec)), _close)
+        def _fade_out():
+            try:
+                anim_out = QPropertyAnimation(effect, b"opacity", toast)
+                anim_out.setDuration(200)
+                anim_out.setStartValue(1.0)
+                anim_out.setEndValue(0.0)
+                anim_out.setEasingCurve(QEasingCurve.Type.InQuad)
+
+                def _clean():
+                    try:
+                        if getattr(show_toast, "_current", None) is toast:
+                            show_toast._current = None  # type: ignore[attr-defined]
+                        toast.close()
+                        toast.deleteLater()
+                    except Exception:
+                        pass
+
+                anim_out.finished.connect(_clean)
+                anim_out.start()
+                toast._anim_out = anim_out  # type: ignore[attr-defined]
+            except Exception:
+                if getattr(show_toast, "_current", None) is toast:
+                    show_toast._current = None  # type: ignore[attr-defined]
+                toast.close()
+                toast.deleteLater()
+
+        QTimer.singleShot(max(600, int(msec)), _fade_out)
+    except Exception:
+        toast.show()
+        toast.raise_()
+        show_toast._current = toast  # type: ignore[attr-defined]
+
+        def _close_fallback():
+            try:
+                if getattr(show_toast, "_current", None) is toast:
+                    show_toast._current = None  # type: ignore[attr-defined]
+                toast.close()
+                toast.deleteLater()
+            except Exception:
+                pass
+
+        QTimer.singleShot(max(600, int(msec)), _close_fallback)

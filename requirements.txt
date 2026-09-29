@@ -4,6 +4,8 @@ PySide6_Essentials==6.11.1
 # OCR: DirectML with automatic CPU fallback
 numpy>=1.24,<2.4
 onnxruntime-directml==1.24.4
+
+# Screenshot, image processing and capture
 opencv-python-headless==5.0.0.93
 pyclipper==1.4.0
 
@@ -12,6 +14,3 @@ mss==10.2.0
 pynput==1.8.2
 pywin32==312
 Pillow==12.3.0
-
-# HTTP client
-requests==2.34.2

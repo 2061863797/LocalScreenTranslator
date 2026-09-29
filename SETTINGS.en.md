@@ -1,35 +1,30 @@
 # LocalScreen Translator — Settings
 
-Tray → **Settings** → **General → UI language → English** → Save.  
-Key: `ui_language` = `zh` | `en` (whole UI).
+Open Settings from the tray. Saving applies model and device settings within the current process. Model loading runs in the background; a failure shows its reason and restores the previous selection. The UI supports Chinese and English. OCR uses the PP-OCRv6 ONNX model shipped as a runtime resource and does not need Windows OCR language packs.
 
-| Option | Key | Notes |
-|--------|-----|--------|
-| UI language | `ui_language` | `zh` / `en` |
-| Target language | `target_language` | e.g. 简体中文 |
-| Translate window font | `translate_window_font_size` | `0`=default; otherwise `12`–`20` px |
-| Save local history | `history_enabled` | plain text in `data.db`, up to 50 entries; disabling stops new records |
-| Save local translation cache | `translation_cache_enabled` | plain text in `data.db`, up to 50,000 entries; disabling stops new writes, and existing cache can be cleared in History |
+| Option | Key | Meaning |
+|---|---|---|
+| GGUF model | `model_path` | Directly reference or import a valid GGUF; weights are not bundled |
+| llama.cpp DLLs | `llama_library_dir` | Local development default `runtime/llama-native`; copied into the EXE directory on build |
+| AI device | `llama_device` | `auto`, `gpu`, or `cpu` |
+| Target language | `target_language` | One target at a time; changing it retranslates |
+| OCR model | `runtime/ocr/` | PP-OCRv6 detector, recognizer, and character table |
+| OCR device | `ocr_provider`, `ocr_device_id` | Auto prefers DirectML and falls back to CPU; CPU can be selected in config |
+| OCR long-side cap | `ocr_max_side` | Default 1600; 0 disables additional long-side scaling |
+| OCR minimum confidence | `ocr_score_min` | Default 0.45; lower-scoring lines are discarded |
+| Generation limit | `max_tokens` | Default 512, allowed 64–8192 |
+| CPU threads | `threads` | llama.cpp inference threads |
+| Context | `ctx_size` | Default 2048 |
+| Translation cache | `translation_cache_enabled` | Disable future writes; clear old cache in History |
+| Local history | `history_enabled` | Disable future writes; clear old history in History |
+| UI language | `ui_language` | `zh` or `en` |
+| Translation window font | `translate_window_font_size` | 0=default or 12–20 px |
 | Annotation color | `annotate_text_color` | `#RRGGBB` |
-| Annotation in captures | `annotate_capture_visible` | `false` (default) = excluded from screenshots/recordings, fastest; `true` = visible in captures, region notes slightly slower |
-| Screenshot hotkey | `hotkey_screenshot` | default `<alt>+q` |
-| Selection hotkey | `hotkey_word` | default `<alt>+w` |
-| Window watch | `hotkey_window` | default `<alt>+e` |
-| Region watch | `hotkey_region_watch` | default `<alt>+r` |
-| Window interval | `window_watch_interval_ms` | presets from 200 to 5000 ms, or a custom value in that range |
-| Window translation font | `window_watch_font_size` | `0`=default; otherwise `12`–`20` px |
-| Window display | `window_watch_annotate` | `false`=subtitle, `true`=notes |
-| Window skip target | `window_annotate_skip_target_lang` | notes only |
-| Region interval | `region_watch_interval_ms` | presets from 200 to 5000 ms, or a custom value in that range |
-| Region translation font | `region_watch_font_size` | `0`=default; otherwise `12`–`20` px |
-| Region display | `region_watch_annotate` | |
-| Region skip target | `region_annotate_skip_target_lang` | |
-| Translation model | `model_path` | choose a valid `.gguf` placed directly in `runtime\models`; restart after saving |
-| max_tokens | `max_tokens` | presets from 64 to 8192, or enter any integer in that range; default 512 |
+| Window/region interval | `window_watch_interval_ms` / `region_watch_interval_ms` | Default 800 ms each |
+| Window/region font | `window_watch_font_size` / `region_watch_font_size` | 0=default or 12–20 px |
+| Region annotations | `region_watch_annotate` | Boolean |
+| Hotkeys | `hotkey_screenshot`, `hotkey_word`, `hotkey_window`, `hotkey_region_watch` | Alt+Q/W/E/R by default |
 
-Mouse side buttons: `mouse.x1` / `mouse.x2`.  
-Other llama options: `config.json` / `config.example.json`.
+Place the OCR files `manifest.json`, `det.onnx`, `rec.onnx`, and `characters.txt` in `runtime/ocr/`. Download `ocr.zip` from the [GitHub release](https://github.com/2061863797/LocalScreenTranslator/releases/tag/2.0.0) and extract it into `runtime/`. Annotation overlays are always excluded from capture. Legacy WinRT OCR language fields and old translation settings are ignored on load and removed on the next save; history data is retained.
 
-中文版：[SETTINGS.md](./SETTINGS.md)
-
-**Docs may be AI-generated; verify yourself.**
+[中文](./SETTINGS.md) · [Home](./README.en.md)

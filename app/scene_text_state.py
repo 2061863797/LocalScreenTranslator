@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 
 def _boxes_intersect(
@@ -25,7 +25,7 @@ def _boxes_intersect(
     ry2 += margin
 
     if hasattr(box_a, "__len__") and len(box_a) == 4:
-        # PP-OCR 4点多边形 [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] 或 [x, y, w, h]
+        # 兼容旧版四点多边形与当前 OCR 使用的绝对坐标矩形。
         first = box_a[0]
         if isinstance(first, (list, tuple)) and len(first) >= 2:
             xs = [pt[0] for pt in box_a]

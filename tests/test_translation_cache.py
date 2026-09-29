@@ -16,12 +16,13 @@ import tempfile
 import time
 import unicodedata
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Callable
+from unittest.mock import Mock
 
 from app.translation_cache import TranslationCache
-from app.translation_manager import SubtitleIncrementalTranslator
-from app.translator import Translator
+from app.translation_manager import SubtitleIncrementalTranslator, TranslationManager
 from app.storage import Storage, MAX_CACHE_ENTRIES
 
 
@@ -75,6 +76,32 @@ class TestTranslationCacheTiers(unittest.TestCase):
         sub, _ = self.translator.translate_subtitle_lines(lines, "zh")
         expected_ordered = "[zh]Third\n第一\n[zh]Second"
         self.assertEqual(sub, expected_ordered)
+
+    def test_annotation_translation_keeps_lines_already_in_target_language(self):
+        """备注模式不再按字符判断跳过原文，每条 OCR 行都送入翻译器。"""
+        backend = Mock()
+        backend.translate_lines.return_value = ["原文行译文", "英文行译文"]
+        manager = TranslationManager(backend, cache=self.cache)
+        lines = [
+            SimpleNamespace(text="这行本来就是中文", box=(0, 0, 100, 20)),
+            SimpleNamespace(text="This is English", box=(0, 24, 120, 44)),
+        ]
+
+        items, joined = manager.translate_annotations(lines, "简体中文")
+
+        backend.translate_lines.assert_called_once_with(
+            ["这行本来就是中文", "This is English"],
+            "简体中文",
+            session_tag="default",
+        )
+        self.assertEqual(
+            items,
+            [
+                ((0, 0, 100, 20), "原文行译文"),
+                ((0, 24, 120, 44), "英文行译文"),
+            ],
+        )
+        self.assertEqual(joined, "原文行译文\n英文行译文")
 
     def test_translation_cache_put_and_get(self):
         """Tier 1: Values stored in cache are retrievable with matching parameters."""
@@ -344,53 +371,7 @@ class TestTranslationCacheTiers(unittest.TestCase):
         finally:
             cache.close()
 
-    def test_translator_checks_cache_before_http_calls(self):
-        """Tier 3: Translator queries TranslationCache before issuing HTTP calls to llama-server."""
-        trans = Translator("http://127.0.0.1:9", {"ctx_size": 2048, "max_tokens": 512}, cache=self.cache)
-        try:
-            # Seed cache with known translation
-            self.cache.put("Cached Source", "简体中文", trans.model_id, trans.prompt_version, "已缓存译文")
 
-            chat_called = False
-
-            def fake_chat(*args, **kwargs):
-                nonlocal chat_called
-                chat_called = True
-                return "从网络翻译"
-
-            trans._chat = fake_chat
-            result = trans.translate("Cached Source", "简体中文")
-            self.assertEqual(result, "已缓存译文")
-            self.assertFalse(chat_called, "Cache hit must not invoke _chat / network")
-        finally:
-            trans.close()
-
-    def test_translator_caches_and_retrieves_translations(self):
-        """Tier 3: Translator stores new translations in TranslationCache for reuse."""
-        trans = Translator("http://127.0.0.1:9", {"ctx_size": 2048, "max_tokens": 512}, cache=self.cache)
-        try:
-            call_count = 0
-
-            def fake_chat(*args, **kwargs):
-                nonlocal call_count
-                call_count += 1
-                return "新网络译文"
-
-            trans._chat = fake_chat
-            r1 = trans.translate("Uncached Sentence", "简体中文")
-            self.assertEqual(r1, "新网络译文")
-            self.assertEqual(call_count, 1)
-
-            # Second call must hit cache
-            r2 = trans.translate("Uncached Sentence", "简体中文")
-            self.assertEqual(r2, "新网络译文")
-            self.assertEqual(call_count, 1)
-
-            # Verified in TranslationCache L1 and L2
-            cached_val = self.cache.get("Uncached Sentence", "简体中文", trans.model_id, trans.prompt_version)
-            self.assertEqual(cached_val, "新网络译文")
-        finally:
-            trans.close()
 
 
 if __name__ == "__main__":

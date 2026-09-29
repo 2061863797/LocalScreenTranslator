@@ -203,7 +203,7 @@ class TestGenerationTrackingAdversarial(unittest.TestCase):
 
         fake_frame = np.ones((100, 100, 3), dtype=np.uint8) * 15
         ocr_mock.recognize.return_value = [
-            OcrLine(text="Old text", box=[[0, 0], [50, 0], [50, 10], [0, 10]], score=0.95)
+            OcrLine(text="Old text", box=(0, 0, 50, 10), score=0.95)
         ]
 
         with patch.object(watcher, "_grab", return_value=((0, 0, 100, 100), fake_frame)):
@@ -269,9 +269,12 @@ class TestSubtitleOverlayAdversarial(unittest.TestCase):
             show_called = True
             state_at_show["content_h"] = self.bar._content_h
             state_at_show["width"] = self.bar.width()
-            state_at_show["height"] = self.bar.height()
+            state_at_show["height"] = self.bar.content_height()
             state_at_show["text"] = self.bar._text
             state_at_show["ctrl_pos"] = (self.bar._ctrl.x(), self.bar._ctrl.y())
+            state_at_show["ctrl_size"] = (
+                self.bar._ctrl.width(), self.bar._ctrl.height()
+            )
             state_at_show["vscroll_geo"] = (
                 self.bar._vscroll.x(), self.bar._vscroll.y(),
                 self.bar._vscroll.width(), self.bar._vscroll.height(),
@@ -290,12 +293,13 @@ class TestSubtitleOverlayAdversarial(unittest.TestCase):
         self.assertEqual(state_at_show["text"], text)
 
         # Chrome positioning check before show
-        self.assertNotEqual(state_at_show["ctrl_pos"], (0, 0), "ctrl must be placed before show")
+        self.assertEqual(state_at_show["ctrl_pos"][1], 0, "status bar must start above the subtitle panel")
+        self.assertGreater(state_at_show["ctrl_size"][0], 0, "ctrl must be placed before show")
         self.assertGreater(state_at_show["vscroll_geo"][2], 0, "vscroll width must be > 0 before show")
 
         # Post-show stability: size must NOT change post-show during the same set_text
         self.assertEqual(self.bar.width(), state_at_show["width"])
-        self.assertEqual(self.bar.height(), state_at_show["height"])
+        self.assertEqual(self.bar.content_height(), state_at_show["height"])
 
     def test_whitespace_and_unicode_edge_cases(self):
         """Adversarial strings: none should trigger display."""
@@ -372,11 +376,11 @@ class TestSubtitleOverlayAdversarial(unittest.TestCase):
 
         self.bar.set_text("Short text")
         self.assertEqual(self.bar.width(), 450)
-        self.assertEqual(self.bar.height(), 150)
+        self.assertEqual(self.bar.content_height(), 150)
 
         self.bar.set_text("Much longer text that wraps across multiple lines...\nLine 2\nLine 3\nLine 4")
         self.assertEqual(self.bar.width(), 450)
-        self.assertEqual(self.bar.height(), 150)
+        self.assertEqual(self.bar.content_height(), 150)
 
 
 if __name__ == "__main__":

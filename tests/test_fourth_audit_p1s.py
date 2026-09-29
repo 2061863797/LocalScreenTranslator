@@ -9,7 +9,6 @@ import numpy as np
 
 from app.frame_detector import FrameChangeDetector, FrameDiffResult
 from app.translation_manager import TranslationManager
-from app.llama_server import LlamaServer
 
 
 class TestFourthAuditP1s(unittest.TestCase):
@@ -53,25 +52,6 @@ class TestFourthAuditP1s(unittest.TestCase):
         items_ja, _ = tm.translate_annotations(lines_ja, "日语")
         self.assertEqual(items_ja[0][1], "[日语]Save File", "切换目标语后行缓存不得返回旧语言译文！")
 
-    def test_llama_server_is_ready_validates_both_health_and_model(self):
-        """P1 验证：is_ready() 必须同时核验健康与模型身份。"""
-        server = LlamaServer(cfg={
-            "server_port": 18080,
-            "llama_dir": "runtime/llama",
-            "model_path": "runtime/models/HY-MT1.5-1.8B-Q4_K_M.gguf",
-        })
-
-        with patch.object(server, "is_healthy", return_value=True), \
-             patch.object(server, "check_model_match", return_value=False):
-            self.assertFalse(server.is_ready(), "健康但模型不匹配时，is_ready 必须返回 False 阻断误发请求")
-
-        with patch.object(server, "is_healthy", return_value=False), \
-             patch.object(server, "check_model_match", return_value=True):
-            self.assertFalse(server.is_ready(), "不健康时必须返回 False")
-
-        with patch.object(server, "is_healthy", return_value=True), \
-             patch.object(server, "check_model_match", return_value=True):
-            self.assertTrue(server.is_ready(), "健康且模型匹配时返回 True")
 
     def test_shape_mismatch_invalidates_content(self):
         """P1 验证：窗口尺寸改变（shape mismatch）必须 100% 标记 invalidates_content=True。"""
@@ -205,95 +185,9 @@ class TestFourthAuditP1s(unittest.TestCase):
         res_with_box = detector.detect(prev, curr, prior_text_boxes=[text_box])
         self.assertTrue(res_with_box.has_changed, "文字框内部的微小数值变化必须即时捕获，不需等 5 帧周期轮询！")
 
-    def test_sticky_cancellation_and_unique_session_tags(self):
-        """P1 验证：cancellation 必须具粘性（已 abort 的 tag 绝不可被新调用重置为未取消），且 watcher 拥有唯一 session tag。"""
-        from app.translator import Translator
-        from app.window_watcher import WindowWatcher
 
-        tr = Translator(base_url="http://127.0.0.1:18080")
-        tag = "test_tag_1"
-        tr.abort_inflight(tag)
 
-        # 粘性测试：abort 后再次获取 cancel_event，必须依然是 is_set() == True！
-        evt = tr._get_cancel_event(tag)
-        self.assertTrue(evt.is_set(), "已 abort 的 tag 必须保持永久粘性取消，旧任务绝不可重新建立未取消状态")
 
-        # 独立 session tag 测试
-        w1 = WindowWatcher(MagicMock(), tr, {}, profile="region", hwnd=None, region=(0, 0, 100, 100))
-        w2 = WindowWatcher(MagicMock(), tr, {}, profile="region", hwnd=None, region=(0, 0, 100, 100))
-        self.assertNotEqual(w1._translation_session_tag, w2._translation_session_tag, "每个 watcher 必须拥有独立唯一的 session tag")
-
-    def test_pause_resume_then_translate_succeeds(self):
-        """P0 修复验证：同一个 watcher 在暂停并恢复后，绝不能因为旧 tag 的 Sticky Cancel 导致翻译永久失效。"""
-        from app.translator import Translator
-        from app.window_watcher import WindowWatcher
-
-        fake_resp = MagicMock()
-        fake_resp.ok = True
-        fake_resp.json.return_value = {
-            "choices": [{"message": {"content": "世界你好"}}]
-        }
-
-        tr = Translator(base_url="http://127.0.0.1:18080", cfg={"db_path": ":memory:"})
-        tr._cache_get = lambda *args, **kwargs: None
-        w = WindowWatcher(MagicMock(), tr, {}, profile="region", hwnd=None, region=(0, 0, 100, 100))
-        tag0 = w._translation_session_tag
-
-        # 暂停 watcher
-        w.set_paused(True)
-        # 旧 tag 必须被粘性取消
-        self.assertTrue(tr._get_cancel_event(tag0).is_set())
-
-        # 恢复 watcher
-        w.set_paused(False)
-        tag1 = w._translation_session_tag
-        self.assertNotEqual(tag0, tag1, "恢复后必须生成全新的 session tag")
-        self.assertFalse(tr._get_cancel_event(tag1).is_set(), "新 tag 绝对不能处于已取消状态")
-
-        # 验证新 tag 的翻译请求必须能够成功执行并返回译文
-        with patch("requests.Session.post", return_value=fake_resp):
-            res = tr.translate("Hello world", session_tag=tag1)
-            self.assertEqual(res, "世界你好", "恢复后的新 session 必须能顺利完成翻译")
-
-    def test_target_language_switch_then_translate_succeeds(self):
-        """P0/P1 修复验证：运行中切换目标语言后，同一个 watcher 能够继续成功发起翻译。"""
-        from app.translator import Translator
-        from app.window_watcher import WindowWatcher
-
-        fake_resp = MagicMock()
-        fake_resp.ok = True
-        fake_resp.json.return_value = {
-            "choices": [{"message": {"content": "こんにちは世界"}}]
-        }
-
-        tr = Translator(base_url="http://127.0.0.1:18080", cfg={"db_path": ":memory:"})
-        tr._cache_get = lambda *args, **kwargs: None
-        w = WindowWatcher(MagicMock(), tr, {}, profile="region", hwnd=None, region=(0, 0, 100, 100))
-        old_tag = w._translation_session_tag
-
-        w.on_target_language_changed()
-        new_tag = w._translation_session_tag
-        self.assertNotEqual(old_tag, new_tag)
-        self.assertTrue(tr._get_cancel_event(old_tag).is_set())
-        self.assertFalse(tr._get_cancel_event(new_tag).is_set())
-
-        with patch("requests.Session.post", return_value=fake_resp):
-            res = tr.translate("Hello world", target_language="日语", session_tag=new_tag)
-            self.assertEqual(res, "こんにちは世界")
-
-    def test_rotate_translation_session_isolates_stale_requests(self):
-        """P1 验证：_rotate_translation_session 释放旧 session tag 阻断旧任务并开启新任务。"""
-        from app.translator import Translator
-        from app.window_watcher import WindowWatcher
-
-        tr = Translator(base_url="http://127.0.0.1:18080")
-        w = WindowWatcher(MagicMock(), tr, {}, profile="region", hwnd=None, region=(0, 0, 100, 100))
-        t1 = w._translation_session_tag
-
-        t2 = w._rotate_translation_session()
-        self.assertNotEqual(t1, t2)
-        self.assertTrue(tr._get_cancel_event(t1).is_set())
-        self.assertFalse(tr._get_cancel_event(t2).is_set())
 
     def test_subtitle_new_line_bottom_expansion(self):
         """P1 验证：字幕模式下向下扩展一行行高，精准捕捉原字幕下方新出现的下一行字幕。"""

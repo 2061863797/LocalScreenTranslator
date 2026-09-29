@@ -11,6 +11,8 @@ from app.window_watcher import WindowWatcher
 
 
 class FakeOcr:
+    max_image_dimension = 10000
+
     def __init__(self):
         self.shapes = []
 

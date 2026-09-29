@@ -21,7 +21,60 @@ class ConfigTests(unittest.TestCase):
     def test_non_object_json_falls_back_to_defaults(self):
         config.CONFIG_PATH.write_text("null", encoding="utf-8")
         loaded = config.load()
-        self.assertEqual(loaded["server_port"], config.DEFAULTS["server_port"])
+        self.assertEqual(loaded["model_path"], config.DEFAULTS["model_path"])
+
+    def test_removed_nllb_settings_are_ignored_and_cleaned_on_save(self):
+        config.CONFIG_PATH.write_text(
+            json.dumps({
+                "translation_mode": "fast",
+                "nllb_model_path": "runtime/models/nllb",
+                "nllb_device": "gpu",
+                "window_watch_annotate": False,
+                "source_language": "英语",
+                "ocr_mode": "single",
+                "ocr_language_tag": "en-US",
+                "ocr_language_tags": ["en-US"],
+                "annotate_skip_target_lang": True,
+                "window_annotate_skip_target_lang": True,
+                "region_annotate_skip_target_lang": True,
+                "ocr_provider": "cpu",
+                "ocr_device_id": 1,
+                "ocr_score_min": 0.2,
+            }),
+            encoding="utf-8",
+        )
+        loaded = config.load()
+        self.assertNotIn("translation_mode", loaded)
+        self.assertNotIn("nllb_model_path", loaded)
+        self.assertNotIn("nllb_device", loaded)
+        self.assertNotIn("window_watch_annotate", loaded)
+        self.assertNotIn("source_language", loaded)
+        self.assertNotIn("ocr_mode", loaded)
+        self.assertNotIn("ocr_language_tag", loaded)
+        self.assertNotIn("ocr_language_tags", loaded)
+        self.assertNotIn("annotate_skip_target_lang", loaded)
+        self.assertNotIn("window_annotate_skip_target_lang", loaded)
+        self.assertNotIn("region_annotate_skip_target_lang", loaded)
+        self.assertEqual(loaded["ocr_provider"], "cpu")
+        self.assertEqual(loaded["ocr_device_id"], 1)
+        self.assertEqual(loaded["ocr_score_min"], 0.2)
+
+        config.save(loaded)
+        saved = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+        self.assertNotIn("translation_mode", saved)
+        self.assertNotIn("nllb_model_path", saved)
+        self.assertNotIn("nllb_device", saved)
+        self.assertNotIn("window_watch_annotate", saved)
+        self.assertNotIn("source_language", saved)
+        self.assertNotIn("ocr_mode", saved)
+        self.assertNotIn("ocr_language_tag", saved)
+        self.assertNotIn("ocr_language_tags", saved)
+        self.assertNotIn("annotate_skip_target_lang", saved)
+        self.assertNotIn("window_annotate_skip_target_lang", saved)
+        self.assertNotIn("region_annotate_skip_target_lang", saved)
+        self.assertEqual(saved["ocr_provider"], "cpu")
+        self.assertEqual(saved["ocr_device_id"], 1)
+        self.assertEqual(saved["ocr_score_min"], 0.2)
 
     def test_invalid_known_types_fall_back(self):
         config.CONFIG_PATH.write_text(
@@ -29,7 +82,7 @@ class ConfigTests(unittest.TestCase):
             encoding="utf-8",
         )
         loaded = config.load()
-        self.assertEqual(loaded["server_port"], 8080)
+        self.assertNotIn("server_port", loaded)
         self.assertIs(loaded["history_enabled"], True)
 
     def test_font_sizes_accept_default_or_12_to_20_pixels(self):

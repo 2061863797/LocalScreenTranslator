@@ -3,7 +3,7 @@
 
 Empirically challenges and benchmarks:
 1. L1 in-memory cache hit latency (strictly < 1ms, multi-threaded concurrency, saturation).
-2. L2 SQLite persistent cache hit latency (strictly < 10ms, file-based DB, 0 llama-server calls).
+2. L2 SQLite persistent cache hit latency (strictly < 10ms, file-based DB, no model calls).
 3. SubtitleIncrementalTranslator stress testing (line deletions, insertions, permutations, duplicates, unicode).
 4. Cache key invalidation and normalization (model_id, prompt_version, target_lang, Unicode NFC/NFD, delimiters).
 5. LRU eviction at > 50,000 entries (batch eviction, count invariants, access-touch survival, index speed).
@@ -26,7 +26,6 @@ from typing import Any
 from app.storage import Storage, MAX_CACHE_ENTRIES, CACHE_EVICTION_BATCH
 from app.translation_cache import TranslationCache
 from app.translation_manager import SubtitleIncrementalTranslator
-from app.translator import Translator
 
 
 class TestMilestone3AdversarialStress(unittest.TestCase):
@@ -126,7 +125,7 @@ class TestMilestone3AdversarialStress(unittest.TestCase):
             small_l1_cache.close()
 
     # =========================================================================
-    # 2. Benchmark L2 SQLite Persistent Cache Hit Latency (< 10ms, No llama-server)
+    # 2. Benchmark L2 SQLite Persistent Cache Hit Latency (< 10ms, No model calls)
     # =========================================================================
 
     def test_l2_hit_latency_file_based_sqlite_benchmark(self):
@@ -183,34 +182,6 @@ class TestMilestone3AdversarialStress(unittest.TestCase):
         self.assertLess(avg_ms, 10.0, f"L2 avg latency {avg_ms:.4f}ms must be < 10.0ms")
         self.assertLess(p95_ms, 10.0, f"L2 P95 latency {p95_ms:.4f}ms must be < 10.0ms")
 
-    def test_l2_cache_hit_strictly_bypasses_llama_server(self):
-        """Verify Translator with L2 cache hit strictly never invokes _chat / llama-server."""
-        # Seed L2 directly (bypass L1)
-        k = self.cache.make_key("Zero Network Call", "简体中文", "default_model", "v1")
-        now = time.time()
-        with self.cache._conn:
-            self.cache._conn.execute(
-                "INSERT INTO translation_cache VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (k, "Zero Network Call", "简体中文", "default_model", "v1", "零网络调用", now, now, 1),
-            )
-        self.cache._l1.clear()
-
-        translator = Translator("http://127.0.0.1:9999", {"ctx_size": 2048, "max_tokens": 512}, cache=self.cache)
-        try:
-            chat_called = False
-
-            def bomb_chat(*args, **kwargs):
-                nonlocal chat_called
-                chat_called = True
-                raise AssertionError("llama-server _chat must NOT be invoked on L2 cache hit!")
-
-            translator._chat = bomb_chat
-
-            res = translator.translate("Zero Network Call", "简体中文")
-            self.assertEqual(res, "零网络调用")
-            self.assertFalse(chat_called)
-        finally:
-            translator.close()
 
     # =========================================================================
     # 3. Stress Test SubtitleIncrementalTranslator Line Ordering

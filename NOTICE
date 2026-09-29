@@ -2,15 +2,15 @@ LocalScreen Translator
 Copyright 2026 LocalScreen Translator Contributors
 
 This product includes software developed for offline screen translation
-on Windows (Python / PySide6 / ONNX Runtime / llama.cpp client).
+on Windows (Python / PySide6 / ONNX Runtime / PP-OCR / llama.cpp).
 
 ---
 
 Third-party components (not covered by this repository's Apache-2.0 grant
 for their own code or models; see each project's license):
 
-- Official PP-OCRv6 medium detection/recognition ONNX model assets
-  distributed separately through this project's Releases — Apache License 2.0
+- Official PP-OCRv6 medium detection and recognition ONNX models are
+  distributed separately through this project's GitHub Releases — Apache-2.0.
   Model documentation:
   https://www.paddleocr.ai/latest/en/version3.x/algorithm/PP-OCRv6/PP-OCRv6.html
   Upstream project:
@@ -18,13 +18,11 @@ for their own code or models; see each project's license):
   Upstream license:
   https://github.com/PaddlePaddle/PaddleOCR/blob/main/LICENSE
 
-- ONNX Runtime / DirectML execution provider — MIT License
-  Upstream project:
+- ONNX Runtime DirectML execution provider — MIT License:
   https://github.com/microsoft/onnxruntime
-  Upstream license:
-  https://github.com/microsoft/onnxruntime/blob/main/LICENSE
 
-- llama.cpp binaries in the llama Release asset — MIT License
+- llama.cpp v0.5.0 / b11146 in-process DLLs — MIT License
+  Pinned upstream commit: 7fe450e19305b828c199d602c23a8337aaa1f03b
   Copyright (c) 2023-2026 The ggml authors
   Upstream project:
   https://github.com/ggml-org/llama.cpp
@@ -33,7 +31,7 @@ for their own code or models; see each project's license):
   Upstream license:
   https://github.com/ggml-org/llama.cpp/blob/master/LICENSE
 
-- NVIDIA CUDA runtime and cuBLAS DLLs in the llama Release asset are
+- NVIDIA CUDA runtime and cuBLAS DLLs in the local EXE are
   proprietary redistributable components, not MIT-licensed llama.cpp code.
   They are governed by the NVIDIA CUDA Toolkit EULA:
   https://docs.nvidia.com/cuda/eula/contents.html

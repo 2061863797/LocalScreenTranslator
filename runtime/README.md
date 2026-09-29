@@ -1,47 +1,15 @@
-# 本地屏译 runtime 资源说明
+# 本地屏译运行资源
 
-`runtime` 分为三部分：
+OCR 使用 PP-OCRv6 ONNX 检测与识别模型；模型文件放在 `runtime\ocr\`。普通本地 EXE 会携带这些 OCR 运行资源及翻译动态库，不包含 GGUF 翻译模型权重。
 
-| 目录 | 来源 | 内容 |
-|------|------|------|
-| `ocr\` | Releases 的 **ocr** 附件 | PP-OCRv6 ONNX 模型、字符表和校验清单 |
-| `models\` | Releases 的 **models** 附件 | HY-MT GGUF 翻译模型 |
-| `llama\` | Releases 的 **llama** 附件 | `llama-server.exe` 及依赖 DLL |
+| 路径 | 用途 |
+|---|---|
+| `runtime\ocr\` | PP-OCRv6 模型、字符表和完整性清单 |
+| `runtime\llama-native\` | 固定 llama.cpp v0.5.0 / b11146 动态库，CPU 与 NVIDIA CUDA |
+| `runtime\models\` | 可选的用户 GGUF 文件，默认配置仍识别已有 HY-MT |
 
-`config.json` 和 `venv` 由每台电脑在本机生成，不属于 runtime 发布附件。
+若 `runtime\ocr\` 缺少模型文件，可从 [GitHub Release](https://github.com/2061863797/LocalScreenTranslator/releases/tag/2.0.0) 下载 `ocr.zip`，解压到项目的 `runtime` 目录。安装包构建会检查并打包该目录。新环境中可运行 `scripts\fetch_llama_native.ps1` 下载固定官方资产并验证 SHA256；脚本只提取翻译所需 DLL，不提取 llama-server。目录已有文件时脚本拒绝覆盖。完成后运行 `build-exe.ps1`，动态库被复制到新建的本地 EXE 目录。构建结果不会带 GGUF 权重，也不覆盖已有模型。
 
-## 默认 Release 方案
+GGUF 可从设置页直接引用外部路径，或复制到用户模型目录。保存模型和设备设置后后台加载，无需重启。自定义 GGUF 应含与 llama.cpp v0.5.0 兼容的聊天模板；性能、翻译能力与许可由具体模型决定。
 
-Releases 提供 **ocr**、**models**、**llama** 三个压缩包。
-
-其中 **llama** 附件同时包含 CPU 与 NVIDIA CUDA 后端。所有电脑使用同一个附件；有兼容显卡时无需另装 CUDA Toolkit。
-
-三个压缩包内第一层应分别为 `ocr\`、`models\`、`llama\`。把它们都解压到项目的 `runtime\` 目录并允许合并或替换同名文件后，应得到：
-
-```text
-runtime\models\HY-MT1.5-1.8B-Q4_K_M.gguf
-runtime\llama\llama-server.exe
-runtime\llama\*.dll
-runtime\ocr\manifest.json
-runtime\ocr\det.onnx
-runtime\ocr\rec.onnx
-runtime\ocr\characters.txt
-```
-
-检查资源：
-
-```powershell
-.\setup.ps1 -Check
-```
-
-## 放置多个翻译模型
-
-`runtime\models\` 可以同时放置多个 `.gguf` 文件。额外模型需要自行下载，并直接放在该目录顶层；随后在“托盘 → 设置 → 高级 → 模型与生成”中选择，保存并重启软件后生效。
-
-设置列表只识别文件头有效的 GGUF。自定义模型仍需兼容当前 `llama.cpp`，并自行确认翻译能力、提示格式、许可和硬件需求。
-
-## CPU 与翻译设备
-
-没有 NVIDIA 显卡时也解压同一个 **llama** 附件。软件的“自动”翻译设备会使用 CPU；也可以在“设置 → 高级 → 翻译设备”中选择 CPU，重启后生效。
-
-完整安装步骤见项目根目录的 [README.md](../README.md)。
+[返回 README](../README.md)

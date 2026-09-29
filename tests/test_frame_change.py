@@ -766,6 +766,8 @@ class TestMilestone2ProductionModules(unittest.TestCase):
         # Test engine coordinate remapping with real OcrLine
         if OcrLine is not None:
             class MockEngine:
+                max_image_dimension = 10000
+
                 def recognize(self, crop):
                     return [OcrLine("hello", 0.98, (5, 5, 45, 25))]
 

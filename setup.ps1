@@ -8,7 +8,7 @@
     .\setup.ps1                 # 完整安装
     .\setup.ps1 -Check          # 只检查
     .\setup.ps1 -CpuOnly        # 强制 CPU
-    .\setup.ps1 -Gpu            # 强制 llama 使用 GPU
+    .\setup.ps1 -Gpu            # 强制进程内翻译使用 GPU
     .\setup.ps1 -BuildLauncher    # 强制重建 翻译.exe（普通安装缺少时会自动生成）
 #>
 
@@ -167,13 +167,13 @@ function Ensure-Config {
     if ($UseGpu) { $flag = "1" }
     & $py $script $Root $flag $Threads $ngl $DeviceOverride
     if ($LASTEXITCODE -ne 0) { throw "写 config 失败" }
-    Write-Ok "config.json 已就绪 (n_gpu_layers=$ngl, threads=$Threads)"
+    Write-Ok "config.json 已就绪 (threads=$Threads)"
 }
 
 function Test-Runtime {
     Write-Step "检查 runtime 资源"
     $ok = $true
-    $llama = Join-Path $Root "runtime\llama\llama-server.exe"
+    $llama = Join-Path $Root "runtime\llama-native\llama.dll"
     $defaultModel = Join-Path $Root "runtime\models\HY-MT1.5-1.8B-Q4_K_M.gguf"
     $model = $defaultModel
     $configFile = Join-Path $Root "config.json"
@@ -199,22 +199,11 @@ function Test-Runtime {
         [System.IO.Path]::GetFullPath($defaultModel),
         [System.StringComparison]::OrdinalIgnoreCase
     )
-    $ocr = Join-Path $Root "runtime\ocr"
 
     if (Test-Path -LiteralPath $llama) {
-        $oldEap = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        & $llama --version 1>$null 2>$null
-        $llamaCode = $LASTEXITCODE
-        $ErrorActionPreference = $oldEap
-        if ($llamaCode -eq 0) {
-            Write-Ok "llama-server: $llama"
-        } else {
-            Write-Err2 "llama-server 无法运行或依赖 DLL 不完整: $llama"
-            $ok = $false
-        }
+        Write-Ok "进程内 llama.cpp 动态库: $llama"
     } else {
-        Write-Err2 "缺少 $llama"
+        Write-Warn2 "缺少 $llama；普通 EXE 构建前需要放入 v0.5.0 动态库"
         $ok = $false
     }
 
@@ -251,37 +240,39 @@ function Test-Runtime {
             Write-Ok "检测到可用翻译模型: $($otherModels[0].FullName)"
         } else {
             Write-Warn2 "未检测到预置翻译模型: $model"
-            Write-Warn2 "提示: 本软件支持免模型安装。后续可从 Release 下载 models.zip 或在软件设置窗口一键导入 GGUF 模型。"
+            Write-Warn2 "提示: 可在软件设置窗口导入兼容 llama.cpp 的 GGUF 模型。"
         }
     }
 
+    $ocrDir = Join-Path $Root "runtime\ocr"
     $ocrRequired = @("manifest.json", "det.onnx", "rec.onnx", "characters.txt")
     $ocrReady = $true
     foreach ($name in $ocrRequired) {
-        $file = Join-Path $ocr $name
+        $file = Join-Path $ocrDir $name
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
             $ocrReady = $false
         }
     }
     if ($ocrReady) {
         try {
-            $manifest = Get-Content -LiteralPath (Join-Path $ocr "manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+            $manifest = Get-Content -LiteralPath (Join-Path $ocrDir "manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
             foreach ($name in @("det.onnx", "rec.onnx", "characters.txt")) {
                 $expected = $manifest.files.$name.sha256
-                $actual = (Get-FileHash -LiteralPath (Join-Path $ocr $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+                $actual = (Get-FileHash -LiteralPath (Join-Path $ocrDir $name) -Algorithm SHA256).Hash.ToLowerInvariant()
                 if (-not $expected -or $actual -ne $expected.ToLowerInvariant()) { $ocrReady = $false }
             }
         } catch { $ocrReady = $false }
     }
     if ($ocrReady) {
-        Write-Ok "OCR 模型目录: $ocr"
+        Write-Ok "PP-OCR 模型目录: $ocrDir"
     } else {
-        Write-Err2 "缺少 $ocr"
+        Write-Err2 "缺少或校验失败: $ocrDir"
+        Write-Warn2 "请将 GitHub Release 的 ocr.zip 解压到 runtime 目录。"
         $ok = $false
     }
 
     if (-not $ok) {
-        Write-Warn2 "runtime 不齐：请把 Releases 的 ocr、models、llama 三个压缩包解压到 runtime 目录。"
+        Write-Warn2 "runtime 资源不完整，请检查 runtime/llama-native 与 runtime/ocr。"
     }
     return $ok
 }
@@ -425,7 +416,7 @@ Write-Host ""
 Write-Host '  启动: 双击 翻译.exe  或  venv\Scripts\pythonw.exe run.py'
 Write-Host "  检查: .\setup.ps1 -Check"
 Write-Host "  仅CPU: .\setup.ps1 -CpuOnly"
-Write-Host '  说明: ocr/models/llama 使用 Release 三个压缩包；venv 需在每台电脑运行本脚本生成'
+Write-Host '  说明: OCR 使用 runtime/ocr 中的 PP-OCRv6 模型；GGUF 模型由用户导入；普通 EXE 用 .\build-exe.ps1 构建。'
 Write-Host ""
 
 if (-not $runtimeOk) { exit 2 }

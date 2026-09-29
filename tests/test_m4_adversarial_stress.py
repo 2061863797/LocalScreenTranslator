@@ -457,7 +457,7 @@ class TestMilestone4AdversarialStress(unittest.TestCase):
         # Frame 1: Text present
         frame1 = np.full((100, 100, 3), 50, dtype=np.uint8)
         ocr_mock.detect_and_ocr.return_value = [
-            OcrLine(text="Hello", box=[[0, 0], [40, 0], [40, 20], [0, 20]], score=0.98)
+            OcrLine(text="Hello", box=(0, 0, 40, 20), score=0.98)
         ]
 
         watcher._capture_service.grab = MagicMock(return_value=((10, 10, 100, 100), frame1))

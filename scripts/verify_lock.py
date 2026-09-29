@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""校验发布环境与 Python 3.12 锁定清单完全一致。"""
+"""校验受支持 Python 环境中的依赖版本与锁定清单一致。"""
 
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -7,8 +7,8 @@ import sys
 
 
 def main() -> int:
-    if sys.version_info[:2] != (3, 12):
-        print("发布锁定清单针对 Python 3.12；当前 Python 版本不匹配。")
+    if sys.version_info[:2] not in {(3, 11), (3, 12), (3, 13)}:
+        print("项目仅支持 Python 3.11～3.13。")
         return 1
 
     lock_path = Path(__file__).resolve().parents[1] / "requirements-lock.txt"

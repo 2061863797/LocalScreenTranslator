@@ -7,7 +7,7 @@ Comprehensive white-box stress testing, latency benchmarking, and invariant veri
      OcrService, TextChangeDetector, TranslationManager, ResultManager.
    - LatestFrameBuffer drops unconsumed intermediate frames when capture rate > inference rate;
      preserves exact accounting invariant and delivers freshest frame.
-   - Sub-service exception isolation: transient OCR (DirectML/OOM) and Translation (HTTP/offline)
+   - Sub-service exception isolation: transient OCR and Translation (HTTP/offline)
      errors do NOT crash WindowWatcher. Target window closure gracefully halts watcher.
 2. Phase 5 (PR 10 Single HWND Subtitle Overlay, PR 12 CaptureBackend, Async History Queue, Pipeline Metrics):
    - Single HWND SubtitleBar: is_single_hwnd() is True, layer_widgets has length 1.
@@ -56,7 +56,7 @@ from app.capture_service import CaptureService, is_invalid_window_handle_error
 from app.config import DEFAULTS
 from app.frame_detector import FrameChangeDetector, FrameDiffResult
 from app.latest_frame_buffer import LatestFrameBuffer
-from app.ocr_engine import OcrEngine, OcrLine
+from app.ocr_engine import OcrLine
 from app.ocr_service import OcrService
 from app.pipeline_metrics import PipelineMetrics, PipelineStageTimers
 from app.pipelines import GenerationTracker
@@ -271,15 +271,15 @@ class TestTier5Phase4Adversarial(unittest.TestCase):
     # =========================================================================
 
     def test_exception_isolation_transient_ocr_error(self):
-        """Empirical: Transient OCR crash (DirectML/OOM/hardware error) does NOT crash WindowWatcher."""
+        """Empirical: Transient OCR errors do NOT crash WindowWatcher."""
         ocr_mock = MagicMock()
-        # First 3 frames fail with hardware exception, 4th frame recovers
+        # First 3 frames fail with OCR exceptions, 4th frame recovers
         ocr_mock.recognize.side_effect = [
-            RuntimeError("DirectML device removed: 0x887A0005"),
-            MemoryError("Out of VRAM"),
+            RuntimeError("OCR operation failed"),
+            MemoryError("Out of memory"),
             ValueError("Corrupted image matrix"),
-            [OcrLine(text="Recovered text", box=[[0, 0], [10, 0], [10, 10], [0, 10]], score=0.99)],
-            [OcrLine(text="Recovered text", box=[[0, 0], [10, 0], [10, 10], [0, 10]], score=0.99)],
+            [OcrLine(text="Recovered text", box=(0, 0, 10, 10), score=0.99)],
+            [OcrLine(text="Recovered text", box=(0, 0, 10, 10), score=0.99)],
         ]
 
         trans_mock = MagicMock()
@@ -316,15 +316,15 @@ class TestTier5Phase4Adversarial(unittest.TestCase):
         self.assertIn("恢复成功", subtitles_received)
 
     def test_exception_isolation_transient_translation_error(self):
-        """Empirical: Transient translation failure (llama-server HTTP error/timeout) does NOT crash WindowWatcher."""
+        """Empirical: Transient local inference failure does not crash WindowWatcher."""
         ocr_mock = MagicMock()
         ocr_mock.recognize.side_effect = lambda img: [
-            OcrLine(text=f"Active text {frame_seq}", box=[[0, 0], [10, 0], [10, 10], [0, 10]], score=0.99)
+            OcrLine(text=f"Active text {frame_seq}", box=(0, 0, 10, 10), score=0.99)
         ]
 
         trans_mock = MagicMock()
         trans_mock.translate.side_effect = [
-            ConnectionError("llama-server offline: Connection refused"),
+            RuntimeError("local model inference failed"),
             "在线翻译成功",
             "在线翻译成功",
             "在线翻译成功",

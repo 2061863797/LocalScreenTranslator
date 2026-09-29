@@ -8,7 +8,6 @@
 3. 声明项目全部核心模块与 C 扩展的 hiddenimports。
 """
 
-import os
 from pathlib import Path
 
 block_cipher = None
@@ -24,7 +23,8 @@ hidden_imports = [
     "app.config",
     "app.hotkeys",
     "app.i18n",
-    "app.llama_server",
+    "app.translation_runtime.router",
+    "app.translation_runtime.llama_native",
     "app.ocr_engine",
     "app.paths",
     "app.pipelines",
@@ -32,14 +32,11 @@ hidden_imports = [
     "app.selection",
     "app.storage",
     "app.textlang",
-    "app.translator",
     "app.window_watcher",
     "app.workers",
     "app.ui.overlays",
     "app.ui.topmost",
     "app.ui.windows",
-    "onnxruntime",
-    "onnxruntime.capi._pybind_state",
     "pywintypes",
     "win32gui",
     "win32con",
@@ -48,6 +45,8 @@ hidden_imports = [
     "pynput.keyboard._win32",
     "pynput.mouse._win32",
     "cv2",
+    "onnxruntime",
+    "onnxruntime.capi._pybind_state",
     "pyclipper",
     "mss",
     "PIL",

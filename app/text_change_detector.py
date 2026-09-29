@@ -9,7 +9,7 @@ from __future__ import annotations
 from difflib import SequenceMatcher
 import threading
 import time
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable
 
 
 class TextChangeDetector:

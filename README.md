@@ -1,177 +1,73 @@
 # 本地屏译（LocalScreen Translator）
 
-本地屏译是一款 Windows 本地屏幕翻译工具，支持截屏、划词、窗口持续翻译和区域实时翻译。
+本地屏译是 Windows 本地屏幕翻译托盘工具，支持截屏、划词、窗口持续翻译、区域实时翻译、字幕与原文旁备注、历史记录。界面支持中文和英文。[English](./README.en.md)
 
-- OCR：ONNX Runtime DirectML + PP-OCRv6（不可用时自动回退 CPU）
-- 翻译：本机 `llama-server` + HY-MT1.5
-- 界面：Windows 托盘应用，中英文可切换
-- 协议：[Apache-2.0](./LICENSE)；第三方和模型许可见 [NOTICE](./NOTICE)
-- English: [README.en.md](./README.en.md)
+## 当前架构
 
-## 基础说明
+| 环节 | 实现 |
+|---|---|
+| OCR | PP-OCRv6 ONNX，ONNX Runtime DirectML 优先并回退 CPU |
+| 翻译 | 进程内 llama.cpp v0.5.0，兼容 GGUF 由用户导入 |
+| 显示 | PySide6 窗口和托盘 |
 
-安装完成后，OCR 和翻译都在本机运行。
+OCR 不依赖 Windows OCR 语言包。它使用 `runtime\ocr` 中的 PP-OCRv6 检测与识别模型；DirectML 可用时使用兼容显卡，不可用时回退 CPU。识别范围由随模型训练的语言能力决定。
 
-当前 **ocr** 附件的字符表覆盖中文、英文和日文，不包含韩文字符；OCR 可识别语种由附件中的识别模型决定。
+翻译时只选择目标语言；AI 模型根据 OCR 提取的文字判断原文语言。目标语言在当前会话全局同步，每次显示一个目标语言。模型与设备设置保存后在后台加载，无需重启，加载失败会恢复原选择。
 
-安装所需文件和资源来源如下：
+备注译文继续贴在原文旁。备注浮层始终从屏幕捕获中排除，避免下一轮 OCR 读到译文。本阶段没有原文覆盖翻译或复杂空白位置搜索。
 
-| 内容 | 来源 | 放置位置 |
-|------|------|----------|
-| 程序源码 | 源码包 | `app\`、`run.py`、安装脚本等 |
-| ONNX OCR 模型 | Releases 的 **ocr** 附件 | `runtime\ocr\` |
-| HY-MT 翻译模型 | Releases 的 **models** 附件 | `runtime\models\` |
-| CPU/CUDA llama-server | Releases 的通用 **llama** 附件 | `runtime\llama\` |
-| Python 环境、本机配置和便捷启动器 | 运行 `setup.ps1` 后生成 | `venv\`、`config.json`、`翻译.exe` |
+## 运行条件与准备
 
-`翻译.exe` 是便捷启动器，不是包含全部依赖的单文件程序；它仍需要同目录下的 `venv`、`app`、`run.py` 和 `runtime`。
+- 64 位 Windows。
+- 源码运行使用 Python 3.11～3.13，推荐 3.12；构建好的 EXE 不要求目标电脑安装 Python。
+- `runtime\ocr` 中需有 PP-OCR 模型文件；`setup.ps1` 会检查完整性。
+- 翻译 GPU 路线需要兼容的 NVIDIA 驱动；设备选“自动”时可回退 CPU。CUDA DLL 会使 EXE 目录明显变大。OCR 使用 DirectML，CPU 可作为回退。
 
-## 通用运行条件
+源码首次准备：
 
-电脑需要满足：
-
-- Windows 10/11 64 位；
-- Python 3.11、3.12 或 3.13，推荐 **Python 3.12**，不要使用 3.14；
-- 支持 DirectX 12 的显卡可使用 DirectML 加速 OCR；不满足时自动使用 CPU；
-- 至少约 4 GB 可用磁盘空间；完整安装完成后项目目录目标不超过 3 GB；
-- 首次安装 Python 依赖时可以联网。
-
-#### 指定 Python 3.12
+如果工作区没有 `runtime\ocr`，先从 GitHub Release 下载 `ocr.zip` 并解压到项目 `runtime` 目录，使文件位于 `runtime\ocr\manifest.json` 等路径。
 
 ```powershell
-.\setup.ps1 -Python "C:\Path\To\Python312\python.exe"
-```
-
-没有 Python 时可先安装：
-
-```powershell
-winget install Python.Python.3.12
-```
-
-## 快速开始
-
-### 1. 准备文件
-
-1. 下载并解压源码包。
-2. 在 Releases 下载 **ocr**、**models**、**llama** 三个压缩包。
-3. 把三个压缩包都解压到项目的 `runtime\` 目录。压缩包内第一层应分别为 `ocr\`、`models\`、`llama\`；如果提示合并或替换同名文件，请允许替换。
-
-最终目录应为：
-
-```text
-项目目录\
-  run.py
-  翻译.exe
-  app\
-  runtime\
-    models\
-      HY-MT1.5-1.8B-Q4_K_M.gguf
-    llama\
-      llama-server.exe
-      *.dll
-    ocr\
-      manifest.json
-      det.onnx
-      rec.onnx
-      characters.txt
-```
-
-### 2. 安装并检查
-
-在项目根目录打开 PowerShell：
-
-```powershell
-# 仅在提示脚本未签名时执行；只影响当前 PowerShell 窗口：
-Set-ExecutionPolicy -Scope Process Bypass -Force
-
 .\setup.ps1
-.\setup.ps1 -Check
-```
-
-`setup.ps1` 会创建 `venv`、安装依赖、检查依赖冲突、生成本机 `config.json`、自动选择 GPU 配置，并在缺少时生成 `翻译.exe`。
-
-### 3. 启动
-
-双击 `翻译.exe`，或在 PowerShell 执行：
-
-```powershell
+venv\Scripts\python.exe scripts\smoke_import.py
 venv\Scripts\pythonw.exe run.py
 ```
 
-### CPU 用户
+如需构建普通本地 EXE，先在全新或空的 `runtime\llama-native` 目录准备固定版本 DLL；`scripts\fetch_llama_native.ps1` 会从官方 b11146 资产下载并校验 SHA256。构建会将 `runtime\ocr` 模型和 llama.cpp DLL 一起复制到新目录；GGUF 权重不随 EXE 分发。随后运行：
 
-默认“自动”模式检测不到 CUDA 时会直接使用 CPU，无需下载其它文件。也可以启动软件后进入“设置 → 高级 → 翻译设备”，选择“CPU”并重启软件。没有 DirectML 时 OCR 同样会自动回退 CPU；CPU 翻译通常更慢。
+```powershell
+.\build-exe.ps1
+```
 
-## 功能展示
+每次构建写入新的 `dist\local-日期时间\LocalScreenTranslator\` 目录，不覆盖已有 EXE。运行其中的 `LocalScreenTranslator.exe`，并保持整个目录完整。首次运行生成用户配置与历史。没有 MSIX、签名或安装器步骤。
 
-| 截图翻译 | 选择窗口持续翻译目标 |
-|:---------:|:--------------------:|
-| ![截图翻译结果](./docs/images/screenshot-translation-result.png) | ![窗口持续翻译目标选择](./docs/images/window-picker.png) |
+## 导入翻译模型
 
-| 持续翻译字幕显示 | 区域实时翻译备注模式 |
-|:----------------:|:--------------------:|
-| ![持续翻译字幕显示](./docs/images/live-translation-overlay.png) | ![区域实时翻译备注模式](./docs/images/inline-annotation-mode.png) |
+**AI 翻译**：在“托盘 → 设置 → 高级”导入兼容 GGUF，可直接引用外部文件或复制进用户模型目录；HY-MT、Qwen、Gemma 需有当前 llama.cpp 可解析的聊天模板。选择模型与 CPU/GPU/自动设备后保存，后台加载。
 
-字体大小可在“设置 → 常规 / 窗口翻译 / 区域翻译”中分别调整，可选范围为 12–20 px；选择“默认”会保留软件原有字号，保存后立即生效。
+## 操作
 
-## 切换翻译模型
-
-需要切换模型时：
-
-1. 自行下载兼容 `llama.cpp` 的 `.gguf` 翻译模型。
-2. 把模型文件直接放入项目的 `runtime\models\`，不要再套一层目录。
-3. 打开“托盘 → 设置 → 高级 → 模型与生成”，选择模型并保存。
-4. 退出并重新启动软件，新模型才会生效。
-
-每次打开设置都会重新扫描模型目录。列表只显示文件头有效的 `.gguf`；模型是否适合翻译、支持当前提示格式以及所需显存，由模型本身决定。
-
-## 默认热键
-
-| 功能 | 热键 |
-|------|------|
+| 功能 | 默认热键 |
+|---|---|
 | 截屏翻译 | Alt+Q |
 | 划词翻译 | Alt+W |
 | 窗口持续翻译 | Alt+E |
 | 区域实时翻译 | Alt+R |
 
-启动后会自动打开设置，并显示 OCR 与翻译模型的加载状态；失败项可直接重试。托盘菜单仍可打开设置、历史和日志。窗口持续翻译与区域实时翻译同时只能运行一个，控制条可原地暂停或继续。
+托盘菜单可打开设置、历史、日志和退出。窗口与区域监视同一时间只能运行一个；窗口翻译固定以备注模式显示，区域翻译可在字幕和备注之间切换：
+- **区域字幕模式**：翻译框与识别框各自拥有独立控制条，最前方均提供 `⠿` 拖动手柄与“固定”按钮。拖动翻译框右下角把手缩放面板时，上方状态栏尺寸（350×30 px，12 px 字号）保持稳定不变，所有按钮全称完整保留。
+- **区域备注模式**：控制栏合并为单条居左停靠在识别区上方，集成手柄、固定、目标语言、切换字幕、暂停与关闭按钮。
+- **目标语言热切换**：控制条内直接点击当前目标语言按钮即可弹出语言菜单，切换后自动重新翻译当前内容。
 
-翻译历史默认最多保存 50 条，翻译缓存默认最多保存 50,000 条，两者均以明文写入数据库 `data.db`（便携版位于软件根目录；安装版位于系统标准用户目录 `%LOCALAPPDATA%\LocalScreenTranslator\`）。可在“设置 → 常规”分别关闭后续写入；已有内容可在历史窗口分别确认后清空。历史窗口还支持搜索、复制和删除单条历史。设置、历史、翻译窗口以及字幕条会记住上次有效的位置和大小。
+设置、翻译窗口和字幕条会记住有效位置。历史默认最多 50 条，翻译缓存默认最多 50,000 条，均为本机 `data.db` 中的明文；可分别关闭后续写入并在历史窗口清理。
 
 ## 常见问题
 
 | 现象 | 处理 |
-|------|------|
-| runtime 资源缺失 | 把 Releases 的 **ocr**、**models**、**llama** 三个压缩包解压到项目的 `runtime\` 目录 |
-| DirectML 不可用 | OCR 会自动回退 CPU；可在 `config.json` 将 `ocr_provider` 固定为 `cpu` |
-| GPU/llama 启动失败 | 在“设置 → 高级 → 翻译设备”选择 CPU，重启软件 |
-| 截屏/录屏拍不到备注译文 | 默认排除以保证翻译速度；可在“设置 → 常规”开启“备注译文出现在系统截屏 / 录屏中”（区域备注会稍慢） |
-| 安装后没有 `翻译.exe` | 运行 `.\setup.ps1 -BuildLauncher` 强制生成；也可直接运行 `venv\Scripts\pythonw.exe run.py` |
-| 提示程序已在运行 | 检查系统托盘，程序只允许一个实例 |
-| 想确认资源是否齐全 | 运行 `.\setup.ps1 -Check` |
+|---|---|
+| OCR 模型缺失或校验失败 | 将 Release 的 `ocr.zip` 解压到 `runtime` 目录，然后重启应用 |
+| AI 模型加载失败 | 检查 GGUF 与聊天模板；在设置中选 CPU 重试 |
+| 备注未出现在系统截图/录屏 | 这是当前固定行为，目的是避免译文再次进入 OCR |
+| 想查看数据和日志 | 便携模式在程序根目录，普通 EXE 通常位于 %LOCALAPPDATA%\LocalScreenTranslator |
 
-数据与日志位置：便携版保存在软件根目录下的 `config.json`、`data.db` 与 `app.log`；安装包安装版自动安全存储在 `%LOCALAPPDATA%\LocalScreenTranslator\`（升级时会自动平滑迁移旧配置与历史）。详细设置说明见设置页面和 [SETTINGS.md](./SETTINGS.md)（英文版 [SETTINGS.en.md](./SETTINGS.en.md)）。
-
-更详细的 runtime 目录说明见 [runtime/README.md](./runtime/README.md)。
-
-## 独立安装包构建
-
-若需要将软件（含 Python 运行环境与离线引擎资源）打包为独立安装包（`本地屏译-Setup.exe`），在满足已安装 Inno Setup 6 与基础 `runtime\` 资源的前提下，使用 Python 3.12 的项目虚拟环境安装锁定依赖，再执行：
-
-```powershell
-.\venv\Scripts\python.exe -m pip install -r requirements-lock.txt
-# 默认 Model-Free 模式构建（模型与主程序解耦，符合开源分发与合规要求）
-.\package.ps1
-
-# 若需要捆绑模型一键打包（仅限符合其社区许可地域限制的分发渠道）
-.\package-with-model.ps1
-# 或 .\package.ps1 -IncludeModel
-```
-
-脚本将自动执行 PATH 环境净化、PyInstaller onedir 编译、QtCore 依赖兼容性冒烟检测以及 Inno Setup 封装，生成安装包至 `dist\本地屏译-Setup.exe`。
-
-## 其它
-
-模型等第三方许可见 [NOTICE](./NOTICE)。
-
-**本安装说明可能由 AI 生成，请自行核对路径与 Release 文件名后再操作。**
+[设置详解](./SETTINGS.md) · [运行资源说明](./runtime/README.md) · [第三方许可](./NOTICE) · [源码许可](./LICENSE)

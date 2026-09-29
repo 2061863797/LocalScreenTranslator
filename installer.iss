@@ -46,8 +46,9 @@ Name: "{app}\runtime\models"
 [Files]
 ; 打包后的主程序与 Python 运行时（onedir 产物）
 Source: "dist\LocalScreenTranslator\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-; 离线 runtime 资源：llama-server 与 OCR 引擎
-Source: "runtime\llama\*"; DestDir: "{app}\runtime\llama"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 进程内翻译运行资源：固定版本 llama.cpp 动态库
+Source: "runtime\llama-native\*"; DestDir: "{app}\runtime\llama-native"; Flags: ignoreversion recursesubdirs createallsubdirs
+; PP-OCRv6 ONNX 模型与清单
 Source: "runtime\ocr\*"; DestDir: "{app}\runtime\ocr"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 翻译模型目录：默认 Model-Free 解耦分发；仅当显式指定 IncludeModels=1 时打包模型文件
 #if Defined(IncludeModels) && IncludeModels == "1"

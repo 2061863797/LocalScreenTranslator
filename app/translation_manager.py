@@ -13,15 +13,11 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable
 
-from .textlang import is_already_target_language
 from .translation_cache import TranslationCache
 
 _log = logging.getLogger("st.trans_mgr")
-
-# 备注缓存哨兵：已是目标语，跳过翻译且不叠标签
-_SKIP_TARGET = "\x00SKIP_TARGET"
 
 
 class SubtitleIncrementalTranslator:
@@ -217,6 +213,18 @@ class TranslationManager:
         if not text_or_lines:
             return ""
 
+        from .translation_runtime.router import TranslationRouter
+        if isinstance(self.translator, TranslationRouter):
+            line_items = text_or_lines.splitlines() if isinstance(text_or_lines, str) else text_or_lines
+            nonempty = [line for line in line_items if (line.text if hasattr(line, "text") else str(line)).strip()]
+            texts = [(line.text if hasattr(line, "text") else str(line)).strip() for line in nonempty]
+            values = self.translator.translate_lines(
+                texts, target_language, session_tag=session_tag
+            )
+            if any(not value.strip() for value in values):
+                raise RuntimeError("逐行翻译缺少有效结果")
+            return "\n".join(values)
+
         if isinstance(text_or_lines, str):
             raw_text = text_or_lines.strip()
             if not raw_text:
@@ -247,19 +255,15 @@ class TranslationManager:
         target_language: str,
         gen_id: int | None = None,
         *,
-        skip_target: bool = False,
         is_running_fn: Callable[[], bool] | None = None,
         session_tag: str = "default",
     ) -> tuple[list[tuple[Any, str]], str]:
         """备注模式：按行增量翻译，稳定原文走缓存，只请求变化行。
 
-        支持可选跳过已是目标语言的行（不调模型、不叠标签）。
-
         Args:
             lines: OCR 识别行对象列表（每个具有 .text 和 .box 属性）。
             target_language: 目标语言。
             gen_id: 可选当前世代标识。
-            skip_target: 是否跳过已是目标语言的文本行。
             is_running_fn: 可选运行状态检查函数。
             session_tag: 会话隔离标签。
 
@@ -268,12 +272,25 @@ class TranslationManager:
             items 为 [(box, 译文), ...]；
             joined_translation 为拼接后的完整译文字符串。
         """
+        from .translation_runtime.router import TranslationRouter
+        if isinstance(self.translator, TranslationRouter):
+            selected = [line for line in lines if getattr(line, "text", str(line)).strip()]
+            if is_running_fn is not None and not is_running_fn():
+                return [], ""
+            values = self.translator.translate_lines(
+                [line.text.strip() for line in selected], target_language,
+                session_tag=session_tag,
+            )
+            if any(not value.strip() for value in values):
+                raise RuntimeError("逐行翻译缺少有效结果")
+            items = [(line.box, value) for line, value in zip(selected, values)]
+            return items, "\n".join(values)
+
         srcs = [
             ln.text.strip() if hasattr(ln, "text") else str(ln).strip()
             for ln in lines
         ]
         todo_text: list[str] = []
-        skipped = 0
 
         with self._cache_lock:
             cache = self._line_cache
@@ -282,10 +299,6 @@ class TranslationManager:
                     continue
                 cache_key = (s, target_language)
                 if cache_key in cache or s in cache:
-                    continue
-                if skip_target and is_already_target_language(s, target_language):
-                    cache[cache_key] = _SKIP_TARGET
-                    skipped += 1
                     continue
                 todo_text.append(s)
 
@@ -329,7 +342,7 @@ class TranslationManager:
                 tr = cache.get((s, target_language))
                 if tr is None:
                     tr = cache.get(s, "")
-                if not tr or tr == _SKIP_TARGET:
+                if not tr:
                     continue
                 box = ln.box if hasattr(ln, "box") else getattr(ln, "box", None)
                 items.append((box, tr))
@@ -337,12 +350,10 @@ class TranslationManager:
             cache_size = len(cache)
 
         _log.info(
-            "备注增量译 total=%d new=%d skip_target=%d cache=%d skip_on=%s",
+            "备注增量译 total=%d new=%d cache=%d",
             len([s for s in srcs if s]),
             len(todo_text),
-            skipped,
             cache_size,
-            skip_target,
         )
         return items, "\n".join(parts)
 

@@ -9,7 +9,7 @@ from PySide6.QtCore import QThread, Signal
 from .applog import get_logger
 from .ocr_engine import OcrEngine
 from .pipelines import OneShotPipeline
-from .translator import Translator
+from .translation_runtime.router import TranslationRouter
 
 _log = get_logger("worker")
 
@@ -56,7 +56,7 @@ class OcrTranslateWorker(QThread):
     finished_ok = Signal(str, str)
     failed = Signal(str)
 
-    def __init__(self, ocr: OcrEngine, translator: Translator, cfg: dict,
+    def __init__(self, ocr: OcrEngine, translator: TranslationRouter, cfg: dict,
                  image: np.ndarray | None = None,
                  text: str | None = None,
                  do_translate: bool = True,

@@ -49,11 +49,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ann_color_preview": "当前颜色预览",
         "ann_color_dlg": "备注译文颜色",
         "ann_color_note": "备注译文颜色对窗口/区域备注模式均生效，保存后立即应用。",
-        "ann_capture_visible": "备注译文出现在系统截屏 / 录屏中",
-        "ann_capture_visible_tip": (
-            "开启后录屏和系统截图能拍到备注译文，但区域备注每帧需要额外还原底图，"
-            "响应稍慢；默认关闭以获得最快速度。保存后立即生效。"
-        ),
         "card_hotkeys": "全局热键",
         "card_hotkeys_hint": (
             "点击输入框后：键盘组合键（需含 Ctrl/Alt/Shift，Esc 取消）；"
@@ -66,36 +61,26 @@ _STRINGS: dict[str, dict[str, str]] = {
         "hk_win_full": "窗口持续翻译",
         "hk_region_full": "区域实时翻译",
         "card_window": "窗口持续翻译",
-        "card_window_hint": "字幕条显示在目标窗口外侧不遮挡；备注按行贴在原文旁。",
+        "card_window_hint": "窗口翻译固定使用备注模式，译文按行显示在原文旁。",
         "interval": "监视间隔",
         "interval_custom": "自定义…",
         "display_mode": "显示模式",
         "ms_suffix": " 毫秒",
-        "mode_sub_win": "字幕条（整段译，窗口外侧不遮挡）",
-        "mode_ann_win": "备注（按行译，贴在原文旁）",
         "mode_sub_reg": "字幕条（整段译，识别区外侧）",
         "mode_ann_reg": "备注（按行译，贴在原文旁）",
-        "tip_win_mode": "字幕条：译文在目标窗口下方外侧，不遮挡。备注：与区域相同，译文贴在窗口内原文旁。",
         "tip_reg_mode": "字幕条=识别区下方整段译文；备注=译文贴在识别区内原文旁。",
-        "card_win_ann": "备注选项",
-        "card_win_ann_hint": "仅窗口备注模式生效，与区域设置互不影响。",
-        "skip_target": "不翻译已是目标语言的文字",
-        "skip_win_tip": "仅窗口备注模式：已是目标语言的行不再送模型、不叠备注。也可在备注条切换（仅影响窗口）。",
         "card_region": "区域实时翻译",
-        "card_region_hint": "识别框可拖顶栏移动、拖边角缩放；点「固定」锁定。",
-        "card_reg_ann": "备注选项",
-        "card_reg_ann_hint": "仅区域备注模式生效，与窗口设置互不影响。",
-        "skip_reg_tip": "仅区域备注模式：已是目标语言的行不再送模型、不叠备注。也可在备注条切换（仅影响区域）。",
+        "card_region_hint": "拖动手柄移动识别框；字幕自由模式下移动字幕框。拖边角缩放识别区，点「固定」锁定。",
         "card_advanced": "模型与生成",
         "card_advanced_hint": "从本机 models 目录选择翻译模型，并调整单次生成上限。",
         "model_file": "翻译模型",
         "model_file_tip": "只列出程序目录下 runtime/models 顶层且文件头有效的 .gguf 文件",
-        "model_file_note": "请自行下载兼容 llama.cpp 的 GGUF，直接放入程序目录下的 runtime/models 文件夹；重新打开设置可刷新列表，保存后重启软件生效。",
+        "model_file_note": "请自行导入兼容 llama.cpp 的 GGUF；保存后在后台加载，无需重启。",
         "llama_device": "翻译设备",
         "llama_device_auto": "自动（推荐）",
         "llama_device_gpu": "GPU（NVIDIA CUDA）",
         "llama_device_cpu": "CPU",
-        "llama_device_tip": "同一个 llama 包支持 CPU/GPU；自动模式检测不到 CUDA 时使用 CPU，切换后需重启软件。",
+        "llama_device_tip": "进程内 llama.cpp 支持 CPU/GPU；自动模式在 CUDA 不可用时尝试 CPU。保存后后台切换。",
         "model_none": "未找到可用的 .gguf 模型",
         "model_current_external": "{name}（当前为外部路径）",
         "model_current_missing": "{name}（当前文件不可用）",
@@ -118,7 +103,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "hk_conflict_title": "热键冲突",
         "hk_conflict_body": "以下热键重复，请修改后再保存：\n\n{list}",
         "saved_toast": "设置已保存",
-        "saved_restart_toast": "设置已保存；重启软件后切换翻译模型或设备",
         "lang_zh": "中文",
         "lang_en": "English",
         # tray
@@ -130,7 +114,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "tray_tip": "本地屏译  截屏 {shot} | 划词 {word} | 窗口 {win} | 区域 {reg}",
         # messages
         "msg_wait_model": "翻译模型正在加载，请就绪后重试。",
-        "msg_server_fail": "翻译服务启动失败",
         "msg_preload_fail": "翻译：{name}加载失败",
         "msg_name_llama": "翻译模型",
         "msg_name_ocr": "OCR",
@@ -138,7 +121,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "msg_word_title": "划词翻译",
         "msg_error": "翻译：出错",
         "msg_err_context": "文本过长，已超出模型上下文，请缩短后重试",
-        "msg_err_connect": "无法连接翻译服务，请确认模型已启动",
+        "msg_err_connect": "本地翻译模型不可用，请检查设置中的模型和设备",
         "msg_err_timeout": "翻译请求超时，请稍后重试",
         "msg_err_bad_request": "翻译请求被拒绝（参数或上下文异常）",
         "msg_err_server": "翻译服务内部错误，请查看日志",
@@ -148,22 +131,20 @@ _STRINGS: dict[str, dict[str, str]] = {
         # continuous UI
         "watch_start": "开始监视，等待识别文字…",
         "watch_switched_sub": "已切换为字幕条…",
+        "sub_pinned": "固定",
+        "sub_pinned_tip": "固定字幕条位置",
         "sub_follow": "跟随",
         "sub_free": "自由",
-        "sub_pinned": "固定",
         "sub_annotate": "备注",
         "sub_pause": "暂停",
         "sub_resume": "继续",
         "sub_close": "关闭",
         "sub_close_tip": "停止持续翻译并关闭字幕",
         "sub_annotate_tip": "切换为备注模式（贴在原文旁）",
-        "sub_drag_tip": "自由模式下拖动移动字幕",
+        "sub_drag_tip": "跟随模式下拖动移动识别框；自由模式下移动字幕框",
         "sub_resize_tip": "拖动缩放译文框",
-        "ann_label": "备注",
         "ann_subtitle": "字幕",
         "ann_subtitle_tip": "切换为字幕条模式（目标外侧）",
-        "ann_skip": "跳过目标语",
-        "ann_skip_tip": "开启后：已是目标语言的行不再翻译、不显示备注标签",
         "ann_close_tip": "停止持续翻译",
         "frame_pinned": "已固定 · 点右侧解锁",
         "frame_drag": "⠿ 拖动 · 拖边角缩放识别区",
@@ -204,9 +185,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "tw_copied_translation": "译文已复制",
         "tw_busy": "翻译中…",
         "tw_fail": "翻译失败：{e}",
-        "tw_server_fail": "翻译服务未就绪",
+        "tw_model_not_ready": "翻译模型未就绪",
         "tw_pin": "固定",
         "tw_pinned": "已固定",
+        "tw_clear": "清空",
+        "tw_chars": "{n} 字符",
+        "tw_shortcut_hint": "Ctrl+Enter 快捷翻译",
+        "pick_search": "搜索窗口标题或进程…",
+        "hist_empty": "暂无翻译历史记录",
         # hotkey display
         "mouse_x1": "侧键1(后退)",
         "mouse_x2": "侧键2(前进)",
@@ -251,13 +237,6 @@ _STRINGS: dict[str, dict[str, str]] = {
             "Annotation color applies to both window and region modes; "
             "takes effect after Save."
         ),
-        "ann_capture_visible": "Show annotation text in screenshots / recordings",
-        "ann_capture_visible_tip": (
-            "When on, screen recordings and system screenshots capture the "
-            "annotation text, but region annotation restores the background "
-            "every frame and responds slightly slower. Off by default for "
-            "best speed; applies right after Save."
-        ),
         "card_hotkeys": "Global hotkeys",
         "card_hotkeys_hint": (
             "Click a field, then press a keyboard combo (requires Ctrl/Alt/Shift; Esc cancels), "
@@ -271,50 +250,29 @@ _STRINGS: dict[str, dict[str, str]] = {
         "hk_region_full": "Region live translate",
         "card_window": "Window continuous translate",
         "card_window_hint": (
-            "Subtitle bar sits outside the target window; "
-            "annotation places lines next to source text."
+            "Window translation always uses annotation mode, placing each "
+            "translated line next to its source."
         ),
         "interval": "Poll interval",
         "interval_custom": "Custom…",
         "display_mode": "Display mode",
         "ms_suffix": " ms",
-        "mode_sub_win": "Subtitle (full text, outside window)",
-        "mode_ann_win": "Annotation (per-line, next to source)",
         "mode_sub_reg": "Subtitle (full text, outside region)",
         "mode_ann_reg": "Annotation (per-line, next to source)",
-        "tip_win_mode": (
-            "Subtitle: translation below the window, non-covering. "
-            "Annotation: lines next to OCR boxes inside the window."
-        ),
         "tip_reg_mode": (
             "Subtitle = full text under the region; "
             "Annotation = lines next to source inside the region."
         ),
-        "card_win_ann": "Annotation options",
-        "card_win_ann_hint": "Window annotation mode only; independent of region settings.",
-        "skip_target": "Skip text already in target language",
-        "skip_win_tip": (
-            "Window annotation only: skip model call and labels for target-language lines. "
-            "Also toggleable on the annotation bar (window session only)."
-        ),
         "card_region": "Region continuous translate",
         "card_region_hint": (
-            "Drag the top bar to move, edges to resize; click Pin to lock."
-        ),
-        "card_reg_ann": "Annotation options",
-        "card_reg_ann_hint": "Region annotation mode only; independent of window settings.",
-        "skip_reg_tip": (
-            "Region annotation only: skip model call and labels for target-language lines. "
-            "Also toggleable on the annotation bar (region session only)."
+            "Drag the handle to move the region, or the subtitle bar in Free mode. "
+            "Drag an edge to resize; click Pin to lock the region."
         ),
         "card_advanced": "Model & generation",
         "card_advanced_hint": "Choose a translation model from the local models folder and set the generation limit.",
         "model_file": "Translation model",
         "model_file_tip": "Lists valid .gguf files directly under runtime/models in the program folder",
-        "model_file_note": (
-            "Download a llama.cpp-compatible GGUF yourself and place it directly into the runtime/models folder under the program directory. "
-            "Reopen Settings to refresh the list; restart the app after saving."
-        ),
+        "model_file_note": "Import a compatible GGUF model. Save to load it in the background without restarting.",
         "runtime_status": "Runtime status",
         "runtime_pending": "Loading",
         "runtime_ok": "Ready",
@@ -326,7 +284,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "llama_device_auto": "Auto (recommended)",
         "llama_device_gpu": "GPU (NVIDIA CUDA)",
         "llama_device_cpu": "CPU",
-        "llama_device_tip": "The same llama package supports CPU and GPU. Auto uses CPU when CUDA is unavailable; restart after changing this setting.",
+        "llama_device_tip": "In-process llama.cpp supports CPU/GPU. Auto tries CPU when CUDA is unavailable. Save to switch in the background.",
         "model_none": "No usable .gguf model found",
         "model_current_external": "{name} (current external path)",
         "model_current_missing": "{name} (current file unavailable)",
@@ -349,7 +307,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "hk_conflict_title": "Hotkey conflict",
         "hk_conflict_body": "Duplicate hotkeys; fix before saving:\n\n{list}",
         "saved_toast": "Settings saved",
-        "saved_restart_toast": "Settings saved; restart the app to switch translation model or device",
         "lang_zh": "中文",
         "lang_en": "English",
         "app_name": "LocalScreen Translator",
@@ -359,7 +316,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "tray_quit": "Quit",
         "tray_tip": "LocalScreen Translator  Shot {shot} | Select {word} | Window {win} | Region {reg}",
         "msg_wait_model": "The translation model is loading. Please retry when it is ready.",
-        "msg_server_fail": "Failed to start translation service",
         "msg_preload_fail": "Translator: {name} failed to load",
         "msg_name_llama": "translation model",
         "msg_name_ocr": "OCR",
@@ -367,7 +323,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "msg_word_title": "Selection translate",
         "msg_error": "Translator: error",
         "msg_err_context": "Text too long for model context; shorten and retry",
-        "msg_err_connect": "Cannot reach translation service; check if the model is running",
+        "msg_err_connect": "Local translation model is unavailable; check model and device settings",
         "msg_err_timeout": "Translation timed out; try again later",
         "msg_err_bad_request": "Translation request rejected (bad params or context)",
         "msg_err_server": "Translation service error; see log",
@@ -376,22 +332,20 @@ _STRINGS: dict[str, dict[str, str]] = {
         "msg_no_text": "No text recognized",
         "watch_start": "Watching… waiting for text",
         "watch_switched_sub": "Switched to subtitle…",
+        "sub_pinned": "Pin",
+        "sub_pinned_tip": "Pin subtitle position",
         "sub_follow": "Follow",
         "sub_free": "Free",
-        "sub_pinned": "Pin",
         "sub_annotate": "Notes",
         "sub_pause": "Pause",
         "sub_resume": "Resume",
         "sub_close": "Close",
         "sub_close_tip": "Stop continuous translate and close subtitle",
         "sub_annotate_tip": "Switch to annotation mode (next to source)",
-        "sub_drag_tip": "Drag to move in Free mode",
+        "sub_drag_tip": "In Follow mode drag the region; in Free mode drag the subtitle bar",
         "sub_resize_tip": "Drag to resize",
-        "ann_label": "Notes",
         "ann_subtitle": "Subtitle",
         "ann_subtitle_tip": "Switch to subtitle bar (outside target)",
-        "ann_skip": "Skip target lang",
-        "ann_skip_tip": "When on: skip lines already in the target language",
         "ann_close_tip": "Stop continuous translate",
         "frame_pinned": "Pinned · click to unlock",
         "frame_drag": "⠿ Drag · resize edges",
@@ -429,9 +383,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "tw_copied_translation": "Translation copied",
         "tw_busy": "Translating…",
         "tw_fail": "Failed: {e}",
-        "tw_server_fail": "Translation service not ready",
+        "tw_model_not_ready": "Translation model not ready",
         "tw_pin": "Pin",
         "tw_pinned": "Pinned",
+        "tw_clear": "Clear",
+        "tw_chars": "{n} chars",
+        "tw_shortcut_hint": "Ctrl+Enter to translate",
+        "pick_search": "Search window title or process…",
+        "hist_empty": "No translation history yet",
         "mouse_x1": "Side1(Back)",
         "mouse_x2": "Side2(Forward)",
         "hk_need_mod": "Add Ctrl/Alt/Shift for keys; side buttons alone OK…",

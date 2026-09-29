@@ -6,13 +6,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 import threading
-import time
 from typing import Any, Callable
 
 import numpy as np
 
 from .ocr_engine import OcrEngine, OcrLine
-from .translator import Translator
+from .ocr_service import OcrService
+from .translation_runtime.router import TranslationRouter
 
 
 @dataclass(frozen=True)
@@ -94,8 +94,9 @@ class OneShotResult:
 class OneShotPipeline:
     """输入图片或文本并返回统一结果；线程与信号由调用方负责。"""
 
-    def __init__(self, ocr: OcrEngine, translator: Translator):
+    def __init__(self, ocr: OcrEngine, translator: TranslationRouter):
         self._ocr = ocr
+        self._ocr_service = OcrService(ocr_engine=ocr)
         self._translator = translator
 
     def run(
@@ -111,13 +112,29 @@ class OneShotPipeline:
             return None
         lines: tuple[OcrLine, ...] = ()
         if text is None:
-            lines = tuple(self._ocr.recognize(image))
-            source = OcrEngine.lines_to_text(list(lines))
+            lines = tuple(self._ocr_service.recognize_frame(image))
+            source = "\n".join(line.text for line in lines).strip()
         else:
             source = text.strip()
         if cancelled():
             return None
-        translation = self._translator.translate(source, target_language) if translate and source else ""
+        translation = ""
+        if translate and source:
+            if lines and hasattr(self._translator, "translate_lines"):
+                values = self._translator.translate_lines(
+                    [line.text for line in lines], target_language,
+                    session_tag="one_shot",
+                )
+                if any(not value.strip() for value in values):
+                    raise RuntimeError("逐行翻译缺少有效结果")
+                translation = "\n".join(values)
+            else:
+                try:
+                    translation = self._translator.translate(
+                        source, target_language, session_tag="one_shot"
+                    )
+                except TypeError:
+                    translation = self._translator.translate(source, target_language)
         if cancelled():
             return None
         return OneShotResult(source, translation, lines)

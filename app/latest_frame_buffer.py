@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import threading
-from typing import Any, Optional, Tuple
+from typing import Any
 import numpy as np
 
 

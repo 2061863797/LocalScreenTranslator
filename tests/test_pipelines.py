@@ -49,7 +49,6 @@ class LiveTranslationStateTests(unittest.TestCase):
         cfg = {
             "region_watch_interval_ms": 50,
             "region_watch_diff_threshold": 0.9,
-            "region_annotate_skip_target_lang": False,
             "target_language": "简体中文",
         }
         watchers = []

@@ -203,21 +203,63 @@ class RegionSelector(QWidget):
         if was:
             self.cancelled.emit()
 
+    def _draw_selection_chrome(self, painter: QPainter, rect: QRect):
+        """绘制现代化 HUD 框选视效：主边框、四角取景标与尺寸提示胶囊。"""
+        # 1. 亮蓝色发光边框
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setPen(QPen(QColor(0, 150, 255, 220), 2))
+        painter.drawRect(rect.adjusted(0, 0, -1, -1))
+
+        # 2. 四角 HUD 取景 L 形角标
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        corner_len = min(12, max(4, min(rect.width(), rect.height()) // 4))
+        p_pen = QPen(QColor(255, 255, 255, 240), 3)
+        painter.setPen(p_pen)
+        x1, y1, x2, y2 = rect.left(), rect.top(), rect.right(), rect.bottom()
+        # 左上
+        painter.drawLine(x1, y1, x1 + corner_len, y1)
+        painter.drawLine(x1, y1, x1, y1 + corner_len)
+        # 右上
+        painter.drawLine(x2, y1, x2 - corner_len, y1)
+        painter.drawLine(x2, y1, x2, y1 + corner_len)
+        # 左下
+        painter.drawLine(x1, y2, x1 + corner_len, y2)
+        painter.drawLine(x1, y2, x1, y2 - corner_len)
+        # 右下
+        painter.drawLine(x2, y2, x2 - corner_len, y2)
+        painter.drawLine(x2, y2, x2, y2 - corner_len)
+
+        # 3. 尺寸胶囊浮标 (Size Badge)
+        if rect.width() >= 60 and rect.height() >= 30:
+            badge_text = f"{rect.width()} × {rect.height()}"
+            badge_w = max(70, len(badge_text) * 7 + 16)
+            badge_h = 20
+            bx = rect.left() + (rect.width() - badge_w) // 2
+            by = rect.top() - badge_h - 4 if rect.top() >= badge_h + 6 else rect.top() + 6
+            badge_rect = QRect(bx, by, badge_w, badge_h)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(18, 22, 30, 220))
+            painter.drawRoundedRect(badge_rect, 4, 4)
+            painter.setPen(QColor(255, 255, 255, 230))
+            font = painter.font()
+            font.setPixelSize(11)
+            painter.setFont(font)
+            painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, badge_text)
+
     def paintEvent(self, event):
         if self._dormant:
             return
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
         if self._bg_pix is not None and not self._bg_pix.isNull():
             # 整窗铺底图 + 压暗（不透明路径，无 DWM 半透明首帧）
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
             painter.drawPixmap(0, 0, self._bg_pix)
             painter.fillRect(self.rect(), QColor(0, 0, 0, 110))
             if self._origin and self._current:
                 rect = QRect(self._origin, self._current).normalized()
                 painter.drawPixmap(rect, self._bg_pix, rect)
-                painter.setPen(QPen(QColor(255, 255, 255, 220), 2))
-                painter.drawRect(rect.adjusted(0, 0, -1, -1))
+                self._draw_selection_chrome(painter, rect)
             return
 
         # 回退：半透明蒙版挖洞（仅截屏失败时）
@@ -229,8 +271,7 @@ class RegionSelector(QWidget):
             painter.setCompositionMode(
                 QPainter.CompositionMode.CompositionMode_SourceOver
             )
-            painter.setPen(QPen(QColor(255, 255, 255, 200), 2))
-            painter.drawRect(rect)
+            self._draw_selection_chrome(painter, rect)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

@@ -1,3 +1,4 @@
+import os
 import tempfile
 import threading
 import time
@@ -6,10 +7,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
-from PySide6.QtCore import QCoreApplication, QMimeData
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QMimeData
+from PySide6.QtWidgets import QApplication
 
 from app import capture
-from app.llama_server import LlamaServer
 from app.main import (
     App,
     _PreloadSignals,
@@ -21,25 +24,6 @@ from app.ui.overlays import AnnotationOverlay
 from app.window_watcher import WindowWatcher, _frame_changed
 
 
-class _FakeProcess:
-    def __init__(self):
-        self.pid = 123
-        self.stdout = []
-        self.returncode = None
-        self.terminated = False
-
-    def poll(self):
-        return 0 if self.terminated else None
-
-    def terminate(self):
-        self.terminated = True
-        self.returncode = 0
-
-    def wait(self, timeout=None):
-        return 0
-
-    def kill(self):
-        self.terminate()
 
 
 class _FakeMss:
@@ -89,156 +73,13 @@ class RuntimeSafetyTests(unittest.TestCase):
         watcher.run()
         self.assertIsNone(failure, failure)
 
-    def test_llama_device_selects_gpu_layers_without_another_runtime(self):
-        server = object.__new__(LlamaServer)
-        server._cfg = {"llama_device": "cpu", "n_gpu_layers": 99}
-        server._cuda_available = None
-        server._has_cuda_device = Mock(return_value=True)
-        self.assertEqual(server._gpu_layers(Path("llama-server.exe")), 0)
-        server._has_cuda_device.assert_not_called()
 
-        server._cfg["llama_device"] = "auto"
-        self.assertEqual(server._gpu_layers(Path("llama-server.exe")), 99)
 
-        server._has_cuda_device.return_value = False
-        self.assertEqual(server._gpu_layers(Path("llama-server.exe")), 0)
 
-        server._cfg["llama_device"] = "gpu"
-        with self.assertRaisesRegex(RuntimeError, "CUDA"):
-            server._gpu_layers(Path("llama-server.exe"))
 
-    def test_llama_timeout_reaps_spawned_process(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "llama-server.exe").write_bytes(b"x")
-            model = root / "model.gguf"
-            model.write_bytes(b"GGUF")
-            server = LlamaServer({
-                "llama_dir": str(root),
-                "model_path": str(model),
-                "server_host": "127.0.0.1",
-                "server_port": 18080,
-                "llama_device": "cpu",
-            })
-            proc = _FakeProcess()
-            server.is_healthy = Mock(return_value=False)
-            with patch("app.llama_server.subprocess.Popen", return_value=proc):
-                with self.assertRaises(TimeoutError):
-                    server.start(wait_seconds=0)
-            self.assertTrue(proc.terminated)
-            self.assertIsNone(server._proc)
 
-    def test_llama_cold_start_can_be_cancelled_without_waiting_for_timeout(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "llama-server.exe").write_bytes(b"x")
-            model = root / "model.gguf"
-            model.write_bytes(b"GGUF")
-            server = LlamaServer({
-                "llama_dir": str(root),
-                "model_path": str(model),
-                "server_host": "127.0.0.1",
-                "server_port": 18080,
-                "llama_device": "cpu",
-            })
-            proc = _FakeProcess()
-            server.is_healthy = Mock(return_value=False)
 
-            def launch(*_args, **_kwargs):
-                server._stop_requested.set()
-                return proc
 
-            with patch("app.llama_server.subprocess.Popen", side_effect=launch):
-                with self.assertRaisesRegex(InterruptedError, "取消"):
-                    server.start(wait_seconds=180)
-
-            self.assertTrue(proc.terminated)
-            self.assertIsNone(server._proc)
-
-    def test_health_check_rejects_unrelated_http_service(self):
-        server = object.__new__(LlamaServer)
-        server.host, server.port = "127.0.0.1", 18080
-        unrelated = Mock(status_code=200)
-        unrelated.json.return_value = {"hello": "world"}
-        with patch("app.llama_server.requests.get", return_value=unrelated):
-            self.assertFalse(server.is_healthy())
-
-    def test_llama_server_rejects_unmatched_model_instance(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "llama-server.exe").write_bytes(b"x")
-            model = root / "target_model.gguf"
-            model.write_bytes(b"GGUF")
-            server = LlamaServer({
-                "llama_dir": str(root),
-                "model_path": str(model),
-                "server_host": "127.0.0.1",
-                "server_port": 18080,
-                "llama_device": "cpu",
-            })
-            server.is_healthy = Mock(return_value=True)
-            server.check_model_match = Mock(return_value=False)
-            with patch("app.llama_server.is_port_in_use", return_value=True):
-                with patch("app.llama_server.subprocess.Popen") as mock_popen:
-                    with self.assertRaisesRegex(RuntimeError, "不匹配"):
-                        server.start()
-                    mock_popen.assert_not_called()
-
-    def test_llama_server_rejects_occupied_port_by_unrelated_process(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "llama-server.exe").write_bytes(b"x")
-            model = root / "target_model.gguf"
-            model.write_bytes(b"GGUF")
-            server = LlamaServer({
-                "llama_dir": str(root),
-                "model_path": str(model),
-                "server_host": "127.0.0.1",
-                "server_port": 18080,
-                "llama_device": "cpu",
-            })
-            server.is_healthy = Mock(return_value=False)
-            with patch("app.llama_server.is_port_in_use", return_value=True):
-                with patch("app.llama_server.subprocess.Popen") as mock_popen:
-                    with self.assertRaisesRegex(RuntimeError, "已被其它本地程序占用"):
-                        server.start()
-                    mock_popen.assert_not_called()
-
-    def test_llama_server_reuses_matching_model_instance(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "llama-server.exe").write_bytes(b"x")
-            model = root / "target_model.gguf"
-            model.write_bytes(b"GGUF")
-            server = LlamaServer({
-                "llama_dir": str(root),
-                "model_path": str(model),
-                "server_host": "127.0.0.1",
-                "server_port": 18080,
-                "llama_device": "cpu",
-            })
-            server.is_healthy = Mock(return_value=True)
-            server.check_model_match = Mock(return_value=True)
-            with patch("app.llama_server.subprocess.Popen") as mock_popen:
-                server.start()
-                mock_popen.assert_not_called()
-
-    def test_check_model_match_supports_v1_models_and_props(self):
-        server = object.__new__(LlamaServer)
-        server.host, server.port = "127.0.0.1", 18080
-        server.model_path = Path("D:/models/HY-MT1.5-1.8B.gguf")
-
-        # 1. 命中 /v1/models
-        resp_v1 = Mock(status_code=200)
-        resp_v1.json.return_value = {"data": [{"id": "HY-MT1.5-1.8B"}]}
-        with patch("app.llama_server.requests.get", return_value=resp_v1):
-            self.assertTrue(server.check_model_match())
-
-        # 2. 命中 /props 的 default_generation_settings
-        resp_props = Mock(status_code=200)
-        resp_props.json.return_value = {"default_generation_settings": {"model": "hy-mt1.5-1.8b.gguf"}}
-        with patch("app.llama_server.requests.get", side_effect=[Mock(status_code=404), Mock(status_code=404), resp_props]):
-            self.assertTrue(server.check_model_match())
 
     def test_native_rect_is_mapped_to_qt_logical_coordinates(self):
         old = list(capture._SCREEN_LAYOUT)
@@ -276,29 +117,6 @@ class RuntimeSafetyTests(unittest.TestCase):
         finally:
             capture.release_mss()
 
-    def test_region_annotation_mask_restores_previous_clean_pixels(self):
-        watcher = WindowWatcher(
-            Mock(),
-            Mock(),
-            {},
-            region=(10, 20, 30, 40),
-            profile="region",
-            display_mode="annotate",
-        )
-        clean = np.full((40, 30, 3), 20, dtype=np.uint8)
-        watcher._remove_annotation_overlay(clean)
-
-        mask = np.zeros((40, 30), dtype=np.uint8)
-        mask[15:20, 10:15] = 255
-        watcher.set_annotation_mask(mask)
-        captured = clean.copy()
-        captured[13:22, 8:17] = 240
-        captured[0, 0] = 99
-
-        restored = watcher._remove_annotation_overlay(captured)
-        self.assertTrue(np.all(restored[13:22, 8:17] == 20))
-        self.assertTrue(np.all(restored[0, 0] == 99))
-
     def test_continuous_ocr_clears_stale_text_after_two_empty_frames(self):
         watcher = WindowWatcher(
             Mock(), Mock(), {}, hwnd=404, profile="window"
@@ -326,7 +144,6 @@ class RuntimeSafetyTests(unittest.TestCase):
             {
                 "window_watch_interval_ms": 20,
                 "window_watch_diff_threshold": 0.8,
-                "window_annotate_skip_target_lang": False,
                 "target_language": "简体中文",
             },
             hwnd=404,
@@ -350,7 +167,6 @@ class RuntimeSafetyTests(unittest.TestCase):
             {
                 "window_watch_interval_ms": 20,
                 "window_watch_diff_threshold": 0.8,
-                "window_annotate_skip_target_lang": False,
                 "target_language": "简体中文",
             },
             hwnd=404,
@@ -404,7 +220,6 @@ class RuntimeSafetyTests(unittest.TestCase):
             {
                 "window_watch_interval_ms": 20,
                 "window_watch_diff_threshold": 0.8,
-                "window_annotate_skip_target_lang": False,
                 "target_language": "简体中文",
             },
             hwnd=404,
@@ -420,47 +235,15 @@ class RuntimeSafetyTests(unittest.TestCase):
         # 第 1 帧识别；第 2、3 帧画面未变被跳过；第 4 帧出现文字立即识别
         self.assertEqual(ocr.recognize.call_count, 2)
 
-    def test_annotation_mask_sync_is_limited_to_active_region_notes(self):
-        app = App.__new__(App)
-        app._watcher = Mock()
-        app.annotation = Mock()
-        mask = np.ones((20, 30), dtype=np.uint8)
-        app.annotation.capture_mask.return_value = mask
-        app._watch_region = (0, 0, 300, 200)
-        app._watch_annotate = True
-        app.cfg = {"annotate_capture_visible": True}
-
-        app._sync_annotation_mask()
-        app._watcher.set_annotation_mask.assert_called_once_with(mask)
-
-        app._watcher.set_annotation_mask.reset_mock()
-        app._watch_annotate = False
-        app._sync_annotation_mask()
-        app._watcher.set_annotation_mask.assert_called_once_with(None)
-
-        # 浮层被排除捕获（默认）时不生成遮罩：OCR 抓屏看不到译文
-        app._watcher.set_annotation_mask.reset_mock()
-        app.annotation.capture_mask.reset_mock()
-        app._watch_annotate = True
-        app.cfg = {"annotate_capture_visible": False}
-        app._sync_annotation_mask()
-        app._watcher.set_annotation_mask.assert_called_once_with(None)
-        app.annotation.capture_mask.assert_not_called()
-
-    def test_annotation_overlay_capture_affinity_follows_setting(self):
+    def test_annotation_overlay_is_always_excluded_from_capture(self):
         overlay = Mock()
         with (
             patch("app.ui.overlays._exclude_from_capture") as exclude,
             patch("app.ui.overlays._allow_capture") as allow,
         ):
-            overlay._capture_visible = False
             AnnotationOverlay._apply_capture_affinity(overlay)
             exclude.assert_called_once_with(overlay)
             allow.assert_not_called()
-
-            overlay._capture_visible = True
-            AnnotationOverlay._apply_capture_affinity(overlay)
-            allow.assert_called_once_with(overlay)
 
     def test_region_watch_restacks_every_visible_layer(self):
         app = App.__new__(App)
@@ -539,18 +322,18 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertEqual(bytes(cloned.data("application/x-screen-translator-test")), b"payload")
 
     def test_preload_signal_crosses_from_python_thread(self):
-        app = QCoreApplication.instance() or QCoreApplication([])
+        app = QApplication.instance() or QApplication([])
         bridge = _PreloadSignals()
         received = []
         bridge.status.connect(lambda *args: received.append(args))
-        thread = threading.Thread(target=lambda: bridge.status.emit("ocr", "ok", ""))
+        thread = threading.Thread(target=lambda: bridge.status.emit("ocr", "ok", "", 2))
         thread.start()
         thread.join()
         deadline = time.time() + 1
         while not received and time.time() < deadline:
             app.processEvents()
             time.sleep(0.01)
-        self.assertEqual(received, [("ocr", "ok", "")])
+        self.assertEqual(received, [("ocr", "ok", "", 2)])
 
     def test_shutdown_has_abort_and_hard_deadlines(self):
         app = App.__new__(App)

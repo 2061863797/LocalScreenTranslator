@@ -1,5 +1,5 @@
-# 完全锁定的依赖版本清单（用于可复现的发布构建与环境固化）
-# 生成自本地验证环境 Python 3.12 (DirectML + PySide6 Essentials)
+# 本地 EXE 构建的锁定依赖（不包含另行导入的模型权重）
+# 生成自 Python 3.12 环境；Python 3.11/3.13 的安装与构建由 CI 验证
 
 altgraph==0.17.5
 certifi==2026.6.17

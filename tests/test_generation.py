@@ -453,7 +453,7 @@ class TestProductionWindowWatcherGeneration(unittest.TestCase):
 
         # Single OCR line returned
         ocr_mock.recognize.return_value = [
-            OcrLine(text="Source text to translate", box=[[0, 0], [100, 0], [100, 20], [0, 20]], score=0.99)
+            OcrLine(text="Source text to translate", box=(0, 0, 100, 20), score=0.99)
         ]
 
         def slow_translate(text, target):
@@ -499,7 +499,7 @@ class TestProductionWindowWatcherGeneration(unittest.TestCase):
 
         fake_frame = np.ones((100, 100, 3), dtype=np.uint8) * 20
         ocr_mock.recognize.return_value = [
-            OcrLine(text="Fresh source", box=[[0, 0], [100, 0], [100, 20], [0, 20]], score=0.99)
+            OcrLine(text="Fresh source", box=(0, 0, 100, 20), score=0.99)
         ]
 
         gen_id = watcher.generation_tracker.next_generation()
@@ -683,7 +683,7 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
         detector = TextChangeDetector(empty_clear_threshold=2)
 
         # 1. Initial observation of text
-        line1 = OcrLine(text="Initial line", box=[[0, 0], [50, 0], [50, 10], [0, 10]], score=0.99)
+        line1 = OcrLine(text="Initial line", box=(0, 0, 50, 10), score=0.99)
         event, text = detector.observe([line1], threshold=0.5)
         self.assertEqual(event, "change")
         self.assertEqual(text, "Initial line")
@@ -694,7 +694,7 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
         self.assertEqual(event, "none")
 
         # 3. Substantive change returns "change"
-        line2 = OcrLine(text="Completely different text", box=[[0, 0], [50, 0], [50, 10], [0, 10]], score=0.99)
+        line2 = OcrLine(text="Completely different text", box=(0, 0, 50, 10), score=0.99)
         event, text = detector.observe([line2], threshold=0.5)
         self.assertEqual(event, "change")
         self.assertEqual(text, "Completely different text")
@@ -728,8 +728,8 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
 
         # 2. Annotations translation
         lines = [
-            OcrLine(text="Line A", box=[[0, 0], [20, 0], [20, 10], [0, 10]], score=0.95),
-            OcrLine(text="Line B", box=[[0, 15], [20, 15], [20, 25], [0, 25]], score=0.95),
+            OcrLine(text="Line A", box=(0, 0, 20, 10), score=0.95),
+            OcrLine(text="Line B", box=(0, 15, 20, 25), score=0.95),
         ]
         items, joined = tm.translate_annotations(lines, "zh")
         self.assertEqual(len(items), 2)
@@ -794,7 +794,7 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
 
         # 1. OCR exception isolation
         ocr_mock = MagicMock()
-        ocr_mock.recognize.side_effect = RuntimeError("DirectML hardware glitch")
+        ocr_mock.recognize.side_effect = RuntimeError("OCR operation failed")
         trans_mock = MagicMock()
 
         watcher = WindowWatcher(ocr_mock, trans_mock, dict(DEFAULTS), hwnd=1)
@@ -809,10 +809,10 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
         # 2. Translation exception isolation
         ocr_ok = MagicMock()
         ocr_ok.recognize.return_value = [
-            OcrLine(text="Transient text", box=[[0, 0], [10, 0], [10, 10], [0, 10]], score=0.99)
+            OcrLine(text="Transient text", box=(0, 0, 10, 10), score=0.99)
         ]
         trans_fail = MagicMock()
-        trans_fail.translate.side_effect = ConnectionError("llama-server offline")
+        trans_fail.translate.side_effect = RuntimeError("local model unavailable")
 
         watcher2 = WindowWatcher(ocr_ok, trans_fail, dict(DEFAULTS), hwnd=1)
         watcher2._capture_service.grab = MagicMock(return_value=((0, 0, 20, 20), fake_frame))
@@ -831,7 +831,7 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
 
         ocr_mock = MagicMock()
         ocr_mock.recognize.return_value = [
-            OcrLine(text="Dynamic text", box=[[0, 0], [10, 0], [10, 10], [0, 10]], score=0.99)
+            OcrLine(text="Dynamic text", box=(0, 0, 10, 10), score=0.99)
         ]
         trans_mock = MagicMock()
         # Simulate compute-intensive translation (200ms)

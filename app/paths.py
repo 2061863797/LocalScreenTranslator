@@ -6,9 +6,8 @@
     <ROOT>/
       run.py / 翻译.exe / venv / app / config.json
       runtime/
-        llama/          # llama-server.exe + 依赖 DLL
+        llama-native/   # 进程内 llama.cpp 动态库及 CUDA 依赖
         models/         # HY-MT 等 .gguf
-        ocr/            # ONNX OCR 模型与清单
 """
 
 from __future__ import annotations
@@ -88,7 +87,7 @@ ICON_ICO = ROOT / "icon.ico"
 
 # 内置资源（相对 ROOT，写入 config 时用正斜杠）
 RUNTIME_DIR = ROOT / "runtime"
-RUNTIME_LLAMA = RUNTIME_DIR / "llama"
+RUNTIME_LLAMA_NATIVE = RUNTIME_DIR / "llama-native"
 RUNTIME_MODELS = RUNTIME_DIR / "models"
 RUNTIME_OCR = RUNTIME_DIR / "ocr"
 USER_MODELS = DATA_DIR / "models"
@@ -96,7 +95,6 @@ USER_MODELS.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_GGUF_NAME = "HY-MT1.5-1.8B-Q4_K_M.gguf"
 DEFAULT_MODEL_REL = f"runtime/models/{DEFAULT_GGUF_NAME}"
-DEFAULT_LLAMA_REL = "runtime/llama"
 
 
 def resolve_path(value: str | Path) -> Path:
@@ -172,12 +170,12 @@ def runtime_status() -> dict:
     actual_model_path = str(gguf) if gguf.is_file() else (str(models[0]) if models else str(gguf))
     return {
         "root": str(ROOT),
-        "llama_server": (RUNTIME_LLAMA / "llama-server.exe").is_file(),
+        "llama_native": (RUNTIME_LLAMA_NATIVE / "llama.dll").is_file(),
         "model": model_file,
         "ocr_models": all((RUNTIME_OCR / name).is_file() for name in (
             "manifest.json", "det.onnx", "rec.onnx", "characters.txt"
         )),
-        "llama_dir": str(RUNTIME_LLAMA),
+        "llama_library_dir": str(RUNTIME_LLAMA_NATIVE),
         "model_path": actual_model_path,
         "ocr": str(RUNTIME_OCR),
     }

@@ -24,7 +24,6 @@ from app.ocr_engine import OcrLine
 from app.ocr_stabilizer import OcrStabilizer
 from app.scene_text_state import SceneTextState, _boxes_intersect
 from app.text_change_detector import TextChangeDetector
-from app.translator import Translator
 from app.window_watcher import WindowWatcher
 
 
@@ -186,23 +185,6 @@ class TestAuditRound2Invariants(unittest.TestCase):
 
         self.assertTrue(diff_has_changed, "即使 packet.has_changed 为 False，也必须判定为发生变动以触发 OCR")
 
-    def test_translation_cache_privacy_setting_respected(self):
-        """实证 6: 当 translation_cache_enabled 为 False 时，Translator 绝不向持久化缓存写入。"""
-        cfg = {"translation_cache_enabled": False}
-        mock_storage = Mock()
-        mock_cache = Mock()
-        tr = Translator(base_url="http://127.0.0.1:8080", cfg=cfg, storage=mock_storage)
-        tr.cache = mock_cache
-
-        # 调用 _cache_put
-        tr._cache_put("Secret source text", "zh", "机密译文")
-
-        # 验证 mock_cache.put 绝对未被调用
-        mock_cache.put.assert_not_called()
-
-        # 调用 _cache_get
-        tr._cache_get("Secret source text", "zh")
-        mock_cache.get.assert_not_called()
 
 
 if __name__ == "__main__":

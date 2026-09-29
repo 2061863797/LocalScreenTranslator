@@ -1,47 +1,15 @@
-# LocalScreen Translator runtime assets
+# LocalScreen Translator runtime resources
 
-The `runtime` directory has three parts:
+OCR uses PP-OCRv6 ONNX detection and recognition models stored in `runtime\ocr\`. The plain local EXE includes those OCR runtime assets and translation DLLs, but does not distribute GGUF translation weights.
 
-| Folder | Supplied by | Content |
-|--------|-------------|---------|
-| `ocr\` | Release **ocr** asset | PP-OCRv6 ONNX models, character table, and integrity manifest |
-| `models\` | Release **models** asset | HY-MT GGUF translation model |
-| `llama\` | Release **llama** asset | `llama-server.exe` and its DLLs |
+| Path | Purpose |
+|---|---|
+| `runtime\ocr\` | PP-OCRv6 models, character table, and integrity manifest |
+| `runtime\llama-native\` | Pinned llama.cpp v0.5.0 / b11146 CPU and NVIDIA CUDA DLLs |
+| `runtime\models\` | Optional user GGUF files; the default config still detects an existing HY-MT |
 
-`config.json` and `venv` are generated locally on each PC and are not runtime Release assets.
+If `runtime\ocr\` is missing model files, download `ocr.zip` from the [GitHub release](https://github.com/2061863797/LocalScreenTranslator/releases/tag/2.0.0) and extract it into the project's `runtime` directory. The installer build checks and packages this directory. On a fresh machine, run `scripts\fetch_llama_native.ps1` to download fixed official assets, check SHA256, and extract only the needed DLLs. It does not extract llama-server and refuses to overwrite a nonempty target directory. Then run `build-exe.ps1`; the DLLs are copied into a new local EXE directory. GGUF weights are not included or overwritten.
 
-## Default Release setup
+Settings can directly reference an external GGUF or copy one to the user models directory. Save model and device settings to load them in the background without restarting. A custom GGUF needs a chat template compatible with llama.cpp v0.5.0; model quality, resource needs, and licensing vary.
 
-Releases provide three archives: **ocr**, **models**, and **llama**.
-
-The **llama** asset contains both CPU and NVIDIA CUDA backends. Every PC uses the same asset; compatible GPUs do not require a separate CUDA Toolkit installation.
-
-The archives' top-level folders must be `ocr\`, `models\`, and `llama\`, respectively. Extract all three into the project's `runtime\` directory and allow your archive tool to merge or replace files; the resulting layout must be:
-
-```text
-runtime\models\HY-MT1.5-1.8B-Q4_K_M.gguf
-runtime\llama\llama-server.exe
-runtime\llama\*.dll
-runtime\ocr\manifest.json
-runtime\ocr\det.onnx
-runtime\ocr\rec.onnx
-runtime\ocr\characters.txt
-```
-
-Check the assets with:
-
-```powershell
-.\setup.ps1 -Check
-```
-
-## Multiple translation models
-
-`runtime\models\` may contain multiple `.gguf` files. Download additional models yourself and place them directly in this folder. Then choose one under Tray → Settings → Advanced → Model & generation, save, and restart the app.
-
-The settings list accepts only files with a valid GGUF header. A custom model must still be compatible with the bundled `llama.cpp`; verify its translation behavior, prompt format, license, and hardware requirements yourself.
-
-## CPU and translation device
-
-Without an NVIDIA GPU, extract the same **llama** asset. Auto selects the CPU; you can also select CPU under Settings → Advanced → Translation device and restart the app.
-
-See the root [README.en.md](../README.en.md) for the complete installation guide.
+[Back to README](../README.en.md)

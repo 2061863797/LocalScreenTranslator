@@ -262,7 +262,7 @@ class TestTextChangeDetectorEmpiricalChallenge(unittest.TestCase):
         def worker(idx: int):
             try:
                 for i in range(100):
-                    lines = [OcrLine(text=f"Line {idx}_{i}", box=[[0, 0], [10, 0], [10, 10], [0, 10]], score=0.9)]
+                    lines = [OcrLine(text=f"Line {idx}_{i}", box=(0, 0, 10, 10), score=0.9)]
                     event, text = detector.observe(lines, threshold=0.5)
                     self.assertIn(event, ("none", "change", "clear"))
                     _ = detector.is_stable

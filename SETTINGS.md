@@ -1,35 +1,30 @@
 # 本地屏译 — 设置说明
 
-托盘 → **设置** → **常规 → 界面语言** → 保存。  
-对应键：`ui_language` = `zh` | `en`（整个界面）。
+从托盘打开“设置”；模型与设备设置保存后在当前进程中生效。模型加载在后台运行，失败会显示原因并恢复原选择。界面语言支持中文和英文。OCR 使用随应用运行资源提供的 PP-OCRv6 ONNX 模型，不需要 Windows OCR 语言包。
 
 | 选项 | 配置键 | 说明 |
-|------|--------|------|
-| 界面语言 | `ui_language` | `zh` / `en` |
-| 目标语言 | `target_language` | 如 简体中文 |
-| 翻译窗口字号 | `translate_window_font_size` | `0`=默认；否则 `12`–`20` px |
-| 保存本地历史 | `history_enabled` | 明文保存在 `data.db`，最多 50 条；关闭后不再新增 |
-| 保存本地翻译缓存 | `translation_cache_enabled` | 明文保存在 `data.db`，最多 50,000 条；关闭后不再新增，可在历史窗口清空已有缓存 |
+|---|---|---|
+| GGUF 模型 | `model_path` | 直接引用或导入有效 GGUF；权重不随 EXE 提供 |
+| llama.cpp 动态库 | `llama_library_dir` | 本地开发默认 `runtime/llama-native`，构建时复制进 EXE 目录 |
+| AI 设备 | `llama_device` | `auto`、`gpu`、`cpu` |
+| 目标语言 | `target_language` | 每次显示一种；可在翻译窗口和实时控制条切换并重译 |
+| OCR 模型 | `runtime/ocr/` | PP-OCRv6 检测、识别模型及字符表；需随项目恢复或单独下载 |
+| OCR 设备 | `ocr_provider`、`ocr_device_id` | 默认自动优先 DirectML；失败时回退 CPU，也可在配置中指定 CPU |
+| OCR 长边限制 | `ocr_max_side` | 默认 1600；0 表示不做额外长边缩放 |
+| OCR 最低置信度 | `ocr_score_min` | 默认 0.45；低于此值的识别行会被丢弃 |
+| 生成上限 | `max_tokens` | 默认 512；可选 64–8192 |
+| CPU 线程 | `threads` | llama.cpp 推理线程数 |
+| 上下文 | `ctx_size` | 默认 2048 |
+| 翻译缓存 | `translation_cache_enabled` | 关闭后不再写入；旧缓存可在历史窗口清除 |
+| 本地历史 | `history_enabled` | 关闭后不再写入；旧历史可在历史窗口清除 |
+| 界面语言 | `ui_language` | `zh` 或 `en` |
+| 翻译窗口字号 | `translate_window_font_size` | 0=默认，或 12–20 px |
 | 备注译文颜色 | `annotate_text_color` | `#RRGGBB` |
-| 备注出现在截屏/录屏 | `annotate_capture_visible` | `false`（默认）=从截屏/录屏排除，速度最快；`true`=录屏可见，区域备注稍慢 |
-| 截屏翻译热键 | `hotkey_screenshot` | 默认 `<alt>+q` |
-| 划词翻译热键 | `hotkey_word` | 默认 `<alt>+w` |
-| 窗口持续翻译 | `hotkey_window` | 默认 `<alt>+e` |
-| 区域实时翻译 | `hotkey_region_watch` | 默认 `<alt>+r` |
-| 窗口监视间隔 | `window_watch_interval_ms` | 预设 200–5000 ms，也可输入该范围内自定义值 |
-| 窗口翻译字号 | `window_watch_font_size` | `0`=默认；否则 `12`–`20` px |
-| 窗口显示方式 | `window_watch_annotate` | `false`=字幕条，`true`=备注 |
-| 窗口跳过目标语 | `window_annotate_skip_target_lang` | 仅备注模式 |
-| 区域监视间隔 | `region_watch_interval_ms` | 预设 200–5000 ms，也可输入该范围内自定义值 |
-| 区域翻译字号 | `region_watch_font_size` | `0`=默认；否则 `12`–`20` px |
-| 区域显示方式 | `region_watch_annotate` | |
-| 区域跳过目标语 | `region_annotate_skip_target_lang` | |
-| 翻译模型 | `model_path` | 选择直接放在 `runtime\models` 顶层的有效 `.gguf`；保存后需重启 |
-| max_tokens | `max_tokens` | 预设 64–8192，也可输入该范围内任意整数；默认 512 |
+| 窗口/区域监视间隔 | `window_watch_interval_ms` / `region_watch_interval_ms` | 默认各 800 ms |
+| 窗口/区域字号 | `window_watch_font_size` / `region_watch_font_size` | 0=默认，或 12–20 px |
+| 区域备注 | `region_watch_annotate` | 布尔值 |
+| 热键 | `hotkey_screenshot`、`hotkey_word`、`hotkey_window`、`hotkey_region_watch` | 默认 Alt+Q/W/E/R |
 
-鼠标侧键写法：`mouse.x1` / `mouse.x2`。  
-其它 llama 参数见 `config.json` / `config.example.json`。
+OCR 模型文件应放在 `runtime/ocr/`，包含 `manifest.json`、`det.onnx`、`rec.onnx` 和 `characters.txt`。可从 [GitHub Release](https://github.com/2061863797/LocalScreenTranslator/releases/tag/2.0.0) 下载 `ocr.zip` 并解压到 `runtime/` 目录。备注浮层始终从捕获中排除。旧版 WinRT OCR 语言字段及旧翻译设置读取时忽略，下次保存会清除；历史数据库保留。
 
-English version: [SETTINGS.en.md](./SETTINGS.en.md)
-
-**本说明可能由 AI 生成，请自行核对。**
+[English](./SETTINGS.en.md) · [返回首页](./README.md)

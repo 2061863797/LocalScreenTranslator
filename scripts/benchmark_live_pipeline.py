@@ -77,7 +77,7 @@ def run_benchmark(
             ocr_service = OcrService(ocr_engine=engine)
             print(f"[BENCHMARK] OCR engine initialized (provider: {engine.provider})")
         except Exception as exc:
-            print(f"[BENCHMARK] Warning: OCR engine/models unavailable ({exc}), running live pipeline without OCR")
+            print(f"[BENCHMARK] Warning: PP-OCR unavailable ({exc}), running live pipeline without OCR")
 
         # Initial live frame capture
         try:
@@ -179,7 +179,7 @@ def run_benchmark(
             # 3. OCR Stage
             with metrics.stage_timer("ocr"):
                 if diff_res.has_changed:
-                    # Simulate ONNX DirectML / CPU ROI recognition
+                    # Synthetic OCR latency for pipeline-only timing
                     time.sleep(0.020 + (i % 5) * 0.003)
                     ocr_text = sample_texts[i % len(sample_texts)]
                 else:

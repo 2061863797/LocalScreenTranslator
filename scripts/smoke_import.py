@@ -35,17 +35,13 @@ def main(argv: list[str] | None = None) -> int:
     # 安装脚本必须检查真实运行依赖，而不是只导入轻量路径模块。
     import mss  # noqa: F401
     import cv2  # noqa: F401
-    import onnxruntime as ort
+    import onnxruntime  # noqa: F401
     import pyclipper  # noqa: F401
     import pynput  # noqa: F401
-    import requests  # noqa: F401
     import win32gui  # noqa: F401
     from PySide6 import QtCore  # noqa: F401
     import app.main  # noqa: F401
 
-    providers = ort.get_available_providers()
-    if "CPUExecutionProvider" not in providers:
-        raise RuntimeError(f"ONNX Runtime 缺少 CPU Provider：{providers}")
     st = runtime_status()
     cfg = config.load()
     if not args.skip_runtime_assets:
@@ -53,21 +49,21 @@ def main(argv: list[str] | None = None) -> int:
 
         cpu_cfg = dict(cfg)
         cpu_cfg["ocr_provider"] = "cpu"
-        cpu_ocr = OcrEngine(cpu_cfg)
-        cpu_ocr.preload()
-        if cpu_ocr.provider != "CPUExecutionProvider":
-            raise RuntimeError(f"OCR CPU 回退不可用：{cpu_ocr.provider}")
+        ocr = OcrEngine(cpu_cfg)
+        ocr.preload()
+        if ocr.provider != "CPUExecutionProvider":
+            raise RuntimeError(f"OCR CPU fallback unavailable: {ocr.provider}")
+        print("ocr", ocr.provider)
     print("version ok")
     print("runtime", st)
-    print("onnx providers", providers)
     print(
         "runtime assets skipped"
         if args.skip_runtime_assets
-        else "ocr cpu fallback ok"
+        else "onnx ocr cpu fallback ok"
     )
-    print("llama", resolve_path(cfg["llama_dir"]))
+    print("llama-native", resolve_path(cfg["llama_library_dir"]))
     print("model", resolve_path(cfg["model_path"]))
-    print("ngl", cfg.get("n_gpu_layers"), "threads", cfg.get("threads"))
+    print("device", cfg.get("llama_device"), "threads", cfg.get("threads"))
     return 0
 
 

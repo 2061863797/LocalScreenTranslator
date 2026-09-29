@@ -301,61 +301,6 @@ class Storage:
             self._conn.commit()
         return True
 
-    def cache_get(self, cache_key: str) -> str | None:
-        """从 translation_cache 表中查询缓存。
-
-        命中时更新 last_accessed_at 与 access_count，并返回译文。未命中返回 None。
-        """
-        now = time.time()
-        with self._lock:
-            cur = self._conn.execute(
-                "SELECT translation, access_count FROM translation_cache WHERE cache_key = ?",
-                (cache_key,),
-            )
-            row = cur.fetchone()
-            if row:
-                trans, count = row
-                self._conn.execute(
-                    "UPDATE translation_cache SET last_accessed_at = ?, access_count = ? WHERE cache_key = ?",
-                    (now, (count or 0) + 1, cache_key),
-                )
-                self._conn.commit()
-                return trans
-            return None
-
-    def cache_put(
-        self,
-        cache_key: str,
-        source_text: str,
-        target_lang: str,
-        model_id: str,
-        prompt_version: str,
-        translation: str,
-        max_entries: int = MAX_CACHE_ENTRIES,
-    ) -> None:
-        """将译文写入 translation_cache 表。
-
-        存在相同 cache_key 时更新译文与访问信息；写入后检查是否超过 max_entries 并淘汰最旧记录。
-        """
-        now = time.time()
-        with self._lock:
-            self._conn.execute(
-                """INSERT INTO translation_cache
-                (cache_key, source_text, target_lang, model_id, prompt_version, translation, created_at, last_accessed_at, access_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-                ON CONFLICT(cache_key) DO UPDATE SET
-                    translation = excluded.translation,
-                    last_accessed_at = excluded.last_accessed_at,
-                    access_count = access_count + 1
-                """,
-                (cache_key, source_text, target_lang, model_id, prompt_version, translation, now, now),
-            )
-            self.evict_cache_if_needed(max_entries=max_entries)
-            self._conn.commit()
-            self._writes += 1
-            if self._writes % _MAINTENANCE_EVERY == 0:
-                self._compact()
-
     def evict_cache_if_needed(self, max_entries: int = MAX_CACHE_ENTRIES) -> int:
         """LRU 淘汰：当记录数超过 max_entries 时，淘汰最久未访问的记录。
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable
 
 try:
     from PySide6.QtCore import QObject, Signal
@@ -38,7 +38,7 @@ except ImportError:
                 except Exception:
                     pass
 
-from .pipelines import GenerationTracker, WatchCycleContext
+from .pipelines import GenerationTracker
 
 _log = logging.getLogger("st.result_mgr")
 

@@ -4,11 +4,9 @@
 import json
 import logging
 import os
-from pathlib import Path
 
 from .paths import (
     CONFIG_PATH,
-    DEFAULT_LLAMA_REL,
     DEFAULT_MODEL_REL,
     resolve_path,
     to_portable_path,
@@ -20,30 +18,16 @@ __all__ = ["CONFIG_PATH", "DEFAULTS", "load", "save"]
 _log = logging.getLogger("st.config")
 
 DEFAULTS = {
-    # llama.cpp / 模型：默认用项目内 runtime/（整夹可带走）
-    "llama_dir": DEFAULT_LLAMA_REL,
+    # 模型由用户导入，llama.cpp 动态库随本地 EXE 提供
     "model_path": DEFAULT_MODEL_REL,
-    "server_host": "127.0.0.1",
-    "server_port": 8080,
+    "llama_library_dir": "runtime/llama-native",
     "llama_device": "auto",       # auto / gpu / cpu
-    "n_gpu_layers": 99,
     "threads": 8,
-    # 翻译场景 prompt 短：2048 足够，比 4096 省 KV/显存、冷启动更快
     "ctx_size": 2048,
-    # 单用户短请求：小 batch 即可，过大只占资源
     "batch_size": 512,
-    "ubatch_size": 256,
-    # 本工具同时只会打一路翻译
-    "parallel_slots": 1,
-    "flash_attn": True,
-    # 模型已基本上 GPU 时 mlock 对推理帮助有限，却会拖慢启动；需要可改 true
-    "mlock": False,
-    # KV 量化：q8_0 在短上下文下几乎无损、更省显存/带宽；空字符串=服务端默认
-    "cache_type_k": "q8_0",
-    "cache_type_v": "q8_0",
 
     # 翻译
-    "target_language": "简体中文",   # 源语言自动识别，统一译为该语言（翻译窗口内可随时切换）
+    "target_language": "简体中文",   # 翻译结果统一使用该语言（翻译窗口内可随时切换）
     # 设置窗口界面语言：zh | en
     "ui_language": "zh",
     # 单次生成上限；屏幕翻译通常几百 token 内，过大只浪费上限预留
@@ -78,23 +62,15 @@ DEFAULTS = {
     "window_watch_interval_ms": 800,
     "window_watch_font_size": 0,
     "window_watch_diff_threshold": 0.9,
-    "window_watch_annotate": False,   # True=备注，False=字幕条
-    # 备注模式：跳过已是目标语言的行（窗口 / 区域各自独立）
-    "window_annotate_skip_target_lang": False,
 
     # 区域持续翻译
     "region_watch_interval_ms": 800,
     "region_watch_font_size": 0,
     "region_watch_diff_threshold": 0.9,
     "region_watch_annotate": True,    # 区域默认备注更直观
-    "region_annotate_skip_target_lang": False,
 
     # 备注模式译文颜色（窗口/区域共用，#RRGGBB）
     "annotate_text_color": "#00F0FF",
-    # 备注译文是否出现在系统截屏/录屏中（窗口/区域共用）。
-    # 关闭（默认）：浮层从屏幕捕获排除，区域备注无需遮罩还原底图，响应最快；
-    # 开启：录屏能拍到译文，区域备注每帧额外还原底图，稍慢。
-    "annotate_capture_visible": False,
 }
 
 
@@ -120,26 +96,28 @@ def _migrate_legacy(cfg: dict, raw: dict) -> None:
             cfg["region_watch_diff_threshold"] = v
     if "watch_annotate" in raw:
         v = bool(raw["watch_annotate"])
-        if "window_watch_annotate" not in raw:
-            cfg["window_watch_annotate"] = v
         if "region_watch_annotate" not in raw:
             cfg["region_watch_annotate"] = v
-    # 旧版共用「跳过目标语」→ 拆成窗口/区域（仅新键未写入文件时）
-    if "annotate_skip_target_lang" in raw:
-        v = bool(raw["annotate_skip_target_lang"])
-        if "window_annotate_skip_target_lang" not in raw:
-            cfg["window_annotate_skip_target_lang"] = v
-        if "region_annotate_skip_target_lang" not in raw:
-            cfg["region_annotate_skip_target_lang"] = v
-
-
 def _validated_values(raw: object) -> dict:
     """只接收对象配置；已知键类型不合法时回退默认值。"""
     if not isinstance(raw, dict):
         raise ValueError("config.json 顶层必须是 JSON 对象")
     out = dict(raw)
     out.pop("ocr_lang", None)
+    for obsolete in (
+        "ocr_mode", "ocr_language_tag", "ocr_language_tags", "llama_dir",
+        "window_watch_annotate",
+        "annotate_skip_target_lang",
+        "window_annotate_skip_target_lang",
+        "region_annotate_skip_target_lang",
+        "server_host", "server_port", "n_gpu_layers", "ubatch_size",
+        "parallel_slots", "flash_attn", "mlock", "cache_type_k", "cache_type_v",
+        "translation_mode", "nllb_model_path", "nllb_device",
+    ):
+        out.pop(obsolete, None)
+    out.pop("source_language", None)
     out.pop("hotkey_silent_ocr", None)
+    out.pop("annotate_capture_visible", None)
     for key, default in DEFAULTS.items():
         if key not in raw:
             continue
@@ -164,18 +142,18 @@ def _validated_values(raw: object) -> dict:
             _log.warning("配置项 %s 类型无效，使用默认值", key)
             out.pop(key, None)
 
-    if "server_port" in out and not 1 <= out["server_port"] <= 65535:
-        out.pop("server_port")
     if "max_tokens" in out and not 64 <= out["max_tokens"] <= 8192:
         out.pop("max_tokens")
     if "ocr_provider" in out and out["ocr_provider"].lower() not in ("auto", "dml", "cpu"):
         out.pop("ocr_provider")
+    if "ocr_device_id" in out and out["ocr_device_id"] < 0:
+        out.pop("ocr_device_id")
     if "llama_device" in out and out["llama_device"].lower() not in ("auto", "gpu", "cpu"):
         out.pop("llama_device")
     if "subtitle_mode" in out and out["subtitle_mode"] not in ("follow", "free", "pinned"):
         out.pop("subtitle_mode")
-    if "ocr_device_id" in out and out["ocr_device_id"] < 0:
-        out.pop("ocr_device_id")
+    if "ocr_max_side" in out and not 0 <= out["ocr_max_side"] <= 10000:
+        out.pop("ocr_max_side")
     for key in ("window_watch_interval_ms", "region_watch_interval_ms"):
         if key in out and not 50 <= out[key] <= 60000:
             out.pop(key)
@@ -198,10 +176,7 @@ def _validated_values(raw: object) -> dict:
 
 def _prefer_bundled_runtime(cfg: dict) -> None:
     """配置里的绝对路径失效时，自动切到项目内 runtime/。"""
-    for key, rel in (
-        ("llama_dir", DEFAULT_LLAMA_REL),
-        ("model_path", DEFAULT_MODEL_REL),
-    ):
+    for key, rel in (("model_path", DEFAULT_MODEL_REL),):
         cur = cfg.get(key) or ""
         try:
             ok = resolve_path(cur).exists()
@@ -227,23 +202,24 @@ def load() -> dict:
             _log.warning("配置读取失败，使用默认值: %s", e)
             raw = {}
     _migrate_legacy(cfg, raw)
-    # 迁移后内存里可去掉旧共用键（磁盘仍保留到下次 save）
-    if "window_annotate_skip_target_lang" in cfg and "region_annotate_skip_target_lang" in cfg:
-        cfg.pop("annotate_skip_target_lang", None)
     _prefer_bundled_runtime(cfg)
-    # 强制本机回环，避免误配 0.0.0.0 暴露 llama-server
-    host = str(cfg.get("server_host") or "127.0.0.1").strip().lower()
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        cfg["server_host"] = "127.0.0.1"
-    else:
-        cfg["server_host"] = "127.0.0.1"
     return cfg
 
 
 def save(cfg: dict) -> None:
     # 不再写回已拆分的旧键；模型路径尽量写成相对 ROOT，方便整夹拷贝
-    data = {k: v for k, v in cfg.items() if k != "annotate_skip_target_lang"}
-    for key in ("llama_dir", "model_path"):
+    obsolete = {
+        "annotate_skip_target_lang", "window_annotate_skip_target_lang",
+        "region_annotate_skip_target_lang", "annotate_capture_visible", "ocr_lang",
+        "window_watch_annotate", "watch_annotate",
+        "ocr_mode", "ocr_language_tag", "ocr_language_tags", "llama_dir",
+        "source_language",
+        "server_host", "server_port", "n_gpu_layers", "ubatch_size",
+        "parallel_slots", "flash_attn", "mlock", "cache_type_k", "cache_type_v",
+        "translation_mode", "nllb_model_path", "nllb_device",
+    }
+    data = {k: v for k, v in cfg.items() if k not in obsolete}
+    for key in ("llama_library_dir", "model_path"):
         if key in data and data[key]:
             data[key] = to_portable_path(data[key])
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)

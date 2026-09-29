@@ -25,7 +25,6 @@ from unittest.mock import MagicMock
 from app.storage import Storage, MAX_CACHE_ENTRIES, CACHE_EVICTION_BATCH
 from app.translation_cache import TranslationCache
 from app.translation_manager import SubtitleIncrementalTranslator, TranslationManager
-from app.translator import Translator
 
 
 class TestMilestone3Forensics(unittest.TestCase):
@@ -306,39 +305,7 @@ class TestMilestone3Forensics(unittest.TestCase):
     # Phase 5: Translator Component Integration
     # =========================================================================
 
-    def test_translator_skips_http_on_cached_input(self):
-        """Forensic check: Translator.translate checks TranslationCache and skips network calls on hit."""
-        trans = Translator("http://127.0.0.1:9", {"ctx_size": 2048, "max_tokens": 512}, cache=self.cache)
-        try:
-            self.cache.put("Hit Sentence", "简体中文", trans.model_id, trans.prompt_version, "命中文本")
 
-            network_called = False
-
-            def mock_chat(*args, **kwargs):
-                nonlocal network_called
-                network_called = True
-                return "网络翻译"
-
-            trans._chat = mock_chat
-            out = trans.translate("Hit Sentence", "简体中文")
-            self.assertEqual(out, "命中文本")
-            self.assertFalse(network_called, "Cached hit must not invoke _chat")
-        finally:
-            trans.close()
-
-    def test_translator_populates_cache_after_successful_inference(self):
-        """Forensic check: Translator stores translated text in TranslationCache upon completion."""
-        trans = Translator("http://127.0.0.1:9", {"ctx_size": 2048, "max_tokens": 512}, cache=self.cache)
-        try:
-            trans._chat = lambda prompt, max_tok: "真网络译文"
-            res = trans.translate("Uncached text string", "简体中文")
-            self.assertEqual(res, "真网络译文")
-
-            # Check cache directly
-            cached = self.cache.get("Uncached text string", "简体中文", trans.model_id, trans.prompt_version)
-            self.assertEqual(cached, "真网络译文")
-        finally:
-            trans.close()
 
     # =========================================================================
     # Phase 6: Concurrency & Thread-Safety Robustness

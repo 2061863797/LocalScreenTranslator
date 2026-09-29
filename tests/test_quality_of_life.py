@@ -30,8 +30,8 @@ class QualityOfLifeTests(unittest.TestCase):
                 "llama": ("ok", "CPU"),
                 "ocr": ("fail", "OCR 资源缺失"),
             })
-            self.assertIn("CPU", window._runtime_text.text())
-            self.assertIn("OCR 资源缺失", window._runtime_text.text())
+            self.assertIn("翻译模型：已就绪", window._runtime_text.text())
+            self.assertIn("OCR：加载失败", window._runtime_text.text())
             self.assertFalse(window._runtime_retry.isHidden())
             window._runtime_retry.click()
             retry.assert_called_once_with()
@@ -204,7 +204,7 @@ class QualityOfLifeTests(unittest.TestCase):
             region_rect = (100, 150, 320, 60)
             bar.attach_below(region_rect, outside=True, match_target_size=True)
             self.assertEqual(bar.width(), 320)
-            self.assertEqual(bar.height(), 60)
+            self.assertEqual(bar.content_height(), 60)
             self.assertEqual(bar.x(), 100)
             self.assertEqual(bar.y(), 150 + 60 + 4)
             self.assertIsNone(bar._user_size)
@@ -213,7 +213,7 @@ class QualityOfLifeTests(unittest.TestCase):
             smaller_region = (50, 80, 160, 40)
             bar.attach_below(smaller_region, outside=True, match_target_size=True)
             self.assertEqual(bar.width(), 160)
-            self.assertEqual(bar.height(), bar._MIN_H)
+            self.assertEqual(bar.content_height(), bar._MIN_H)
             self.assertEqual(bar.x(), 50)
             self.assertEqual(bar.y(), 80 + 40 + 4)
         finally:

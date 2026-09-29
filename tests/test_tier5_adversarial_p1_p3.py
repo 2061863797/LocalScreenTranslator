@@ -410,7 +410,7 @@ class TestPhase3Adversarial(unittest.TestCase):
         self.tmp_dir.cleanup()
 
     def test_translation_cache_l1_and_l2_latency_benchmark(self):
-        """Benchmark L1 hit (< 1ms) and L2 SQLite hit (< 10ms) without calling llama-server."""
+        """Benchmark L1 hit (< 1ms) and L2 SQLite hit (< 10ms) without calling a model."""
         source = "Fast Benchmark Test String"
         target = "zh"
         model_id = "test_model"

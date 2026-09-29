@@ -133,7 +133,7 @@ class TestSubtitleOverlayAdversarial(unittest.TestCase):
 
         self.assertTrue(self.bar.isVisible())
         self.assertLess(elapsed, 2.0, "Reflow of 2000 lines must finish in under 2 seconds")
-        self.assertGreater(self.bar._content_h, self.bar.height())
+        self.assertGreater(self.bar._content_h, self.bar.content_height())
         # Scroll bar must be visible and enabled
         self.assertTrue(self.bar._vscroll.isVisible())
         self.assertTrue(self.bar._vscroll._bar_widget.isEnabled())
@@ -179,22 +179,23 @@ class TestSubtitleOverlayAdversarial(unittest.TestCase):
         # 0x0 target rectangle
         self.bar.attach_below((0, 0, 0, 0), outside=False)
         self.assertGreaterEqual(self.bar.width(), self.bar._MIN_W)
-        self.assertGreaterEqual(self.bar.height(), self.bar._MIN_H)
+        self.assertGreaterEqual(self.bar.content_height(), self.bar._MIN_H)
 
         # Negative width/height in attach_below
         self.bar.attach_below((100, 100, -50, -50), outside=True)
         self.assertGreaterEqual(self.bar.width(), self.bar._MIN_W)
-        self.assertGreaterEqual(self.bar.height(), self.bar._MIN_H)
+        self.assertGreaterEqual(self.bar.content_height(), self.bar._MIN_H)
 
         # Negative resize_to
         self.bar.resize_to(-100, -100)
-        self.assertEqual(self.bar.width(), self.bar._MIN_W)
-        self.assertEqual(self.bar.height(), self.bar._MIN_H)
+        self.assertEqual(self.bar.panel_width(), self.bar._MIN_W)
+        self.assertGreaterEqual(self.bar.width(), self.bar._MIN_W)
+        self.assertEqual(self.bar.content_height(), self.bar._MIN_H)
 
         # Huge dimensions
         self.bar.resize_to(5000, 3000)
         self.assertEqual(self.bar.width(), 5000)
-        self.assertEqual(self.bar.height(), 3000)
+        self.assertEqual(self.bar.content_height(), 3000)
 
     def test_paint_event_under_forced_micro_dimensions(self):
         """Forced micro-dimension resize (bypassing resize_to) must not crash paintEvent."""
@@ -424,7 +425,7 @@ class TestWindowWatcherAdversarial(unittest.TestCase):
         watcher = WindowWatcher(ocr_mock, translator_mock, cfg, hwnd=1)
 
         ocr_mock.recognize.return_value = [
-            OcrLine(text="Line to translate", box=[[0, 0], [10, 0], [10, 10], [0, 10]], score=0.99)
+            OcrLine(text="Line to translate", box=(0, 0, 10, 10), score=0.99)
         ]
 
         emitted_subtitles = []

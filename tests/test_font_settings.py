@@ -128,9 +128,7 @@ class FontSettingsTests(unittest.TestCase):
         app = App.__new__(App)
         app.cfg = {
             "annotate_text_color": "#00F0FF",
-            "window_annotate_skip_target_lang": False,
             "window_watch_font_size": 20,
-            "window_watch_annotate": False,
         }
         app.hotkeys = Mock()
         app.hotkeys.start.return_value = []
@@ -145,7 +143,6 @@ class FontSettingsTests(unittest.TestCase):
         app._watch_region = None
         app._watch_profile = "window"
         app._watch_annotate = False
-        app._sync_annotation_mask = Mock()
         app._switch_watch_display = Mock()
 
         app._on_settings_saved()
@@ -153,7 +150,6 @@ class FontSettingsTests(unittest.TestCase):
         app.translate_win.sync_font_size_from_cfg.assert_called_once_with()
         app.subtitle.set_font_size.assert_called_once_with(20)
         app.annotation.set_font_size.assert_called_once_with(20)
-        app._sync_annotation_mask.assert_called_once_with()
         app._switch_watch_display.assert_not_called()
 
 
