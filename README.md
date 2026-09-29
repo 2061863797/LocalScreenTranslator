@@ -19,13 +19,23 @@ OCR 不依赖 Windows OCR 语言包。它使用 `runtime\ocr` 中的 PP-OCRv6 �
 ## 运行条件与准备
 
 - 64 位 Windows。
-- 源码运行使用 Python 3.11～3.13，推荐 3.12；构建好的 EXE 不要求目标电脑安装 Python。
-- `runtime\ocr` 中需有 PP-OCR 模型文件；`setup.ps1` 会检查完整性。
-- 翻译 GPU 路线需要兼容的 NVIDIA 驱动；设备选“自动”时可回退 CPU。CUDA DLL 会使 EXE 目录明显变大。OCR 使用 DirectML，CPU 可作为回退。
+- 源码运行使用 Python 3.11～3.13，推荐 3.12；构建好的 EXE 与安装包不要求目标电脑安装 Python。
+- 翻译 GPU 路线需要兼容的 NVIDIA 驱动；设备选“自动”时可回退 CPU。OCR 使用 DirectML，CPU 可作为回退。
 
-源码首次准备：
+### 方式一：直接下载运行（推荐普通用户）
 
-如果工作区没有 `runtime\ocr`，先从 GitHub Release 下载 `ocr.zip` 并解压到项目 `runtime` 目录，使文件位于 `runtime\ocr\manifest.json` 等路径。
+从 [GitHub Releases](https://github.com/2061863797/LocalScreenTranslator/releases) 获取发布资产：
+1. **下载安装包**：下载 `本地屏译-Setup.exe` 直接安装运行（安装包已内置 PP-OCRv6 离线识别模型与 `llama-native` 原生动态库，开箱即用）。
+2. **下载翻译模型**：下载 `HY-MT1.5-1.8B-Q4_K_M.gguf`（或其它兼容 GGUF 模型）。
+3. **导入并使用**：启动软件后，在“托盘 → 设置 → 高级”中导入该模型文件，保存后即可开启离线屏幕翻译。
+
+### 方式二：源码运行与本地构建
+
+若使用源码运行或离线环境部署：
+1. **准备运行时资源**：
+   - 从 GitHub Release 下载 `ocr.zip` 并解压到 `runtime\ocr\`（包含 `manifest.json`、`det.onnx` 等）；
+   - 从 GitHub Release 下载 `llama-native.zip` 解压到 `runtime\llama-native\`（或执行 `scripts\fetch_llama_native.ps1` 自动拉取官方 b11146 动态库）；
+2. **初始化环境并启动**：
 
 ```powershell
 .\setup.ps1
@@ -33,13 +43,13 @@ venv\Scripts\python.exe scripts\smoke_import.py
 venv\Scripts\pythonw.exe run.py
 ```
 
-如需构建普通本地 EXE，先在全新或空的 `runtime\llama-native` 目录准备固定版本 DLL；`scripts\fetch_llama_native.ps1` 会从官方 b11146 资产下载并校验 SHA256。构建会将 `runtime\ocr` 模型和 llama.cpp DLL 一起复制到新目录；GGUF 权重不随 EXE 分发。随后运行：
+3. **本地构建普通 EXE**：
 
 ```powershell
 .\build-exe.ps1
 ```
 
-每次构建写入新的 `dist\local-日期时间\LocalScreenTranslator\` 目录，不覆盖已有 EXE。运行其中的 `LocalScreenTranslator.exe`，并保持整个目录完整。首次运行生成用户配置与历史。没有 MSIX、签名或安装器步骤。
+每次构建写入新的 `dist\local-日期时间\LocalScreenTranslator\` 目录，自动集成 `runtime\ocr` 与 `runtime\llama-native` 运行时，不覆盖已有 EXE。运行其中的 `LocalScreenTranslator.exe` 即可。
 
 ## 导入翻译模型
 

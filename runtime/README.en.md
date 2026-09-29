@@ -8,8 +8,8 @@ OCR uses PP-OCRv6 ONNX detection and recognition models stored in `runtime\ocr\`
 | `runtime\llama-native\` | Pinned llama.cpp v0.5.0 / b11146 CPU and NVIDIA CUDA DLLs |
 | `runtime\models\` | Optional user GGUF files; the default config still detects an existing HY-MT |
 
-If `runtime\ocr\` is missing model files, download `ocr.zip` from the [GitHub release](https://github.com/2061863797/LocalScreenTranslator/releases/tag/2.0.0) and extract it into the project's `runtime` directory. The installer build checks and packages this directory. On a fresh machine, run `scripts\fetch_llama_native.ps1` to download fixed official assets, check SHA256, and extract only the needed DLLs. It does not extract llama-server and refuses to overwrite a nonempty target directory. Then run `build-exe.ps1`; the DLLs are copied into a new local EXE directory. GGUF weights are not included or overwritten.
+If `runtime\ocr\` is missing model files, download `ocr.zip` from [GitHub Releases](https://github.com/2061863797/LocalScreenTranslator/releases) and extract it into the project's `runtime` directory. If `runtime\llama-native\` is missing DLLs, download `llama-native.zip` from Releases and extract it to `runtime\llama-native`, or run `scripts\fetch_llama_native.ps1` to download and verify official b11146 assets. The local EXE build (`.\build-exe.ps1`) and installer build check and package these runtime directories. Build outputs do not distribute GGUF weights or overwrite existing models.
 
-Settings can directly reference an external GGUF or copy one to the user models directory. Save model and device settings to load them in the background without restarting. A custom GGUF needs a chat template compatible with llama.cpp v0.5.0; model quality, resource needs, and licensing vary.
+Translation model files (such as `HY-MT1.5-1.8B-Q4_K_M.gguf`) can be downloaded from Releases and placed into `runtime\models\` or referenced externally in Settings. Settings changes load in the background without restarting. Custom GGUFs require chat templates compatible with llama.cpp v0.5.0; performance and licensing depend on the model.
 
 [Back to README](../README.en.md)

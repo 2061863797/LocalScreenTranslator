@@ -19,13 +19,23 @@ Annotations remain beside source text and are always excluded from screen captur
 ## Requirements and local setup
 
 - 64-bit Windows.
-- Python 3.11–3.13 for source runs (3.12 recommended). A built EXE does not require Python on the target PC.
-- PP-OCR model files in `runtime\ocr`; `setup.ps1` checks their integrity.
-- A compatible NVIDIA driver for CUDA translation acceleration. Auto device selection can fall back to CPU. OCR uses DirectML and can fall back to CPU. CUDA DLLs add substantial size.
+- Python 3.11–3.13 for source runs (3.12 recommended). A built EXE or installer does not require Python on the target PC.
+- A compatible NVIDIA driver for CUDA translation acceleration. Auto device selection can fall back to CPU. OCR uses DirectML and can fall back to CPU.
 
-For a source run:
+### Option 1: Quick start via GitHub Release (Recommended)
 
-If `runtime\ocr` is missing, download `ocr.zip` from GitHub Releases and extract it into the project `runtime` directory, producing `runtime\ocr\manifest.json` and the model files.
+Get release assets from [GitHub Releases](https://github.com/2061863797/LocalScreenTranslator/releases):
+1. **Download the installer**: Download and run `本地屏译-Setup.exe` (bundles PP-OCRv6 models and `llama-native` DLLs out of the box).
+2. **Download the translation model**: Download `HY-MT1.5-1.8B-Q4_K_M.gguf` (or any compatible GGUF model).
+3. **Import and run**: Launch the app, import the model under "Tray → Settings → Advanced", and start translating.
+
+### Option 2: Run from source and local build
+
+For source runs or offline development environments:
+1. **Prepare runtime assets**:
+   - Download `ocr.zip` from GitHub Releases and extract it into `runtime\ocr\` (contains `manifest.json`, `det.onnx`, etc.);
+   - Download `llama-native.zip` from GitHub Releases and extract it into `runtime\llama-native\` (or run `scripts\fetch_llama_native.ps1` to fetch official b11146 DLLs).
+2. **Initialize and run**:
 
 ```powershell
 .\setup.ps1
@@ -33,13 +43,13 @@ venv\Scripts\python.exe scripts\smoke_import.py
 venv\Scripts\pythonw.exe run.py
 ```
 
-To build a plain local EXE, first prepare fixed-version DLLs in a new or empty `runtime\llama-native` directory. `scripts\fetch_llama_native.ps1` downloads official b11146 assets and checks SHA256. The build copies the OCR models and llama.cpp DLLs to a new folder; it does not package GGUF weights. Then run:
+3. **Build local EXE**:
 
 ```powershell
 .\build-exe.ps1
 ```
 
-Each build creates a new `dist\local-timestamp\LocalScreenTranslator\` directory and leaves earlier EXEs untouched. Run `LocalScreenTranslator.exe` there and keep its whole folder together. It uses no MSIX, certificate, or installer.
+Each build creates a new `dist\local-timestamp\LocalScreenTranslator\` directory, automatically integrating `runtime\ocr` and `runtime\llama-native`. Run `LocalScreenTranslator.exe` directly.
 
 ## Import translation models
 
