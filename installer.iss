@@ -1,7 +1,7 @@
 ; Inno Setup 6 脚本: 本地屏译安装包
 
 #define MyAppName "本地屏译"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "2.1.0"
 #define MyAppPublisher "本地屏译"
 #define MyAppURL "https://github.com/2061863797/LocalScreenTranslator"
 #define MyAppExeName "LocalScreenTranslator.exe"
