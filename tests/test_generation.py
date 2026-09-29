@@ -471,7 +471,7 @@ class TestProductionWindowWatcherGeneration(unittest.TestCase):
             # Run one iteration of watcher logic
             gen_id = watcher.generation_tracker.next_generation()
             lines = ocr_mock.recognize(fake_frame)
-            event, text = watcher._state.observe(lines, 0.5)
+            event, text = watcher.text_change_detector.observe(lines, 0.5)
             self.assertEqual(event, "change")
 
             # Translation executes and resets tracker internally
@@ -504,7 +504,7 @@ class TestProductionWindowWatcherGeneration(unittest.TestCase):
 
         gen_id = watcher.generation_tracker.next_generation()
         lines = ocr_mock.recognize(fake_frame)
-        event, text = watcher._state.observe(lines, 0.5)
+        event, text = watcher.text_change_detector.observe(lines, 0.5)
         self.assertEqual(event, "change")
 
         translation = translator_mock.translate(text, "zh")

@@ -208,12 +208,10 @@ class App:
         self._shutdown_abort_thread: threading.Thread | None = None
         self._shutdown_started_at: float | None = None
         self._shutdown_resources_closed = False
-        self._word_copy_busy = False
-        self._word_old_mime: QMimeData | None = None
-        # 划词多阶段复制会话状态（_word_translate 每次重置）
-        self._word_marker = ""
-        self._word_copy_phase = 0
-        self._word_copy_kinds: tuple[str, ...] = ()
+        from .selection import WordSelectionService
+        self._word_selection_service = WordSelectionService(self)
+        self._word_selection_service.text_ready.connect(self._on_word_text_ready)
+        self._word_selection_service.failed.connect(self._on_word_fetch_failed)
         self._watcher: WindowWatcher | None = None
         self._watch_session_id: int = 0
         self._last_target_language: str = str(self.cfg.get("target_language", "简体中文"))
@@ -524,102 +522,25 @@ class App:
         self.translate_win.show_result(source, translation, x, y + h + 8)
 
     # ---------- 划词翻译 ----------
-    def _word_translate(self):
-        """划词：多路复制（终端常需 Ctrl+Shift+C）→ 剪贴板 → 失败则提示。
+    @property
+    def _word_copy_busy(self) -> bool:
+        return self._word_selection_service.is_busy
 
-        终端/部分应用问题：
-        - Ctrl+C 是中断不是复制
-        - 仅 Ctrl+Shift+C 或「选中即复制」有效
-        - 焦点控件需 WM_COPY
-        """
-        if self._quitting or self._word_copy_busy:
+    @_word_copy_busy.setter
+    def _word_copy_busy(self, val: bool) -> None:
+        self._word_selection_service.is_busy = bool(val)
+
+    def _word_translate(self):
+        """划词：多路复制（终端常需 Ctrl+Shift+C）→ 剪贴板 → 失败则提示。"""
+        if self._quitting or self._word_selection_service.is_busy:
             self.log.info("划词复制尚未结束，忽略重复触发")
             return
         if not self._ensure_translation_ready():
             return
-        import time as _time
+        self._word_selection_service.fetch_selection()
 
-        from . import selection as sel
-
-        self._word_copy_busy = True
-        self._word_old_mime = _clone_mime_data(QApplication.clipboard().mimeData())
-        # 唯一标记：只有剪贴板变成「非标记」才算复制成功
-        self._word_marker = f"\u200bST{_time.time_ns()}\u200b"
-        QApplication.clipboard().setText(self._word_marker)
-        # 复制阶段：wm_copy → ctrl_c → ctrl_shift_c → ctrl_insert
-        self._word_copy_phase = 0
-        self._word_copy_kinds = (
-            "wm_copy", "ctrl_c", "ctrl_shift_c", "ctrl_insert"
-        )
-        self._word_fire_copy_phase()
-        # 每阶段轮询约 350ms，共 4 阶段
-        self._word_poll_clipboard(attempts=12)
-
-    def _word_fire_copy_phase(self):
-        from . import selection as sel
-
-        kinds = self._word_copy_kinds
-        i = int(self._word_copy_phase)
-        if i < 0 or i >= len(kinds):
-            return
-        kind = kinds[i]
-        self.log.info("划词复制阶段 %s", kind)
-        # 每阶段重新写入标记，避免上一阶段残留误判
-        marker = self._word_marker
-        try:
-            if marker:
-                QApplication.clipboard().setText(marker)
-            if kind == "wm_copy":
-                sel.try_wm_copy()
-            else:
-                sel.send_copy_shortcut(kind)
-        except Exception as e:
-            # 当前方式失败仍让轮询继续，超时后会自动尝试下一种复制方式。
-            self.log.warning("划词复制阶段失败 kind=%s: %s", kind, e)
-
-    def _word_clipboard_text(self) -> str:
-        """读取剪贴板；若仍是标记或空则返回空串。"""
-        marker = self._word_marker
-        text = QApplication.clipboard().text()
-        if not text:
-            return ""
-        if marker and text == marker:
-            return ""
-        return text.strip()
-
-    def _word_poll_clipboard(self, attempts: int):
-        """高频轮询；本阶段失败则进入下一复制方式。"""
-        if not self._word_copy_busy or self._quitting:
-            return
-        text = self._word_clipboard_text()
-        if text:
-            self._word_finish_with_text(text)
-            return
-        if attempts > 0:
-            QTimer.singleShot(
-                30, lambda: self._word_poll_clipboard(attempts - 1)
-            )
-            return
-        # 本阶段超时 → 下一阶段
-        phase = int(self._word_copy_phase) + 1
-        kinds = self._word_copy_kinds
-        if phase < len(kinds):
-            self._word_copy_phase = phase
-            self._word_fire_copy_phase()
-            self._word_poll_clipboard(attempts=12)
-            return
-        # 全部复制方式失败
-        self._word_finish_with_text("")
-
-    def _word_finish_with_text(self, text: str):
-        """有选中文本则译；拿不到则提示（仅划词复制，不做附近 OCR）。"""
-        pos = QCursor.pos()
-        self._restore_word_clipboard()
-
+    def _on_word_text_ready(self, text: str, x: int, y: int):
         if self._quitting:
-            return
-        if not text:
-            self.tray.showMessage(_t("msg_word_title"), _t("msg_word_empty"))
             return
         self.log.info("划词拿到文本 chars=%d", len(text))
         worker = OcrTranslateWorker(
@@ -627,21 +548,44 @@ class App:
             target_language=self.translate_win.target_language,
         )
         worker.finished_ok.connect(
-            lambda s, t: self._show_word_result(pos.x(), pos.y(), s, t)
+            lambda s, t: self._show_word_result(x, y, s, t)
         )
         worker.failed.connect(self._show_error)
         self._run_worker(worker)
 
+    def _on_word_fetch_failed(self):
+        if self._quitting:
+            return
+        self.tray.showMessage(_t("msg_word_title"), _t("msg_word_empty"))
+
     def _restore_word_clipboard(self):
         """恢复划词前的全部剪贴板格式，并使旧轮询立即失效。"""
-        old = self._word_old_mime
-        self._word_old_mime = None
-        self._word_copy_busy = False
-        try:
-            if old is not None:
-                QApplication.clipboard().setMimeData(old)
-        except Exception:
-            pass
+        if hasattr(self, "_word_selection_service"):
+            self._word_selection_service.restore_clipboard()
+
+    def _word_fire_copy_phase(self):
+        """兼容既有单测与历史调用的复制阶段执行器。"""
+        if hasattr(self, "_word_marker") and hasattr(self, "_word_copy_kinds"):
+            from . import selection as sel
+            kinds = getattr(self, "_word_copy_kinds", ())
+            i = int(getattr(self, "_word_copy_phase", 0))
+            if 0 <= i < len(kinds):
+                kind = kinds[i]
+                marker = getattr(self, "_word_marker", "")
+                try:
+                    clip = QApplication.clipboard()
+                    if marker and clip:
+                        clip.setText(marker)
+                    if kind == "wm_copy":
+                        sel.try_wm_copy()
+                    else:
+                        sel.send_copy_shortcut(kind)
+                except Exception as e:
+                    self.log.warning("划词复制阶段失败 kind=%s: %s", kind, e)
+            return
+        if hasattr(self, "_word_selection_service"):
+            self._word_selection_service._fire_phase()
+
 
     def _show_word_result(self, x: int, y: int, source: str, translation: str):
         if self._quitting:
@@ -1593,6 +1537,7 @@ class App:
             return
         self._quitting = True
         self._shutdown_started_at = time.monotonic()
+        self._word_selection_service.set_quitting(True)
         self.log.info("退出程序")
         self._save_window_geometries()
         self._restore_word_clipboard()

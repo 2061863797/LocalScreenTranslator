@@ -442,7 +442,7 @@ class TestWindowWatcherAdversarial(unittest.TestCase):
         with patch.object(watcher, "_grab", return_value=((0, 0, 50, 50), fake_frame)):
             gen_id = watcher.generation_tracker.next_generation()
             lines = ocr_mock.recognize(fake_frame)
-            event, text = watcher._state.observe(lines, 0.5)
+            event, text = watcher.text_change_detector.observe(lines, 0.5)
             self.assertEqual(event, "change")
 
             tr = translator_mock.translate(text, "zh")

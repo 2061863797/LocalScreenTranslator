@@ -180,6 +180,13 @@ class Storage:
                 self._writes += len(records)
                 if self._writes % _MAINTENANCE_EVERY == 0:
                     self._compact()
+            except sqlite3.ProgrammingError as e:
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                if "closed" not in str(e).lower():
+                    _log.exception("异步历史批量提交失败: %s", e)
             except Exception as e:
                 try:
                     self._conn.rollback()

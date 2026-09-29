@@ -1,0 +1,1027 @@
+# -*- coding: utf-8 -*-
+"""持续翻译悬浮字幕条组件（单一 HWND、多级自适应、支持独立缩放与穿透）。"""
+
+from __future__ import annotations
+
+import ctypes
+from ctypes import wintypes
+
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QGuiApplication,
+    QPainter,
+    QPen,
+    QShowEvent,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollBar,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..i18n import t as _t
+from .language_popup import LanguagePairButton
+from .overlay_base import (
+    _FLAGS_TOP,
+    _STATUS_BAR_HEIGHT,
+    _allow_capture,
+    _exclude_from_capture,
+    _CaptureAllowedMixin,
+    _move_if_changed,
+    _set_geo_if_changed,
+    _show_once,
+    MSG,
+)
+from .theme import (
+    BORDER_QCOLOR,
+    CTRL_STYLE,
+    PANEL_QCOLOR,
+    SCROLLBAR_STYLE,
+    TEXT_QCOLOR,
+    paint_size_grip,
+)
+from .overlay_base import dispatch_set_overlay_layer as set_overlay_layer
+from .topmost import restack_above_owner
+
+class _SubtitleVScroll(QWidget):
+    """字幕条右侧纵向滚动条（子部件，可点）。
+
+    显隐只由 SubtitleBar._show_chrome 控制；set_range 绝不 hide，
+    避免跟随/缩放路径漏 show 导致滑条突然消失。
+    """
+
+    def __init__(self, bar: SubtitleBar):
+        super().__init__(bar)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._bar = bar
+        self._bar_widget = QScrollBar(Qt.Orientation.Vertical, self)
+        # 与翻译结果窗同系：深底 + 浅色滑块（非高饱和蓝）
+        self._bar_widget.setStyleSheet(SCROLLBAR_STYLE)
+        self._bar_widget.valueChanged.connect(self._bar.set_scroll)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(1, 2, 1, 2)
+        lay.addWidget(self._bar_widget)
+
+    def set_range(self, mn: int, mx: int, page: int):
+        self._bar_widget.blockSignals(True)
+        self._bar_widget.setRange(mn, max(mn, mx))
+        self._bar_widget.setPageStep(max(10, page))
+        self._bar_widget.setSingleStep(16)
+        self._bar_widget.blockSignals(False)
+        # 不在这里 hide —— 显隐交给 _show_chrome
+
+    def set_value(self, v: int):
+        self._bar_widget.blockSignals(True)
+        self._bar_widget.setValue(int(v))
+        self._bar_widget.blockSignals(False)
+
+    def set_enabled(self, on: bool):
+        self._bar_widget.setEnabled(bool(on))
+
+
+
+
+class _SubtitleResizeGrip(QWidget):
+    """右下角缩放把手：子部件 + grabMouse，支持鼠标悬停高光与独立缩放。"""
+
+    def __init__(self, bar: SubtitleBar):
+        super().__init__(bar)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(bar._GRIP, bar._GRIP)
+        self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        self.setMouseTracking(True)
+        self._bar = bar
+        self._origin: tuple | None = None
+        self._hovered = False
+        self._dragging = False
+        self.apply_ui_language()
+
+    def apply_ui_language(self):
+        self.setToolTip(_t("sub_resize_tip"))
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        tip = self.toolTip()
+        if tip and not self._dragging:
+            from PySide6.QtWidgets import QToolTip
+            from PySide6.QtGui import QCursor
+            QToolTip.showText(QCursor.pos(), tip, self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        from PySide6.QtWidgets import QToolTip
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w, h = self.width(), self.height()
+        if self._hovered or self._dragging:
+            p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+            p.setBrush(QColor(255, 255, 255, 45))
+            p.drawRoundedRect(QRect(1, 1, w - 2, h - 2), 4, 4)
+            alphas = (255, 220, 180, 140)
+        else:
+            alphas = (230, 170, 110)
+
+        for i, alpha in enumerate(alphas):
+            off = 4 + i * 4
+            p.setPen(QPen(QColor(255, 255, 255, alpha), 1.8 if (self._hovered or self._dragging) else 1.6))
+            p.drawLine(w - 3, h - off, w - off, h - 3)
+
+    def mousePressEvent(self, event):
+        from PySide6.QtWidgets import QToolTip
+        QToolTip.hideText()
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        self._dragging = True
+        self._origin = (
+            event.globalPosition().toPoint(),
+            self._bar.panel_width(),
+            self._bar.content_height(),
+        )
+        self.grabMouse()
+        self.update()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._origin is None or not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        g0, w0, h0 = self._origin
+        d = event.globalPosition().toPoint() - g0
+        self._bar.resize_to(w0 + d.x(), h0 + d.y())
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._dragging = False
+        if self._origin is not None:
+            self._origin = None
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+            self.update()
+            if hasattr(self._bar, "user_resized"):
+                self._bar.user_resized.emit()
+            event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._bar.reset_custom_size()
+            if hasattr(self._bar, "user_resized"):
+                self._bar.user_resized.emit()
+            event.accept()
+
+
+
+class _SubtitleDragHandle(QLabel):
+    """字幕条最左侧的六点拖动手柄，按住拖动移动翻译框自身。"""
+
+    def __init__(self, bar, parent=None):
+        super().__init__("⠿", parent or bar)
+        self._bar = bar
+        self._drag_offset = None
+        self.setObjectName("dragHandle")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedSize(20, 26)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setStyleSheet(
+            "QLabel#dragHandle{background:transparent;border:none;color:rgba(255,255,255,180);font-size:15px;padding:0;}"
+            "QLabel#dragHandle:hover{color:#ffffff;}"
+        )
+        self.apply_ui_language()
+
+    def apply_ui_language(self):
+        self.setToolTip(_t("sub_drag_tip"))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._bar.mode == "follow" or self._bar.mode == "pinned":
+                self._bar.set_mode("free", emit=True)
+            self._drag_offset = event.globalPosition().toPoint() - self._bar.pos()
+            self.grabMouse()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._drag_offset is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            if self._bar.mode == "free":
+                p = event.globalPosition().toPoint() - self._drag_offset
+                self._bar.move_to(p.x(), p.y())
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_offset is not None:
+            self._drag_offset = None
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+            event.accept()
+
+
+
+
+class _SubtitleCtrl(QWidget):
+    """字幕状态栏：拖动手柄/固定、跟随/自由、语言及会话操作。"""
+
+    def __init__(self, bar: SubtitleBar):
+        super().__init__(bar)
+        self.setObjectName("ctrl")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._bar = bar
+        self._drag_offset = None
+        self._mode_compact = 0
+        self._region_frame = None
+        self._region_controls_visible = False
+
+        self._btns: dict[str, QPushButton] = {}
+        self._lay = QHBoxLayout(self)
+        self._lay.setContentsMargins(4, 2, 4, 2)
+        self._lay.setSpacing(2)
+
+        # 1. 拖动手柄在最前面，拖动移动翻译框自身
+        self._drag_handle = _SubtitleDragHandle(bar, self)
+        self._lay.addWidget(self._drag_handle)
+
+        # 2. 固定按钮，点击锁定/解锁翻译框位置
+        self._btn_pin = QPushButton()
+        self._btn_pin.setCheckable(True)
+        self._btn_pin.setFixedHeight(26)
+        self._btn_pin.clicked.connect(self._toggle_bar_pin)
+        self._lay.addWidget(self._btn_pin)
+        self._btn_region_pin = self._btn_pin
+
+        for key in ("follow", "free"):
+            btn = QPushButton()
+            btn.setCheckable(True)
+            btn.setFixedHeight(26)
+            btn.clicked.connect(
+                lambda _=False, k=key: self._bar.set_mode(k, emit=True)
+            )
+            self._btns[key] = btn
+            self._lay.addWidget(btn)
+        self._language_button = LanguagePairButton(self)
+        self._language_button.changed.connect(self._bar.language_changed.emit)
+        self._lay.addWidget(self._language_button)
+        self._btn_ann = QPushButton()
+        self._btn_ann.setFixedHeight(26)
+        self._btn_ann.clicked.connect(self._bar.switch_to_annotate.emit)
+        self._lay.addWidget(self._btn_ann)
+        self._btn_pause = QPushButton()
+        self._btn_pause.setCheckable(True)
+        self._btn_pause.setFixedHeight(26)
+        self._btn_pause.toggled.connect(self._bar.pause_changed.emit)
+        self._lay.addWidget(self._btn_pause)
+        self._btn_close = QPushButton()
+        self._btn_close.setFixedHeight(26)
+        self._btn_close.clicked.connect(self._bar.stop_requested.emit)
+        self._lay.addWidget(self._btn_close)
+
+        self.setFixedHeight(self._bar._STATUS_BAR_H)
+        self.setStyleSheet(CTRL_STYLE)
+        self.sync_checked(bar.mode)
+        self.apply_ui_language()
+
+    def bind_region_frame(self, frame) -> None:
+        self._region_frame = frame
+        self.apply_ui_language()
+
+    def set_region_controls_visible(self, visible: bool) -> None:
+        self._region_controls_visible = bool(visible)
+        self._drag_handle.setVisible(True)
+        self.apply_ui_language()
+
+    def _toggle_bar_pin(self) -> None:
+        new_mode = "free" if self._bar.mode == "pinned" else "pinned"
+        self._bar.set_mode(new_mode, emit=True)
+
+    def _toggle_region_pin(self) -> None:
+        self._toggle_bar_pin()
+
+    def _sync_region_pin(self) -> None:
+        pass
+
+    def adapt_to_width(self, parent_w: int):
+        """缩小翻译框时，状态栏按钮与文字保持稳定不变。"""
+        self._mode_compact = 0
+        self.apply_ui_language()
+        self.adjustSize()
+
+    def sizeHint(self) -> QSize:
+        w = self.layout().sizeHint().width() if self.layout() else 350
+        return QSize(max(320, w), self._bar._STATUS_BAR_H)
+
+    def apply_ui_language(self):
+        self._drag_handle.show()
+        self._drag_handle.apply_ui_language()
+        self._language_button.set_compact(False)
+        pinned = (self._bar.mode == "pinned")
+        self._btn_pin.blockSignals(True)
+        self._btn_pin.setChecked(pinned)
+        self._btn_pin.blockSignals(False)
+        self._btn_pin.setText(_t("sub_pinned"))
+        self._btn_pin.setToolTip(_t("sub_pinned_tip"))
+        self._btns["follow"].setText(_t("sub_follow"))
+        self._btns["free"].setText(_t("sub_free"))
+        self._btn_ann.setText(_t("sub_annotate"))
+        self._btn_pause.setText(
+            _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
+        )
+        self._btn_close.setText(_t("sub_close"))
+
+        all_btns = [
+            self._btn_pin,
+            *self._btns.values(),
+            self._btn_ann,
+            self._btn_pause,
+            self._btn_close,
+        ]
+        self._lay.setContentsMargins(4, 2, 4, 2)
+        self._lay.setSpacing(2)
+        self.setFixedHeight(self._bar._STATUS_BAR_H)
+        for btn in all_btns:
+            btn.setFixedHeight(26)
+            btn.setStyleSheet("padding:2px 8px;font-size:12px;")
+
+        self._btns["follow"].setToolTip(_t("sub_follow"))
+        self._btns["free"].setToolTip(_t("sub_free"))
+        self._btn_ann.setToolTip(_t("sub_annotate_tip"))
+        self._btn_pause.setToolTip(
+            _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
+        )
+        self._btn_close.setToolTip(_t("sub_close_tip"))
+        self.adjustSize()
+
+    def set_paused(self, paused: bool):
+        self._btn_pause.blockSignals(True)
+        self._btn_pause.setChecked(bool(paused))
+        self._btn_pause.blockSignals(False)
+        self.apply_ui_language()
+
+    def sync_checked(self, mode: str):
+        self._btn_pin.blockSignals(True)
+        self._btn_pin.setChecked(mode == "pinned")
+        self._btn_pin.blockSignals(False)
+        for k, btn in self._btns.items():
+            btn.setChecked(k == mode)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = event.globalPosition().toPoint() - self._bar.pos()
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._drag_offset is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            if self._bar.mode == "follow":
+                self._bar.set_mode("free", emit=True)
+            if self._bar.mode == "free":
+                p = event.globalPosition().toPoint() - self._drag_offset
+                self._bar.move_to(p.x(), p.y())
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+
+
+
+
+class SubtitleBar(_CaptureAllowedMixin, QWidget):
+    """持续翻译的悬浮字幕条：
+
+    - 文字层：鼠标穿透，固定尺寸，长文在框内滚动（不随译文自动改大小）
+    - 右侧滚动条：独立可点窗口
+    - 右下角缩放把手：独立窗口，grabMouse 保证拖出后仍跟手
+    - 状态栏：区域固定 / 跟随 / 自由 / 目标语言 / 备注 / 暂停 / 关闭
+    """
+
+    mode_changed = Signal(str)  # follow / free / pinned
+    stop_requested = Signal()   # 用户点关闭，停止持续翻译
+    switch_to_annotate = Signal()  # 运行中切换到备注模式
+    pause_changed = Signal(bool)
+    language_changed = Signal(str, str)
+    user_resized = Signal()     # 用户手动缩放完成通知
+
+    _PAD = 10
+    _SCROLL_W = 14
+    _GRIP = 22
+    _MIN_W = 100
+    _MIN_H = 60
+    _DEFAULT_H = 100
+    _DEFAULT_FONT_SIZE = 16
+    _STATUS_BAR_H = _STATUS_BAR_HEIGHT
+    _STATUS_BAR_GAP = 4
+    _FRAME_TOP = _STATUS_BAR_H + _STATUS_BAR_GAP
+
+    def __init__(self):
+        super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.mode = "follow"
+        self._interactive = True
+        self._user_size: tuple[int, int] | None = None
+        self._text = ""
+        self._scroll = 0
+        self._content_h = 0
+        self._layout_calculated_before_show = False
+        self._font = QFont()
+        self._font.setPixelSize(self._DEFAULT_FONT_SIZE)
+        # 单一顶层 HWND：通过 WM_NCHITTEST 实现动态穿透与控件可交互 (PR 10)
+        self.setWindowFlags(_FLAGS_TOP)
+
+        self._ctrl = _SubtitleCtrl(self)
+        self._drag_handle = self._ctrl._drag_handle
+        self._region_frame = None
+        self._vscroll = _SubtitleVScroll(self)
+        self._grip = _SubtitleResizeGrip(self)
+        self._ctrl.hide()
+        self._vscroll.hide()
+        self._grip.hide()
+        # Keep the subtitle panel at its requested height; the status strip gets
+        # a separate area above the panel inside this single overlay window.
+        self.resize(self._MIN_W, self._DEFAULT_H + self._FRAME_TOP)
+        self._layer_owner: int | None = None
+        self._capture_visible = True
+
+    def is_single_hwnd(self) -> bool:
+        """Returns True if self is top-level window and all controls are child widgets sharing its HWND."""
+        children_non_native = (
+            self._ctrl.windowHandle() is None
+            and not self._ctrl.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+            and self._drag_handle.windowHandle() is None
+            and not self._drag_handle.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+            and self._vscroll.windowHandle() is None
+            and not self._vscroll.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+            and self._grip.windowHandle() is None
+            and not self._grip.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+        )
+        return (
+            self.isWindow()
+            and not self._ctrl.isWindow()
+            and self._ctrl.parent() is self
+            and not self._drag_handle.isWindow()
+            and self._ctrl.isAncestorOf(self._drag_handle)
+            and not self._vscroll.isWindow()
+            and self._vscroll.parent() is self
+            and not self._grip.isWindow()
+            and self._grip.parent() is self
+            and children_non_native
+        )
+
+    def nativeEvent(self, event_type, message):
+        """处理 Windows WM_NCHITTEST (0x0084)：子控件返回 HTCLIENT(1)，背景返回 HTTRANSPARENT(-1)。"""
+        try:
+            msg_val = None
+            lparam = 0
+            if hasattr(message, "message") and hasattr(message, "lParam"):
+                msg_val = message.message
+                lparam = message.lParam
+            elif event_type in (b"windows_generic_MSG", "windows_generic_MSG"):
+                msg = MSG.from_address(int(message))
+                msg_val = msg.message
+                lparam = msg.lParam
+
+            if msg_val == 0x0084:  # WM_NCHITTEST
+                x = ctypes.c_short(lparam & 0xFFFF).value
+                y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+                local_pt = self.mapFromGlobal(QPoint(x, y))
+                child = self.childAt(local_pt)
+                if child is not None:
+                    return True, 1  # HTCLIENT: 可交互子部件
+                return True, -1  # HTTRANSPARENT: 穿透到底层应用
+        except Exception:
+            pass
+        return super().nativeEvent(event_type, message)
+
+    def layer_widgets(self) -> list[QWidget]:
+        """单一原生 HWND：仅返回主窗口自身，消除多 HWND 竞争与 Win32 1400 报错。"""
+        return [self]
+
+    def set_capture_visible(self, visible: bool) -> None:
+        """字幕浮层是否参与屏幕捕获（区域翻译覆盖时防干扰 OCR）。"""
+        self._capture_visible = bool(visible)
+        self._apply_capture_affinity()
+
+    def _apply_capture_affinity(self) -> None:
+        for w in self.layer_widgets():
+            if self._capture_visible:
+                _allow_capture(w)
+            else:
+                _exclude_from_capture(w)
+
+    def showEvent(self, event: QShowEvent):
+        super().showEvent(event)
+        self._apply_capture_affinity()
+
+    def set_layer_owner(self, owner_hwnd: int | None) -> None:
+        """窗口翻译：跟目标窗同层；None=恢复全局置顶（区域翻译）。"""
+        self._layer_owner = int(owner_hwnd) if owner_hwnd else None
+        for w in self.layer_widgets():
+            set_overlay_layer(w, self._layer_owner)
+        if self.isVisible():
+            self._apply_capture_affinity()
+
+    def restack_layer(self) -> None:
+        """窗口模式贴回 owner；区域模式重新置于 TOPMOST 层最前。"""
+        if QApplication.activePopupWidget() is not None:
+            return
+        for w in self.layer_widgets():
+            if w.isVisible():
+                if self._layer_owner:
+                    restack_above_owner(w, self._layer_owner)
+                else:
+                    set_overlay_layer(w, None)
+
+    def apply_ui_language(self):
+        self._ctrl.apply_ui_language()
+        self._drag_handle.apply_ui_language()
+        try:
+            self._grip.apply_ui_language()
+        except Exception:
+            pass
+        self._place_chrome()
+
+    def sync_languages(self, source: str, target: str) -> None:
+        self._ctrl._language_button.sync_languages(source, target)
+        self._place_chrome()
+
+    def set_region_frame(self, frame) -> None:
+        self._region_frame = frame
+        self._ctrl.bind_region_frame(frame)
+
+    def set_region_controls_visible(self, visible: bool) -> None:
+        self._ctrl.set_region_controls_visible(visible)
+        self._place_chrome()
+
+    def set_paused(self, paused: bool):
+        self._ctrl.set_paused(paused)
+        self._place_chrome()
+
+    def set_font_size(self, size) -> None:
+        """设置字幕字号；0 或无效值恢复原有默认字号。"""
+        try:
+            requested = int(size)
+        except (TypeError, ValueError):
+            requested = 0
+        resolved = (
+            requested if 12 <= requested <= 20 else self._DEFAULT_FONT_SIZE
+        )
+        if self._font.pixelSize() == resolved:
+            return
+        self._font.setPixelSize(resolved)
+        self._reflow_text()
+        self.update()
+
+    def set_interactive(self, on: bool):
+        """字幕模式：显示右下角缩放；译文层始终穿透。"""
+        on = bool(on)
+        if on == self._interactive:
+            return
+        self._interactive = on
+        if self.isVisible():
+            self._place_chrome()
+            self._show_chrome()
+            self._apply_capture_affinity()
+
+    def set_mode(self, mode: str, emit: bool = False):
+        self.mode = mode
+        self._ctrl.sync_checked(mode)
+        if emit:
+            self.mode_changed.emit(mode)
+
+    def reset_custom_size(self) -> None:
+        """清除用户自定义尺寸，恢复默认比例自适应。"""
+        self._user_size = None
+        if self._region_frame and self._region_frame.isVisible():
+            self.attach_below(
+                self._region_frame.content_rect(), outside=True, match_target_size=True
+            )
+        else:
+            self.resize(self._MIN_W, self._DEFAULT_H + self._FRAME_TOP)
+            self._reflow_text()
+            self._place_chrome()
+        self.update()
+
+    def reset_follow_mode(self, emit: bool = False, reset_size: bool = True) -> None:
+        """重置为默认跟随模式。若 reset_size=True 则一并清除用户自定义尺寸。"""
+        if reset_size:
+            self._user_size = None
+        self.set_mode("follow", emit=emit)
+
+    def attach_below(
+        self,
+        win_rect: tuple[int, int, int, int],
+        *,
+        outside: bool = True,
+        match_target_size: bool = True,
+    ):
+        """跟随模式下吸附到目标下缘；其他模式不动。
+        
+        若 match_target_size=True，强制匹配识别框比例并重置用户尺寸；
+        若 match_target_size=False，优先保留用户通过角标手动缩放好的独立尺寸 _user_size。
+        """
+        if self.mode != "follow":
+            return
+        x, y, w, h = win_rect
+        if match_target_size:
+            self._user_size = None
+            bar_w = max(w, self._MIN_W)
+            if w > 0 and h > 0:
+                bar_h = max(self._MIN_H, round(bar_w * h / w))
+            else:
+                bar_h = max(h, self._MIN_H)
+        elif self._user_size:
+            bar_w, bar_h = self._user_size
+        else:
+            bar_w = max(w, self._MIN_W)
+            if w > 0 and h > 0:
+                bar_h = max(self._MIN_H, round(bar_w * h / w))
+            else:
+                bar_h = max(h, self._MIN_H)
+
+        # 屏幕边界安全夹紧与防出界保护
+        screen = None
+        avail = None
+        try:
+            center_pt = QPoint(x + w // 2, y + h // 2)
+            screen = QGuiApplication.screenAt(center_pt)
+            if screen:
+                avail = screen.availableGeometry()
+                if avail.contains(center_pt):
+                    # 若计算高度过大（超过屏幕可用工作区），在可用高度内等比缩放避免撑爆屏幕
+                    max_allowed_h = max(
+                        self._MIN_H, avail.height() - 60 - self._FRAME_TOP
+                    )
+                    if bar_h > max_allowed_h:
+                        bar_h = max_allowed_h
+                        if h > 0:
+                            bar_w = max(self._MIN_W, min(bar_w, round(bar_h * w / h)))
+                        if self._user_size is not None:
+                            self._user_size = (bar_w, bar_h)
+        except Exception:
+            pass
+
+        host_h = bar_h + self._FRAME_TOP
+        self._panel_w = bar_w
+        ctrl_w = self._ctrl.sizeHint().width() if hasattr(self, "_ctrl") else 340
+        host_w = max(bar_w, ctrl_w)
+
+        if outside:
+            nx, ny, nw, nh = x, y + h + 4, host_w, host_h
+        else:
+            nx, ny, nw, nh = x, y + h - host_h - 10, host_w, host_h
+
+        try:
+            if screen and avail and avail.contains(center_pt):
+                # 若 outside=True 且底部放不下，自动翻转吸附到目标选区上方（避开区域控制条）
+                if outside and (ny + nh > avail.bottom()):
+                    alt_y = y - nh - 36
+                    if alt_y >= avail.top():
+                        ny = alt_y
+                    else:
+                        ny = min(ny, avail.bottom() - nh)
+                # 限制在屏幕可见工作区内
+                nx = max(avail.left(), min(nx, avail.right() - nw))
+                ny = max(avail.top(), min(ny, avail.bottom() - nh))
+        except Exception:
+            pass
+
+        # Here nx/ny identify the top status strip. Bypass setGeometry(), which
+        # accepts the saved subtitle-panel rectangle and maps it to the host.
+        current = self.geometry()
+        changed = (
+            current.x() != nx
+            or current.y() != ny
+            or current.width() != nw
+            or current.height() != nh
+        )
+        if changed:
+            QWidget.setGeometry(self, nx, ny, nw, nh)
+        if changed:
+            self._reflow_text()
+        self._place_chrome()
+        if self.isVisible():
+            self._show_chrome()
+
+    def move_to(self, x: int, y: int):
+        """自由模式下由控制条拖动调用。"""
+        _move_if_changed(self, x, y)
+        self._place_chrome()
+        if self.isVisible():
+            self._show_chrome()
+
+    def resize_to(self, w: int, h: int):
+        """右下角把手缩放：改框大小并记住，状态栏保持不变。"""
+        w = max(self._MIN_W, int(w))
+        h = max(self._MIN_H, int(h))
+        self._user_size = (w, h)
+        self._panel_w = w
+        ctrl_w = self._ctrl.sizeHint().width() if hasattr(self, "_ctrl") else 340
+        host_w = max(w, ctrl_w)
+        host_h = h + self._FRAME_TOP
+        QWidget.resize(self, host_w, host_h)
+        self._reflow_text()
+        self._place_chrome()
+        if self.isVisible():
+            self._show_chrome()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # 宿主尺寸变化时，同步字幕正文、状态栏和滚动控件。
+        if self.isVisible():
+            self._reflow_text()
+            self._place_chrome()
+            self._show_chrome()
+
+    def set_content_geometry(self, *args):
+        """按字幕面板矩形定位；上方状态栏占用独立区域。"""
+        if len(args) == 1:
+            rect = QRect(args[0])
+            x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+        elif len(args) == 4:
+            x, y, w, h = (int(value) for value in args)
+        else:
+            raise TypeError("set_content_geometry expects a QRect or x, y, width, height")
+        if self._user_size is not None:
+            w, h = self._user_size
+        self._panel_w = w
+        ctrl_w = self._ctrl.sizeHint().width() if hasattr(self, "_ctrl") else 340
+        host_w = max(w, ctrl_w)
+        host_h = h + self._FRAME_TOP
+        host_y = y - self._FRAME_TOP
+        frame_rect = QRect(x, y, host_w, host_h)
+        for screen in QGuiApplication.screens():
+            avail = screen.availableGeometry()
+            visible = frame_rect.intersected(avail)
+            if visible.width() < 80 or visible.height() < 40:
+                continue
+            max_x = max(avail.left(), avail.right() - host_w + 1)
+            max_y = max(avail.top(), avail.bottom() - host_h + 1)
+            x = max(avail.left(), min(x, max_x))
+            host_y = max(avail.top(), min(host_y, max_y))
+            break
+        QWidget.setGeometry(self, x, host_y, host_w, host_h)
+        self._reflow_text()
+        self._place_chrome()
+        if self.isVisible():
+            self._show_chrome()
+
+    def panel_width(self) -> int:
+        if self._user_size is not None:
+            return max(self._MIN_W, int(self._user_size[0]))
+        return max(self._MIN_W, getattr(self, "_panel_w", self.width()))
+
+    def content_width(self) -> int:
+        return self.panel_width()
+
+    def content_height(self) -> int:
+        """字幕面板高度，不包含上方状态栏。"""
+        return max(0, self.height() - self._FRAME_TOP)
+
+    def content_size(self) -> QSize:
+        return QSize(self.panel_width(), self.content_height())
+
+    def content_geometry(self) -> QRect:
+        """字幕面板的屏幕坐标，状态栏位于面板上方。"""
+        return QRect(
+            self.x(), self.y() + self._FRAME_TOP, self.panel_width(), self.content_height()
+        )
+
+    def _effective_pads(self) -> tuple[int, int]:
+        pad_x = min(self._PAD, max(4, self.panel_width() // 10))
+        content_h = self.content_height()
+        pad_y = 2 if content_h <= 70 else min(self._PAD, max(2, content_h // 8))
+        return pad_x, pad_y
+
+    def _pad_top(self) -> int:
+        """字幕面板内部留白；状态栏已经移至面板之外。"""
+        return min(self._PAD, max(2, self.content_height() // 8))
+
+    def _text_rect_size(self) -> QSize:
+        """正文可用区域（为滚动条和字幕面板自身留白）。"""
+        px, py = self._effective_pads()
+        pt = self._pad_top()
+        panel_w = self.panel_width()
+        return QSize(
+            max(20, panel_w - px * 2 - self._SCROLL_W - 4),
+            max(10, self.content_height() - pt - py),
+        )
+
+    def _reflow_text(self):
+        """按当前框宽计算内容高度，更新滚动范围；不改框体尺寸。"""
+        tr = self._text_rect_size()
+        if not self._text:
+            self._content_h = 0
+            self._scroll = 0
+            self._vscroll.set_range(0, 0, tr.height())
+            self.update()
+            return
+        # 用 font metrics 估算换行后高度（与 paint 同一套 flags，避免估矮导致滑条误关）
+        fm = QFontMetrics(self._font)
+        flags = int(
+            Qt.TextFlag.TextWordWrap
+            | Qt.AlignmentFlag.AlignLeft
+            | Qt.AlignmentFlag.AlignTop
+        )
+        br = fm.boundingRect(0, 0, max(1, tr.width()), 10_000_000, flags, self._text)
+        # 略留余量：部分字体/抗锯齿下 boundingRect 会偏矮
+        self._content_h = max(br.height() + 4, fm.height())
+        max_scroll = max(0, self._content_h - tr.height())
+        self._scroll = min(self._scroll, max_scroll)
+        self._vscroll.set_range(0, max_scroll, tr.height())
+        self._vscroll.set_value(self._scroll)
+        self.update()
+
+    def set_scroll(self, value: int):
+        tr = self._text_rect_size()
+        max_scroll = max(0, self._content_h - tr.height())
+        self._scroll = max(0, min(int(value), max_scroll))
+        # 外部滑块可能已同步，避免回写死循环；仅刷新画面
+        self.update()
+
+    def _place_chrome(self):
+        """状态栏置于字幕框上方保持完整呈现，滚动条和缩放把手位于翻译框内。"""
+        if hasattr(self._ctrl, "adapt_to_width"):
+            self._ctrl.adapt_to_width(self.width())
+        self._ctrl.adjustSize()
+        ctrl_w = self._ctrl.sizeHint().width()
+        ctrl_h = self._ctrl.height()
+        changed = _set_geo_if_changed(
+            self._ctrl,
+            0,
+            0,
+            ctrl_w,
+            ctrl_h,
+        )
+        self._drag_handle.show()
+        self._ctrl.raise_()
+        sw = max(self._SCROLL_W, 16)
+        vscroll_y = self._FRAME_TOP + 4
+        vscroll_h = max(10, self.content_height() - self._GRIP - 8)
+        panel_w = self.panel_width()
+        changed |= _set_geo_if_changed(
+            self._vscroll,
+            max(0, panel_w - sw),
+            vscroll_y,
+            sw,
+            vscroll_h,
+        )
+        self._vscroll.raise_()
+        changed |= _move_if_changed(
+            self._grip,
+            max(0, panel_w - self._GRIP - 2),
+            max(0, self.height() - self._GRIP - 2),
+        )
+        self._grip.raise_()
+        if changed and self.isVisible():
+            self._ctrl.update()
+            self._vscroll.update()
+            self._grip.update()
+            self.update()
+
+    def _show_chrome(self):
+        """统一显示附属窗：仅在需要时 show，避免每轮 raise 闪烁。"""
+        if not self.isVisible():
+            return
+        _show_once(self._ctrl)
+        _show_once(self._drag_handle)
+        self._drag_handle.show()
+        if self._text:
+            _show_once(self._vscroll)
+            need = self._content_h > self._text_rect_size().height()
+            self._vscroll.set_enabled(need)
+        else:
+            if self._vscroll.isVisible():
+                self._vscroll.hide()
+        if self._interactive:
+            _show_once(self._grip)
+        else:
+            if self._grip.isVisible():
+                self._grip.hide()
+
+    def prepare_layout(self, text: str = "") -> None:
+        """在向 DWM 呈现前执行完整的预排版与布局计算，杜绝脏矩形与二次重排闪烁。"""
+        if text:
+            self._text = text.strip()
+        ctrl_w = self._ctrl.sizeHint().width() if hasattr(self, "_ctrl") else 340
+        if self._user_size:
+            w, h = self._user_size
+            self._panel_w = w
+            host_w = max(w, ctrl_w)
+            QWidget.resize(
+                self, host_w, h + self._FRAME_TOP
+            )
+        elif self.panel_width() < self._MIN_W or self.content_height() < self._MIN_H:
+            w = max(self.panel_width(), self._MIN_W)
+            h = max(self.content_height(), self._MIN_H)
+            self._panel_w = w
+            host_w = max(w, ctrl_w)
+            QWidget.resize(
+                self,
+                host_w,
+                h + self._FRAME_TOP,
+            )
+        self._reflow_text()
+        self._place_chrome()
+        self._layout_calculated_before_show = True
+
+    def set_text(self, text: str | None):
+        """更新译文：框大小不变，过长用滚动条。已显示时只重绘，不反复 raise。
+
+        滚动位置跨轮次译文刷新保持（持续翻译改文时不把滑块打回顶部）；
+        仅在 hide 结束会话或正文被清空时归零。_reflow_text 会夹紧到新范围。
+        未显示前严格保持隐藏；首次显示前完成完整排版与布局计算，避免脏矩形闪烁。
+        持续翻译文字短暂清空时不 hide，仅刷新重绘，避免频繁销毁重构 DWM surface 与闪烁。
+        """
+        valid_text = (text or "").strip()
+        if not valid_text:
+            self._text = ""
+            self._scroll = 0
+            if self.isVisible():
+                self._reflow_text()
+                if self._vscroll.isVisible():
+                    self._vscroll.hide()
+                self.update()
+            return
+
+        self._text = valid_text
+        first = not self.isVisible()
+        if first:
+            self.prepare_layout(valid_text)
+            if self._layer_owner:
+                self.set_layer_owner(self._layer_owner)
+            self.show()
+            self._apply_capture_affinity()
+            self._show_chrome()
+            self.restack_layer()
+        else:
+            self._reflow_text()
+            self._place_chrome()
+            self._show_chrome()
+
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # 1. 彻底擦除背景透明度，消除 DWM 下旧子控件位置与文字重影残影
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        painter.restore()
+
+        # 2. 绘制半透明圆角底板
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(PANEL_QCOLOR)
+        panel_w = self.panel_width()
+        frame_rect = QRect(0, self._FRAME_TOP, panel_w, self.content_height())
+        if frame_rect.width() > 1 and frame_rect.height() > 1:
+            painter.drawRoundedRect(frame_rect.adjusted(0, 0, -1, -1), 8, 8)
+
+        if not self._text:
+            return
+        px, py = self._effective_pads()
+        pt = self._pad_top()
+        text_rect = QRect(
+            px,
+            self._FRAME_TOP + pt,
+            max(20, panel_w - px * 2 - self._SCROLL_W - 4),
+            max(10, self.content_height() - pt - py),
+        )
+        painter.setFont(self._font)
+        painter.setPen(TEXT_QCOLOR)
+        painter.setClipRect(text_rect)
+        # 内容整体上移实现滚动
+        draw_rect = text_rect.translated(0, -self._scroll)
+        draw_rect.setHeight(max(self._content_h + py, text_rect.height()))
+        painter.drawText(
+            draw_rect,
+            int(Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop),
+            self._text,
+        )
+
+    def hide(self):
+        self._ctrl.hide()
+        self._vscroll.hide()
+        self._grip.hide()
+        # 结束本轮持续翻译后归零，下次会话从顶部看起
+        self._scroll = 0
+        super().hide()
+
+

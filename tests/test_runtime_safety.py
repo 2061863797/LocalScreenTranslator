@@ -121,20 +121,23 @@ class RuntimeSafetyTests(unittest.TestCase):
         watcher = WindowWatcher(
             Mock(), Mock(), {}, hwnd=404, profile="window"
         )
-        watcher._last_text = "previous subtitle"
+        detector = watcher.text_change_detector
+        detector.last_text = "previous subtitle"
+        detector.empty_frames = 0
+        detector.empty_clear_delay_s = 0.0
         cleared = Mock()
         watcher.content_cleared.connect(cleared)
 
-        watcher._observe_empty_ocr_frame()
-        cleared.assert_not_called()
-        self.assertEqual(watcher._last_text, "previous subtitle")
+        action1, _ = detector.observe([])
+        self.assertEqual(action1, "none")
+        self.assertEqual(detector.last_text, "previous subtitle")
 
-        watcher._observe_empty_ocr_frame()
-        cleared.assert_called_once_with()
-        self.assertEqual(watcher._last_text, "")
+        action2, _ = detector.observe([])
+        self.assertEqual(action2, "clear")
+        self.assertEqual(detector.last_text, "")
 
-        watcher._observe_empty_ocr_frame()
-        cleared.assert_called_once_with()
+        action3, _ = detector.observe([])
+        self.assertEqual(action3, "none")
 
     def test_identical_frames_skip_ocr_with_periodic_recheck(self):
         ocr = Mock()

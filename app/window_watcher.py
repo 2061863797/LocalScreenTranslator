@@ -236,66 +236,6 @@ class WindowWatcher(QThread):
             return self._content_revision
 
     # ==========================================
-    # 兼容既有测试与调用方的属性代理
-    # ==========================================
-
-    @property
-    def _state(self) -> TextChangeDetector:
-        return self._text_change_detector
-
-    @_state.setter
-    def _state(self, value: Any) -> None:
-        self._text_change_detector = value
-
-    @property
-    def _last_rect(self) -> tuple[int, int, int, int] | None:
-        return self._capture_service.last_rect
-
-    @_last_rect.setter
-    def _last_rect(self, value: tuple[int, int, int, int] | None) -> None:
-        with self._capture_service._target_lock:
-            self._capture_service._last_rect = value
-
-    @property
-    def _last_text(self) -> str:
-        with self._state_lock:
-            return self._text_change_detector.last_text
-
-    @_last_text.setter
-    def _last_text(self, value: str) -> None:
-        with self._state_lock:
-            self._text_change_detector.last_text = value
-
-    @property
-    def _empty_ocr_frames(self) -> int:
-        with self._state_lock:
-            return self._text_change_detector.empty_frames
-
-    @_empty_ocr_frames.setter
-    def _empty_ocr_frames(self, value: int) -> None:
-        with self._state_lock:
-            self._text_change_detector.empty_frames = value
-
-    @property
-    def _line_tr_cache(self) -> dict[str, str]:
-        with self._state_lock:
-            return self._translation_manager.line_cache
-
-    @_line_tr_cache.setter
-    def _line_tr_cache(self, value: dict[str, str]) -> None:
-        with self._state_lock:
-            self._translation_manager.line_cache = value
-
-    def _observe_empty_ocr_frame(self) -> None:
-        """连续两轮无文字才清空，兼顾及时消失和单帧 OCR 抖动。"""
-        self._empty_ocr_frames += 1
-        if self._empty_ocr_frames < 2 or not self._last_text:
-            return
-        self._last_text = ""
-        self.content_cleared.emit()
-        _log.info("连续两轮未识别到文字，已清空持续翻译显示")
-
-    # ==========================================
     # 控制与生命周期
     # ==========================================
 

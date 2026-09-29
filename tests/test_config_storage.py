@@ -210,6 +210,15 @@ class StorageTests(unittest.TestCase):
             finally:
                 storage.close()
 
+    def test_commit_history_batch_on_closed_database_is_silent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "data.db"
+            storage = Storage(db)
+            storage._conn.close()
+            with self.assertNoLogs("st.storage", level="ERROR"):
+                storage._commit_history_batch([(1.0, "src", "dst", "mode", None)])
+            storage.close()
+
 
 if __name__ == "__main__":
     unittest.main()
