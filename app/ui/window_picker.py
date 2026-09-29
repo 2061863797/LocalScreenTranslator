@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -34,6 +35,7 @@ class WindowPicker(QDialog):
         self._search = QLineEdit()
         self._search.setClearButtonEnabled(True)
         self._search.textChanged.connect(self._filter_list)
+        self._search.returnPressed.connect(self._confirm)
 
         self._list = QListWidget()
         self._list.setSpacing(2)
@@ -124,10 +126,17 @@ class WindowPicker(QDialog):
         needle = (query or "").strip().casefold()
         for i in range(self._list.count()):
             item = self._list.item(i)
-            self._list.setItemHidden(item, bool(needle and needle not in item.text().casefold()))
+            if item is not None:
+                item.setHidden(bool(needle and needle not in item.text().casefold()))
 
     def _confirm(self):
         item = self._list.currentItem()
+        if item is None or item.isHidden():
+            for i in range(self._list.count()):
+                it = self._list.item(i)
+                if it is not None and not it.isHidden():
+                    item = it
+                    break
         if item is None:
             return
         self.selected_hwnd = int(item.data(Qt.ItemDataRole.UserRole))

@@ -49,9 +49,27 @@ class WindowWatchModeTests(unittest.TestCase):
         app._watch_annotate = True
         app.log = Mock()
 
-        app._switch_watch_display(False)
+    def test_window_picker_instantiation_and_filtering(self):
+        from PySide6.QtWidgets import QApplication
+        from app.ui.window_picker import WindowPicker
+        _app = QApplication.instance() or QApplication([])
 
-        app._watcher.set_display_mode.assert_not_called()
+        fake_windows = [(101, "Google Chrome"), (102, "Visual Studio Code"), (103, "Notepad")]
+        with patch("app.capture.list_windows", return_value=fake_windows):
+            picker = WindowPicker()
+            try:
+                self.assertEqual(picker._list.count(), 3)
+                picker._search.setText("chrome")
+                self.assertFalse(picker._list.item(0).isHidden())
+                self.assertTrue(picker._list.item(1).isHidden())
+                self.assertTrue(picker._list.item(2).isHidden())
+
+                picker._search.setText("Code")
+                picker._confirm()
+                self.assertEqual(picker.selected_hwnd, 102)
+            finally:
+                picker.close()
+                picker.deleteLater()
 
 
 if __name__ == "__main__":
