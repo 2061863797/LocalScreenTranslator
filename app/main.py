@@ -779,6 +779,8 @@ class App:
         """窗口浮层贴回目标上方；区域浮层持续保持在 TOPMOST 层最前。"""
         if not self._watch_hwnd and self._watch_region is None:
             return
+        if QApplication.activePopupWidget() is not None:
+            return
         for w in (self.subtitle, self.annotation, self.annotate_ctrl):
             try:
                 w.restack_layer()

@@ -159,6 +159,13 @@ def set_overlay_layer(widget: QWidget, owner_hwnd: int | None) -> None:
     """
     if widget is None:
         return
+    from PySide6.QtWidgets import QApplication
+
+    if (
+        QApplication.instance() is not None
+        and QApplication.activePopupWidget() is not None
+    ):
+        return
     try:
         owner = int(owner_hwnd) if owner_hwnd else 0
     except (TypeError, ValueError):
