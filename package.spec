@@ -31,7 +31,6 @@ hidden_imports = [
     "app.runtime_resources",
     "app.selection",
     "app.storage",
-    "app.textlang",
     "app.window_watcher",
     "app.workers",
     "app.ui.overlays",

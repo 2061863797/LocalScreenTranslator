@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <# 本机开发：构建普通 onedir EXE；每次写入新的目录，不覆盖已有程序或模型。 #>
 
 $ErrorActionPreference = "Stop"
