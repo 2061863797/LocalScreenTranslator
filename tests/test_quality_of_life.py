@@ -203,7 +203,7 @@ class QualityOfLifeTests(unittest.TestCase):
             bar._user_size = (500, 200)
             region_rect = (100, 150, 320, 60)
             bar.attach_below(region_rect, outside=True, match_target_size=True)
-            self.assertEqual(bar.width(), 320)
+            self.assertEqual(bar.panel_width(), 320)
             self.assertEqual(bar.content_height(), 60)
             self.assertEqual(bar.x(), 100)
             self.assertEqual(bar.y(), 150 + 60 + 4)
@@ -212,10 +212,12 @@ class QualityOfLifeTests(unittest.TestCase):
             # 缩放区域后再次同步（当区域高度低于 _MIN_H 时，保底为 _MIN_H 以保证正文物理可见）
             smaller_region = (50, 80, 160, 40)
             bar.attach_below(smaller_region, outside=True, match_target_size=True)
-            self.assertEqual(bar.width(), 160)
+            self.assertEqual(bar.panel_width(), 160)
             self.assertEqual(bar.content_height(), bar._MIN_H)
             self.assertEqual(bar.x(), 50)
             self.assertEqual(bar.y(), 80 + 40 + 4)
+            # 状态栏保持完整呈现向右突出，宿主宽度包容状态栏绝不裁切
+            self.assertGreaterEqual(bar.width(), bar._ctrl.width())
         finally:
             bar.close()
             bar.deleteLater()

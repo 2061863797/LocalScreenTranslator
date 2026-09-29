@@ -422,11 +422,13 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
 
         host_h = bar_h + self._FRAME_TOP
         self._panel_w = bar_w
+        ctrl_w = self._ctrl.sizeHint().width() if hasattr(self, "_ctrl") else 340
+        host_w = max(bar_w, ctrl_w)
 
         if outside:
-            nx, ny, nw, nh = x, y + h + 4, bar_w, host_h
+            nx, ny, nw, nh = x, y + h + 4, host_w, host_h
         else:
-            nx, ny, nw, nh = x, y + h - host_h - 10, bar_w, host_h
+            nx, ny, nw, nh = x, y + h - host_h - 10, host_w, host_h
 
         try:
             if screen and avail and avail.contains(center_pt):
@@ -660,15 +662,23 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         """在向 DWM 呈现前执行完整的预排版与布局计算，杜绝脏矩形与二次重排闪烁。"""
         if text:
             self._text = text.strip()
+        ctrl_w = self._ctrl.sizeHint().width() if hasattr(self, "_ctrl") else 340
         if self._user_size:
+            w, h = self._user_size
+            self._panel_w = w
+            host_w = max(w, ctrl_w)
             QWidget.resize(
-                self, self._user_size[0], self._user_size[1] + self._FRAME_TOP
+                self, host_w, h + self._FRAME_TOP
             )
-        elif self.width() < self._MIN_W or self.content_height() < self._MIN_H:
+        elif self.panel_width() < self._MIN_W or self.content_height() < self._MIN_H:
+            w = max(self.panel_width(), self._MIN_W)
+            h = max(self.content_height(), self._MIN_H)
+            self._panel_w = w
+            host_w = max(w, ctrl_w)
             QWidget.resize(
                 self,
-                max(self.width(), self._MIN_W),
-                max(self.content_height(), self._MIN_H) + self._FRAME_TOP,
+                host_w,
+                h + self._FRAME_TOP,
             )
         self._reflow_text()
         self._place_chrome()

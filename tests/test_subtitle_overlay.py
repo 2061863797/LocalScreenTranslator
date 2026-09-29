@@ -537,24 +537,26 @@ class TestProductionSubtitleBar(unittest.TestCase):
             app.subtitle.deleteLater()
 
     def test_subtitle_aspect_ratio_matches_target_rect(self):
-        """字幕框尺寸与各种不同比例翻译框的窗口比例严格保持一致。"""
+        """字幕框尺寸与各种不同比例翻译框的窗口比例严格保持一致，状态栏保持完整突出不裁切。"""
         # 1. 宽屏比例 3:1 (480 x 160)，不再受旧逻辑 <=120 的截断限制
         self.bar.attach_below((50, 60, 480, 160), outside=True)
-        self.assertEqual(self.bar.width(), 480)
+        self.assertEqual(self.bar.panel_width(), 480)
         self.assertEqual(self.bar.content_height(), 160)
-        self.assertAlmostEqual(self.bar.width() / self.bar.content_height(), 480 / 160, places=2)
+        self.assertAlmostEqual(self.bar.panel_width() / self.bar.content_height(), 480 / 160, places=2)
 
         # 2. 正方形比例 1:1 (240 x 240)
         self.bar.attach_below((50, 60, 240, 240), outside=True)
-        self.assertEqual(self.bar.width(), 240)
+        self.assertEqual(self.bar.panel_width(), 240)
         self.assertEqual(self.bar.content_height(), 240)
-        self.assertEqual(self.bar.width() / self.bar.content_height(), 1.0)
+        self.assertEqual(self.bar.panel_width() / self.bar.content_height(), 1.0)
+        self.assertGreaterEqual(self.bar.width(), self.bar._ctrl.width())
 
         # 3. 窄长条比例 1:2 (60 x 120)，宽度被 _MIN_W (100) 夹紧时，高度等比伸缩为 200
         self.bar.attach_below((50, 60, 60, 120), outside=True)
-        self.assertEqual(self.bar.width(), self.bar._MIN_W)
+        self.assertEqual(self.bar.panel_width(), self.bar._MIN_W)
         self.assertEqual(self.bar.content_height(), 200)
-        self.assertAlmostEqual(self.bar.width() / self.bar.content_height(), 60 / 120, places=2)
+        self.assertAlmostEqual(self.bar.panel_width() / self.bar.content_height(), 60 / 120, places=2)
+        self.assertGreaterEqual(self.bar.width(), self.bar._ctrl.width())
 
     def test_subtitle_text_rect_strictly_below_control_bar(self):
         """状态栏处于字幕框外侧，框内正文保留完整可用高度。"""
