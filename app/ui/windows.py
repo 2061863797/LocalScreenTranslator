@@ -615,14 +615,21 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._hint_ui_lang.setText(tr("ui_lang_hint"))
         self._card_general_title.setText(tr("card_general"))
         self._card_general_hint.setText(tr("card_general_hint"))
-        if hasattr(self, "_card_storage_title"):
+        if hasattr(self, "_card_runtime_title") and self._card_runtime_title is not None:
+            self._card_runtime_title.setText(tr("runtime_status"))
+            self._card_runtime_hint.setText(
+                "本地翻译模型与 OCR 识别引擎实时就绪状态"
+                if self._lang == "zh"
+                else "Real-time readiness of local model and OCR engine"
+            )
+        if hasattr(self, "_card_storage_title") and self._card_storage_title is not None:
             self._card_storage_title.setText(
-                "本地引擎与数据存储" if self._lang == "zh" else "Engine & Data Storage"
+                "本地数据存储" if self._lang == "zh" else "Data Storage"
             )
             self._card_storage_hint.setText(
-                "管理翻译缓存、历史记录及本地离线模型运行状态"
+                "管理翻译缓存、历史记录及本地存储"
                 if self._lang == "zh"
-                else "Manage local model runtime, cache, and history"
+                else "Manage translation cache, history, and storage"
             )
         self._lab_target.setText(tr("target_lang"))
         self._lab_translation_font_size.setText(tr("translate_font_size"))
@@ -807,6 +814,16 @@ class SettingsWindow(_DraggableMixin, QWidget):
         dialog.deleteLater()
 
     def _page_general(self) -> QWidget:
+        # 卡片 0：系统运行状态（置前）
+        card_runtime, lay_runtime, self._card_runtime_title, self._card_runtime_hint = _settings_card(
+            self._tr("runtime_status"),
+            "本地翻译模型与 OCR 识别引擎实时就绪状态"
+            if self._lang == "zh"
+            else "Real-time readiness of local model and OCR engine",
+        )
+        lay_runtime.addWidget(self._runtime_text)
+        lay_runtime.addWidget(self._runtime_retry, 0, Qt.AlignmentFlag.AlignLeft)
+
         # 卡片 1：基础偏好与界面外观
         card1, lay1, self._card_general_title, self._card_general_hint = _settings_card("", "")
         r1, self._lab_ui_lang = _form_row("", self._ui_lang)
@@ -827,22 +844,18 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._ann_color_note.setStyleSheet("color:rgba(255,255,255,120);font-size:11px;")
         lay1.addWidget(self._ann_color_note)
 
-        # 卡片 2：本地运行引擎与历史存储
+        # 卡片 2：本地数据存储
         card2, lay2, title_engine, hint_engine = _settings_card(
-            "本地引擎与数据存储" if self._lang == "zh" else "Engine & Data Storage",
-            "管理翻译缓存、历史记录及本地离线模型运行状态" if self._lang == "zh" else "Manage local model runtime, cache, and history",
+            "本地数据存储" if self._lang == "zh" else "Data Storage",
+            "管理翻译缓存、历史记录及本地存储" if self._lang == "zh" else "Manage translation cache, history, and storage",
         )
         self._card_storage_title = title_engine
         self._card_storage_hint = hint_engine
         lay2.addWidget(self._history_enabled)
         lay2.addWidget(self._translation_cache_enabled)
         lay2.addWidget(self._history_privacy_tip)
-        lay2.addSpacing(4)
-        lay2.addWidget(self._runtime_title)
-        lay2.addWidget(self._runtime_text)
-        lay2.addWidget(self._runtime_retry, 0, Qt.AlignmentFlag.AlignLeft)
 
-        return self._wrap_scroll(card1, card2)
+        return self._wrap_scroll(card_runtime, card1, card2)
 
     def set_runtime_status(self, state: dict):
         self._runtime_state = dict(state)
