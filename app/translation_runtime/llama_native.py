@@ -196,21 +196,80 @@ class LlamaNativeBackend:
 
     def _prompt(self, system: str, user: str) -> bytes:
         dll = self._library()
-        template = dll.llama_model_chat_template(self._model, None)
-        if not template:
-            raise RuntimeError("GGUF 缺少聊天模板，无法生成可靠的翻译提示")
-        messages = (_ChatMessage * 2)(
-            _ChatMessage(b"system", system.encode("utf-8")),
-            _ChatMessage(b"user", user.encode("utf-8")),
-        )
-        size = 2 * (len(system.encode("utf-8")) + len(user.encode("utf-8"))) + 1024
+        raw_template = dll.llama_model_chat_template(self._model, None)
+
+        # 策略 1：模型自带模板 + (system, user) 双段消息
+        if raw_template:
+            messages = (_ChatMessage * 2)(
+                _ChatMessage(b"system", system.encode("utf-8")),
+                _ChatMessage(b"user", user.encode("utf-8")),
+            )
+            size = 2 * (len(system.encode("utf-8")) + len(user.encode("utf-8"))) + 1024
+            buffer = C.create_string_buffer(size)
+            needed = dll.llama_chat_apply_template(raw_template, messages, 2, True, buffer, size)
+            if needed >= 0:
+                if needed >= size:
+                    buffer = C.create_string_buffer(needed + 1)
+                    needed = dll.llama_chat_apply_template(raw_template, messages, 2, True, buffer, len(buffer))
+                return buffer.raw[:needed]
+
+        # 策略 2：针对明确不支持 system 角色（如 Gemma/Mistral）的模板，将指令前置合并进 user 角色
+        combined_text = (system + "\n\n" + user).encode("utf-8")
+        if raw_template:
+            messages = (_ChatMessage * 1)(
+                _ChatMessage(b"user", combined_text),
+            )
+            size = len(combined_text) + 1024
+            buffer = C.create_string_buffer(size)
+            needed = dll.llama_chat_apply_template(raw_template, messages, 1, True, buffer, size)
+            if needed >= 0:
+                if needed >= size:
+                    buffer = C.create_string_buffer(needed + 1)
+                    needed = dll.llama_chat_apply_template(raw_template, messages, 1, True, buffer, len(buffer))
+                return buffer.raw[:needed]
+
+        # 策略 3：模型模板解析失败（如含有 minja 不支持的复杂函数调用 Jinja 宏），采用标准预置模板回退
+        t_str = raw_template.decode("utf-8", errors="ignore").lower() if raw_template else ""
+        m_path = self._model_path.lower()
+
+        if "gemma" in m_path or "<start_of_turn>" in t_str:
+            fb_tmpl = b"{% for message in messages %}{% if message['role'] == 'user' %}{{ '<start_of_turn>user\n' + message['content'] + '<end_of_turn>\n<start_of_turn>model\n' }}{% endif %}{% endfor %}"
+            msgs = (_ChatMessage * 1)(_ChatMessage(b"user", combined_text))
+            n_msgs = 1
+        elif "llama-3" in m_path or "<|start_header_id|>" in t_str:
+            fb_tmpl = (
+                b"{% set loop_messages = messages %}"
+                b"{% for message in loop_messages %}"
+                b"{{ '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"
+                b"{% endfor %}"
+                b"{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
+            )
+            msgs = (_ChatMessage * 2)(
+                _ChatMessage(b"system", system.encode("utf-8")),
+                _ChatMessage(b"user", user.encode("utf-8")),
+            )
+            n_msgs = 2
+        else:
+            fb_tmpl = (
+                b"{% for message in messages %}"
+                b"{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n' }}"
+                b"{% endfor %}"
+                b"{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+            )
+            msgs = (_ChatMessage * 2)(
+                _ChatMessage(b"system", system.encode("utf-8")),
+                _ChatMessage(b"user", user.encode("utf-8")),
+            )
+            n_msgs = 2
+
+        size = max(4096, 2 * (len(system.encode("utf-8")) + len(user.encode("utf-8"))) + 1024)
         buffer = C.create_string_buffer(size)
-        needed = dll.llama_chat_apply_template(template, messages, 2, True, buffer, size)
+        needed = dll.llama_chat_apply_template(fb_tmpl, msgs, n_msgs, True, buffer, size)
         if needed < 0:
-            raise RuntimeError("GGUF 聊天模板无法由 llama.cpp 解析")
+            raise RuntimeError("GGUF 聊天模板无法由 llama.cpp 解析，且通用回退模板应用失败")
         if needed >= size:
             buffer = C.create_string_buffer(needed + 1)
-            needed = dll.llama_chat_apply_template(template, messages, 2, True, buffer, len(buffer))
+            needed = dll.llama_chat_apply_template(fb_tmpl, msgs, n_msgs, True, buffer, len(buffer))
         return buffer.raw[:needed]
 
     def translate(self, request: TranslationRequest) -> TranslationResult:

@@ -29,7 +29,7 @@ LANG_EN_NAME = {
 def clean_output(value: str) -> str:
     """去掉模型思考区、格式包装和明确的非译文前后缀。"""
     text = "".join(ch for ch in value if ch in "\n\r\t" or ord(ch) >= 32).strip()
-    text = re.sub(r"(?is)<think>.*?</think>|<analysis>.*?</analysis>", "", text)
+    text = re.sub(r"(?is)<think>.*?</think>|<analysis>.*?</analysis>|<\|?channel\|?>.*?<\|?channel\|?>", "", text)
     text = re.sub(r"(?is)</?source>", "", text).strip()
     text = re.sub(r"(?is)^\s*```[^\r\n]*\r?\n?|\r?\n?```\s*$", "", text).strip()
     label = r"(?is)^\s*(?:translation|translated text|translation result|译文|翻译结果|翻译如下)\s*[:：]\s*"
