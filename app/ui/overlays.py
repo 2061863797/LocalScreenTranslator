@@ -810,17 +810,23 @@ class _SubtitleResizeGrip(QWidget):
         self.apply_ui_language()
 
     def apply_ui_language(self):
-        tip = _t("sub_resize_tip")
-        self.setToolTip(f"{tip}（双击恢复自适应）" if "缩放" in tip else f"{tip} (Double-click to reset)")
+        self.setToolTip(_t("sub_resize_tip"))
 
     def enterEvent(self, event):
         self._hovered = True
         self.update()
+        tip = self.toolTip()
+        if tip and not self._dragging:
+            from PySide6.QtWidgets import QToolTip
+            from PySide6.QtGui import QCursor
+            QToolTip.showText(QCursor.pos(), tip, self)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._hovered = False
         self.update()
+        from PySide6.QtWidgets import QToolTip
+        QToolTip.hideText()
         super().leaveEvent(event)
 
     def paintEvent(self, event):
@@ -841,6 +847,8 @@ class _SubtitleResizeGrip(QWidget):
             p.drawLine(w - 3, h - off, w - off, h - 3)
 
     def mousePressEvent(self, event):
+        from PySide6.QtWidgets import QToolTip
+        QToolTip.hideText()
         if event.button() != Qt.MouseButton.LeftButton:
             return
         self._dragging = True
