@@ -161,10 +161,11 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
     switch_to_annotate = Signal()  # 运行中切换到备注模式
     pause_changed = Signal(bool)
     language_changed = Signal(str, str)
+    user_resized = Signal()     # 用户手动缩放完成通知
 
     _PAD = 10
     _SCROLL_W = 14
-    _GRIP = 18
+    _GRIP = 22
     _MIN_W = 100
     _MIN_H = 60
     _DEFAULT_H = 100
@@ -347,9 +348,23 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         if emit:
             self.mode_changed.emit(mode)
 
-    def reset_follow_mode(self, emit: bool = False) -> None:
-        """重置为默认跟随模式，清除用户手动缩放尺寸残留，确保默认跟随翻译框并匹配比例。"""
+    def reset_custom_size(self) -> None:
+        """清除用户自定义尺寸，恢复默认比例自适应。"""
         self._user_size = None
+        if self._region_frame and self._region_frame.isVisible():
+            self.attach_below(
+                self._region_frame.content_rect(), outside=True, match_target_size=True
+            )
+        else:
+            self.resize(self._MIN_W, self._DEFAULT_H + self._FRAME_TOP)
+            self._reflow_text()
+            self._place_chrome()
+        self.update()
+
+    def reset_follow_mode(self, emit: bool = False, reset_size: bool = True) -> None:
+        """重置为默认跟随模式。若 reset_size=True 则一并清除用户自定义尺寸。"""
+        if reset_size:
+            self._user_size = None
         self.set_mode("follow", emit=emit)
 
     def attach_below(
@@ -359,9 +374,10 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
         outside: bool = True,
         match_target_size: bool = True,
     ):
-        """跟随模式下吸附到目标下缘；其他模式不动。默认与翻译框保持相同窗口比例。
-
-        match_target_size: 默认为 True，宽高严格匹配翻译框窗口比例（1:1 等比例）。
+        """跟随模式下吸附到目标下缘；其他模式不动。
+        
+        若 match_target_size=True，强制匹配识别框比例并重置用户尺寸；
+        若 match_target_size=False，优先保留用户通过角标手动缩放好的独立尺寸 _user_size。
         """
         if self.mode != "follow":
             return
@@ -405,6 +421,7 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
             pass
 
         host_h = bar_h + self._FRAME_TOP
+        self._panel_w = bar_w
 
         if outside:
             nx, ny, nw, nh = x, y + h + 4, bar_w, host_h
@@ -778,34 +795,62 @@ class _SubtitleVScroll(QWidget):
 
 
 class _SubtitleResizeGrip(QWidget):
-    """右下角缩放把手：子部件 + grabMouse，拖出按钮外仍跟手。"""
+    """右下角缩放把手：子部件 + grabMouse，支持鼠标悬停高光与独立缩放。"""
 
     def __init__(self, bar: SubtitleBar):
         super().__init__(bar)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedSize(bar._GRIP, bar._GRIP)
         self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        self.setMouseTracking(True)
         self._bar = bar
         self._origin: tuple | None = None
+        self._hovered = False
+        self._dragging = False
         self.apply_ui_language()
 
     def apply_ui_language(self):
-        self.setToolTip(_t("sub_resize_tip"))
+        tip = _t("sub_resize_tip")
+        self.setToolTip(f"{tip}（双击恢复自适应）" if "缩放" in tip else f"{tip} (Double-click to reset)")
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
 
     def paintEvent(self, event):
-        # 与翻译窗右下角 QSizeGrip 同形态：三道白斜线，深色底上可见
         p = QPainter(self)
-        paint_size_grip(p, self.width(), self.height())
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w, h = self.width(), self.height()
+        if self._hovered or self._dragging:
+            p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+            p.setBrush(QColor(255, 255, 255, 45))
+            p.drawRoundedRect(QRect(1, 1, w - 2, h - 2), 4, 4)
+            alphas = (255, 220, 180, 140)
+        else:
+            alphas = (230, 170, 110)
+
+        for i, alpha in enumerate(alphas):
+            off = 4 + i * 4
+            p.setPen(QPen(QColor(255, 255, 255, alpha), 1.8 if (self._hovered or self._dragging) else 1.6))
+            p.drawLine(w - 3, h - off, w - off, h - 3)
 
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        self._dragging = True
         self._origin = (
             event.globalPosition().toPoint(),
             self._bar.panel_width(),
             self._bar.content_height(),
         )
         self.grabMouse()
+        self.update()
         event.accept()
 
     def mouseMoveEvent(self, event):
@@ -817,9 +862,23 @@ class _SubtitleResizeGrip(QWidget):
         event.accept()
 
     def mouseReleaseEvent(self, event):
+        self._dragging = False
         if self._origin is not None:
             self._origin = None
-            self.releaseMouse()
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+            self.update()
+            if hasattr(self._bar, "user_resized"):
+                self._bar.user_resized.emit()
+            event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._bar.reset_custom_size()
+            if hasattr(self._bar, "user_resized"):
+                self._bar.user_resized.emit()
             event.accept()
 
 

@@ -122,6 +122,7 @@ class App:
         self._window_follow_timer.setInterval(33)
         self._window_follow_timer.timeout.connect(self._follow_target_window)
         self.subtitle.mode_changed.connect(self._on_subtitle_mode_changed)
+        self.subtitle.user_resized.connect(self._on_subtitle_user_resized)
         self.subtitle.stop_requested.connect(
             lambda: self._stop_continuous_translate("已从字幕条关闭")
         )
@@ -1106,9 +1107,9 @@ class App:
             # 移动/缩放后旧译文坐标已失效；先清空，确保下一帧是干净底图。
             self.annotation.set_items([])
         self.annotation.update_geometry(rect)
-        # 跟随模式才重贴；自由/固定保持用户拖好的字幕位置
+        # 跟随模式才重贴；保持用户手动单独缩放好的翻译框尺寸
         if self.subtitle.mode == "follow":
-            self.subtitle.attach_below(rect, outside=True, match_target_size=True)
+            self.subtitle.attach_below(rect, outside=True, match_target_size=False)
         if self.annotate_ctrl.isVisible():
             self.annotate_ctrl.place_above(rect)
         self.log.info("区域识别框更新 %s", rect)
@@ -1285,7 +1286,6 @@ class App:
                 pass
             # 外置字幕可缩放；outside=True 永远不盖住目标窗/识别区
             self.subtitle.set_interactive(True)
-            # 区域字幕模式默认跟随翻译框，并清除历史自定义尺寸以确保窗口比例一致
             self.subtitle.reset_follow_mode()
             self.cfg["subtitle_mode"] = "follow"
             is_region = self._watch_region is not None or self._watch_profile == "region"
@@ -1348,6 +1348,17 @@ class App:
         else:
             self.log.info("已切换为字幕条模式 profile=%s", profile)
 
+    def _on_subtitle_user_resized(self):
+        """用户通过右下角把手单独缩放翻译框完成后，持久化其独立尺寸。"""
+        try:
+            self._subtitle_geometry_valid = True
+            subtitle_geometry = self.subtitle.content_geometry()
+            self.cfg["subtitle_geometry"] = list(subtitle_geometry.getRect())
+            config.save(self.cfg)
+            self.log.info("字幕翻译框已单独缩放，尺寸已持久化: %s", subtitle_geometry.getRect())
+        except Exception:
+            self.log.exception("保存字幕框缩放尺寸失败")
+
     def _on_subtitle_mode_changed(self, mode: str):
         """字幕条：跟随 / 自由。跟随模式重新吸附到目标外侧。"""
         self.cfg["subtitle_mode"] = mode
@@ -1362,8 +1373,9 @@ class App:
                 capture.get_window_rect(self._watch_hwnd), outside=True
             )
         elif self._watch_region is not None:
+            match_initial = self.subtitle._user_size is None
             self.subtitle.attach_below(
-                self._watch_region, outside=True, match_target_size=True
+                self._watch_region, outside=True, match_target_size=match_initial
             )
 
     def _follow_target_window(self) -> None:
