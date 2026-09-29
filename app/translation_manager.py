@@ -228,7 +228,7 @@ class TranslationManager:
             )
             valid_values = [v.strip() for v in values if v and v.strip()]
             if not valid_values:
-                raise RuntimeError("逐行翻译缺少有效结果")
+                return ""
             return "\n".join(valid_values)
 
         if isinstance(text_or_lines, str):

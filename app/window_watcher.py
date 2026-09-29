@@ -170,6 +170,7 @@ class WindowWatcher(QThread):
         self._last_processed_work_rev: int = 0
         self._last_processed_epoch: int = 0
         self._translation_session_tag: str = f"watcher_{uuid.uuid4().hex[:8]}"
+        self._failed_text_retries: dict[str, int] = {}
 
     # ==========================================
     # 解耦组件只读访问器
@@ -812,6 +813,7 @@ class WindowWatcher(QThread):
                 # 9. 结果派发与增量翻译，内部异常隔离防护
                 if event == "clear":
                     _log.info("连续空 OCR 已确认，清空持续翻译显示")
+                    self._failed_text_retries.clear()
                     self._scene_text_state.clear()
                     self._result_manager.dispatch_cleared(frame_gen_id)
                 elif event == "change":
@@ -842,6 +844,7 @@ class WindowWatcher(QThread):
 
                                 dispatched = self._result_manager.dispatch_annotations(items, frame_gen_id, content_rev=packet_epoch)
                                 if dispatched:
+                                    self._failed_text_retries.pop(text, None)
                                     if translation:
                                         self._result_manager.dispatch_history(
                                             text, translation, mode_tag, frame_gen_id, content_rev=packet_epoch
@@ -870,6 +873,7 @@ class WindowWatcher(QThread):
 
                                 dispatched = self._result_manager.dispatch_subtitle(translation, frame_gen_id, content_rev=packet_epoch)
                                 if dispatched:
+                                    self._failed_text_retries.pop(text, None)
                                     if translation:
                                         self._result_manager.dispatch_history(
                                             text, translation, mode_tag, frame_gen_id, content_rev=packet_epoch
@@ -878,10 +882,17 @@ class WindowWatcher(QThread):
                                     with self._state_lock:
                                         self._text_change_detector.rollback(text)
                     except Exception as e:
-                        _log.warning("翻译处理异常 (gen=%s): %s", frame_gen_id, e)
-                        with self._state_lock:
-                            self._text_change_detector.rollback(text)
-                        self._ocr_stabilizer.reset()
+                        retries = self._failed_text_retries.get(text, 0) + 1
+                        self._failed_text_retries[text] = retries
+                        if retries <= 1:
+                            _log.warning("翻译处理异常 (gen=%s): %s，安排快速重试", frame_gen_id, e)
+                            with self._state_lock:
+                                self._text_change_detector.rollback(text)
+                            self._ocr_stabilizer.reset()
+                        else:
+                            _log.info("翻译在重试后仍无有效结果 (gen=%s): %s，锁定状态避免死锁报警", frame_gen_id, e)
+                            if len(self._failed_text_retries) > 30:
+                                self._failed_text_retries.clear()
                         if not self._running and self._frame_buffer.is_empty:
                             break
                         continue

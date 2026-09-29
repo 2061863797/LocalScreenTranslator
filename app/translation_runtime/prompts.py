@@ -67,7 +67,11 @@ def clean_output(value: str) -> str:
         if chatter_prefix.match(first):
             stripped = chatter_prefix.sub("", first).strip()
             if not stripped:
-                lines.pop(0)
+                if len(lines) > 1:
+                    lines.pop(0)
+                    continue
+                else:
+                    break
             else:
                 lines[0] = stripped
             continue
