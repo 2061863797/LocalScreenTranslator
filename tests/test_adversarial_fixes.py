@@ -214,6 +214,23 @@ class LiveCompletenessTests(_RouterTestCase):
                 else:
                     self.assertEqual(shown, ["甲\n丙", "甲\n叉\n丙"])
 
+    def test_changed_line_only_with_local_cache_disabled(self):
+        # 关闭“保存本地翻译缓存”时，仍靠本次监视的内存记录只翻译变化的行，且不写入硬盘缓存
+        self.router._cfg["translation_cache_enabled"] = False
+        words = {"A": "甲", "B": "乙", "C": "丙", "X": "叉"}
+        seen = []
+
+        def infer(request):
+            seen.append(request.text)
+            return self.result(request, words[request.text])
+
+        self.router._ai.translate = Mock(side_effect=infer)
+        watcher = self.run_frames("subtitle", [("A\nB\nC", 1)] * 3 + [("A\nX\nC", 2)] * 3)
+        self.assertEqual(seen, ["A", "B", "C", "X"])
+        shown = [c.args[0] for c in watcher._result_manager.dispatch_subtitle.call_args_list]
+        self.assertEqual(shown[-2:], ["甲\n丙", "甲\n叉\n丙"])
+        self.assertEqual(self.storage.count_translation_cache(), 0)
+
     def test_fully_cached_screen_is_shown_in_one_dispatch_without_model(self):
         self.router._ai.translate = Mock(side_effect=lambda request: self.result(
             request, {"Hello": "你好", "World": "世界"}[request.text]

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 import traceback
 import uuid
 from typing import Any
@@ -150,6 +151,8 @@ class WindowWatcher(QThread):
         self._last_processed_epoch: int = 0
         self._translation_session_tag: str = f"watcher_{uuid.uuid4().hex[:8]}"
         self._last_translate_error: str = ""
+        # 本次监视已翻译过的行（只在内存中，不受“保存本地翻译缓存”开关影响，不落盘）
+        self._line_memory: OrderedDict[tuple[str, str], str] = OrderedDict()
 
     # ==========================================
     # 解耦组件只读访问器
@@ -279,6 +282,7 @@ class WindowWatcher(QThread):
         self._rotate_translation_session()
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=True)
+        self._line_memory.clear()
         self._ocr_stabilizer.reset()
         self._last_frame = None
         self._last_captured_frame = None
@@ -322,8 +326,21 @@ class WindowWatcher(QThread):
             self._last_frame = None
             self._paused.clear()
 
+    _LINE_MEMORY_LIMIT = 500
+
+    def _remember(self, source: str, target: str, translation: str) -> None:
+        key = (source, target)
+        self._line_memory[key] = translation
+        self._line_memory.move_to_end(key)
+        while len(self._line_memory) > self._LINE_MEMORY_LIMIT:
+            self._line_memory.popitem(last=False)
+
     def _cached_translation(self, source: str, target: str) -> str | None:
-        """只查翻译缓存；未命中或翻译器不支持时返回 None。"""
+        """先查本次监视的内存记录，再查翻译缓存；都未命中时返回 None。"""
+        remembered = self._line_memory.get((source, target))
+        if remembered is not None:
+            self._line_memory.move_to_end((source, target))
+            return remembered
         lookup = getattr(self._translator, "cached", None)
         if lookup is None:
             return None
@@ -365,13 +382,14 @@ class WindowWatcher(QThread):
             if not self._batch_is_current(packet_epoch, session_tag):
                 completed = False
                 break
+            line_failed = False
             try:
                 translated = str(self._translator.translate(
                     source, target, session_tag=session_tag
                 ) or "").strip()
             except Exception as e:
                 # 出错（如模型尚未加载完）可能是暂时的，整批结束后交给下一帧重试
-                failed = True
+                failed = line_failed = True
                 if str(e) != self._last_translate_error:
                     self._last_translate_error = str(e)
                     _log.warning("单行翻译失败，暂显示原文 (gen=%s): %s", gen_id, e)
@@ -381,6 +399,9 @@ class WindowWatcher(QThread):
                 completed = False
                 break
             results[index] = translated or source
+            if not line_failed:
+                # 模型对同一原文输出确定，空译文（显示原文）也记住，避免反复调用
+                self._remember(source, target, results[index])
             completed = show()
 
         if completed and not failed:
