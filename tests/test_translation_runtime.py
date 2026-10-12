@@ -10,7 +10,10 @@ from unittest.mock import Mock, patch
 
 from app.storage import Storage
 from app.translation_runtime.contracts import TranslationRequest, TranslationResult
-from app.translation_runtime.prompts import clean_output
+from app.translation_runtime.llama_native import LlamaNativeBackend
+from app.translation_runtime.prompts import (
+    PROMPT_EN, PROMPT_ZH, SYSTEM_PROMPT, clean_output, uses_chinese_template,
+)
 from app.translation_runtime.router import TranslationRouter
 
 
@@ -47,6 +50,41 @@ class OutputCleaningTests(unittest.TestCase):
         self.assertEqual(clean_output("好的，翻译结果为：开始"), "开始")
         self.assertEqual(clean_output("Sure! Here is the translation: Confirm"), "Confirm")
         self.assertEqual(clean_output("好的，这是翻译：\nHello World"), "Hello World")
+
+
+class HyMtPromptTests(unittest.TestCase):
+    def test_hy_mt_label_and_note_chatter_is_removed(self):
+        raw = "简体中文译文：  \n你好，世界  \n\n注意：由于该文本为简体中文，无需进行翻译处理。"
+        self.assertEqual(clean_output(raw), "你好，世界")
+        # 正常以“注意：”开头的译文不受影响
+        self.assertEqual(clean_output("注意：请勿关闭电源"), "注意：请勿关闭电源")
+
+    def test_official_prompt_echo_is_removed(self):
+        self.assertEqual(clean_output(PROMPT_ZH.format(target="简体中文", text="你好")), "你好")
+        self.assertEqual(clean_output(PROMPT_EN.format(target="English", text="Hello")), "Hello")
+
+    def test_chinese_template_when_source_or_target_is_chinese(self):
+        self.assertTrue(uses_chinese_template("Hello", "简体中文"))
+        self.assertTrue(uses_chinese_template("你好", "英语"))
+        self.assertFalse(uses_chinese_template("設定を保存しました", "英语"))
+        self.assertFalse(uses_chinese_template("Hello", "日语"))
+
+    def test_no_system_prompt_sends_single_user_message(self):
+        backend = LlamaNativeBackend("runtime/llama-native", {})
+        backend._model = 1
+        seen = []
+
+        def apply(template, messages, count, add_assistant, buffer, size):
+            seen.append([(messages[i].role, messages[i].content) for i in range(count)])
+            return 0
+
+        dll = Mock()
+        dll.llama_model_chat_template.return_value = b"template"
+        dll.llama_chat_apply_template.side_effect = apply
+        backend._library = Mock(return_value=dll)
+        backend._prompt(SYSTEM_PROMPT, "将以下文本翻译为简体中文：\nHello")
+        self.assertEqual(SYSTEM_PROMPT, "")
+        self.assertEqual(seen, [[(b"user", "将以下文本翻译为简体中文：\nHello".encode("utf-8"))]])
 
 
 class RouterTests(unittest.TestCase):

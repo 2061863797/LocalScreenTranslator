@@ -51,7 +51,7 @@ class TranslationRouter:
 
     @property
     def prompt_version(self) -> str:
-        return "local-ai-v2"
+        return "local-ai-v3"
 
     @property
     def actual_device(self) -> str:

@@ -124,6 +124,8 @@ class RouterCompletenessTests(_RouterTestCase):
     def test_old_incomplete_cache_namespace_is_not_reused(self):
         model = f"{self.router.model_id}:source=自动"
         self.router.cache.put("Hello", "简体中文", model, "local-ai-v1", "残缺旧结果")
+        # v2 提示词会让 HY-MT 混入说明文字，升级后不得复用
+        self.router.cache.put("Hello", "简体中文", model, "local-ai-v2", "简体中文译文：你好")
         self.router._ai.translate = Mock(side_effect=lambda request: self.result(request, "完整新结果"))
         self.assertEqual(self.router.translate("Hello"), "完整新结果")
         self.router._ai.translate.assert_called_once()

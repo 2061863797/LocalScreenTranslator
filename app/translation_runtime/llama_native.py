@@ -194,28 +194,35 @@ class LlamaNativeBackend:
         self._ctx = self._model = None
         self._model_path = self._device = ""
 
+    @staticmethod
+    def _messages(system: str, user: str):
+        """有系统提示时发送 (system, user)，否则只发送 user（HY-MT 官方用法）。"""
+        if system:
+            return (_ChatMessage * 2)(
+                _ChatMessage(b"system", system.encode("utf-8")),
+                _ChatMessage(b"user", user.encode("utf-8")),
+            ), 2
+        return (_ChatMessage * 1)(_ChatMessage(b"user", user.encode("utf-8"))), 1
+
     def _prompt(self, system: str, user: str) -> bytes:
         dll = self._library()
         raw_template = dll.llama_model_chat_template(self._model, None)
 
-        # 策略 1：模型自带模板 + (system, user) 双段消息
+        # 策略 1：模型自带模板 + 原样消息
         if raw_template:
-            messages = (_ChatMessage * 2)(
-                _ChatMessage(b"system", system.encode("utf-8")),
-                _ChatMessage(b"user", user.encode("utf-8")),
-            )
+            messages, n_messages = self._messages(system, user)
             size = 2 * (len(system.encode("utf-8")) + len(user.encode("utf-8"))) + 1024
             buffer = C.create_string_buffer(size)
-            needed = dll.llama_chat_apply_template(raw_template, messages, 2, True, buffer, size)
+            needed = dll.llama_chat_apply_template(raw_template, messages, n_messages, True, buffer, size)
             if needed >= 0:
                 if needed >= size:
                     buffer = C.create_string_buffer(needed + 1)
-                    needed = dll.llama_chat_apply_template(raw_template, messages, 2, True, buffer, len(buffer))
+                    needed = dll.llama_chat_apply_template(raw_template, messages, n_messages, True, buffer, len(buffer))
                 return buffer.raw[:needed]
 
         # 策略 2：针对明确不支持 system 角色（如 Gemma/Mistral）的模板，将指令前置合并进 user 角色
-        combined_text = (system + "\n\n" + user).encode("utf-8")
-        if raw_template:
+        combined_text = ((system + "\n\n" + user) if system else user).encode("utf-8")
+        if raw_template and system:
             messages = (_ChatMessage * 1)(
                 _ChatMessage(b"user", combined_text),
             )
@@ -244,11 +251,7 @@ class LlamaNativeBackend:
                 b"{% endfor %}"
                 b"{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
             )
-            msgs = (_ChatMessage * 2)(
-                _ChatMessage(b"system", system.encode("utf-8")),
-                _ChatMessage(b"user", user.encode("utf-8")),
-            )
-            n_msgs = 2
+            msgs, n_msgs = self._messages(system, user)
         else:
             fb_tmpl = (
                 b"{% for message in messages %}"
@@ -256,11 +259,7 @@ class LlamaNativeBackend:
                 b"{% endfor %}"
                 b"{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
             )
-            msgs = (_ChatMessage * 2)(
-                _ChatMessage(b"system", system.encode("utf-8")),
-                _ChatMessage(b"user", user.encode("utf-8")),
-            )
-            n_msgs = 2
+            msgs, n_msgs = self._messages(system, user)
 
         size = max(4096, 2 * (len(system.encode("utf-8")) + len(user.encode("utf-8"))) + 1024)
         buffer = C.create_string_buffer(size)
@@ -273,7 +272,7 @@ class LlamaNativeBackend:
         return buffer.raw[:needed]
 
     def translate(self, request: TranslationRequest) -> TranslationResult:
-        from .prompts import SYSTEM_PROMPT, PROMPT_ZH, PROMPT_EN, LANG_EN_NAME
+        from .prompts import SYSTEM_PROMPT, PROMPT_ZH, PROMPT_EN, LANG_EN_NAME, uses_chinese_template
 
         if request.cancelled():
             return TranslationResult("", request.source_language, request.target_language,
@@ -282,9 +281,10 @@ class LlamaNativeBackend:
             if not self._model or not self._ctx:
                 raise RuntimeError("AI 模型尚未加载")
             target = request.target_language
-            name = target if "中文" in target else LANG_EN_NAME.get(target, target)
-            template = PROMPT_ZH if "中文" in target else PROMPT_EN
-            user = template.format(target=name, text=request.text)
+            if uses_chinese_template(request.text, target):
+                user = PROMPT_ZH.format(target=target, text=request.text)
+            else:
+                user = PROMPT_EN.format(target=LANG_EN_NAME.get(target, target), text=request.text)
             if request.source_language != "自动":
                 user = f"原文语言：{request.source_language}。\n" + user
             prompt = self._prompt(SYSTEM_PROMPT, user)
