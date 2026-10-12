@@ -12,7 +12,7 @@ Open Settings from the tray. Saving applies model and device settings within the
 | OCR device | `ocr_provider`, `ocr_device_id` | Auto prefers DirectML and falls back to CPU; CPU can be selected in config |
 | OCR long-side cap | `ocr_max_side` | Default 1600; 0 disables additional long-side scaling |
 | OCR minimum confidence | `ocr_score_min` | Default 0.45; lower-scoring lines are discarded |
-| Generation limit | `max_tokens` | Default 512, allowed 64–8192 |
+| Generation limit | `max_tokens` | Default 512, allowed 64–8192; generation is capped by the context capacity remaining after the prompt |
 | CPU threads | `threads` | llama.cpp inference threads |
 | Context | `ctx_size` | Default 2048 |
 | Translation cache | `translation_cache_enabled` | Disable future writes; clear old cache in History |

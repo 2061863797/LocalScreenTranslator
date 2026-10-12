@@ -49,6 +49,8 @@ venv\Scripts\pythonw.exe run.py
 
 每次构建写入新的 `dist\local-日期时间\LocalScreenTranslator\` 目录，自动集成 `runtime\ocr` 与 `runtime\llama-native` 运行时，不覆盖已有 EXE。运行其中的 `LocalScreenTranslator.exe` 即可。
 
+构建脚本还会打印匹配本次输出目录的 `ISCC.exe` 命令。安装 Inno Setup 6 后执行该命令，即可在本次构建目录生成 `LocalScreenTranslator-Setup.exe`。
+
 ## 导入翻译模型
 
 **AI 翻译**：在“托盘 → 设置 → 高级”导入兼容 GGUF，可直接引用外部文件或复制进用户模型目录；HY-MT、Qwen、Gemma 需有当前 llama.cpp 可解析的聊天模板。选择模型与 CPU/GPU/自动设备后保存，后台加载。

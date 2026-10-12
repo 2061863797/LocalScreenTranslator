@@ -36,6 +36,7 @@ from .result_manager import ResultManager
 from .scene_text_state import SceneTextState, _boxes_intersect
 from .text_change_detector import TextChangeDetector
 from .translation_manager import TranslationManager
+from .translation_runtime.contracts import IncompleteTranslationError
 from .translation_runtime.router import TranslationRouter
 
 _log = get_logger("watch")
@@ -123,7 +124,7 @@ class WindowWatcher(QThread):
         self._ocr_stabilizer = OcrStabilizer()
         self._text_change_detector = TextChangeDetector(empty_clear_delay_s=self._CLEAR_GRACE_SECONDS)
         self._translation_manager = TranslationManager(translator=self._translator)
-        self._result_manager = ResultManager(generation_tracker=self._generation_tracker)
+        self._result_manager = ResultManager(generation_tracker=self._generation_tracker, parent=self)
 
         # 连接 ResultManager 内部信号至 WindowWatcher 公共信号（支持元数据多重重载透传）
         try:
@@ -281,8 +282,8 @@ class WindowWatcher(QThread):
         """轮转翻译会话标签并中断上一代未完成的在途请求。
 
         彻底解决 Sticky Cancel 与恢复运行/切换语言的冲突：
-        旧标签被置为永久取消态（保证旧线程被释放后立刻短路退出，不争抢锁），
-        新标签获得独立全新的命名空间，保证后续翻译 100% 正常执行。
+        在途批次持有旧取消令牌，剩余行随该批次一起退出；
+        新标签用于后续帧，避免恢复运行时复用旧批次。
         """
         old_tag = self._translation_session_tag
         self._translation_session_tag = f"watcher_{uuid.uuid4().hex[:8]}"
@@ -801,6 +802,8 @@ class WindowWatcher(QThread):
                                 frame_gen_id,
                                 session_tag=self._translation_session_tag,
                             )
+                            if not translation.strip():
+                                raise IncompleteTranslationError("逐行翻译缺少有效结果")
                             if self._running and not self._consumer_stop_event.is_set():
                                 # Latest-Content-Wins 校验：翻译耗时期间画面若有实质新变化，丢弃旧译文防闪烁
                                 with self._content_epoch_lock:
@@ -822,6 +825,15 @@ class WindowWatcher(QThread):
                                     with self._state_lock:
                                         self._text_change_detector.rollback(text)
                     except Exception as e:
+                        if isinstance(e, IncompleteTranslationError):
+                            with self._content_epoch_lock:
+                                is_fresh = (packet_epoch == self._content_epoch)
+                            if is_fresh and self._running and not self._consumer_stop_event.is_set():
+                                # 用带版本的结果信号清空，过期失败不能清掉新画面的译文。
+                                if self._display_mode == "annotate":
+                                    self._result_manager.dispatch_annotations([], frame_gen_id, content_rev=packet_epoch)
+                                else:
+                                    self._result_manager.dispatch_subtitle("", frame_gen_id, content_rev=packet_epoch)
                         retries = self._failed_text_retries.get(text, 0) + 1
                         self._failed_text_retries[text] = retries
                         if retries <= 1:

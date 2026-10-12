@@ -97,7 +97,10 @@ class TestRegionWatchStartup(unittest.TestCase):
         watcher._inference_loop()
 
         self.assertEqual(translator.translate_lines.call_count, 2)
-        watcher._result_manager.dispatch_annotations.assert_called_once()
+        self.assertEqual(watcher._result_manager.dispatch_annotations.call_count, 2)
+        self.assertEqual(
+            watcher._result_manager.dispatch_annotations.call_args_list[0].args[0], []
+        )
         self.assertEqual(
             watcher._result_manager.dispatch_annotations.call_args.args[0],
             [(line.box, "你好")],

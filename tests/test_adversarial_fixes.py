@@ -1,0 +1,289 @@
+"""对抗审核发现的取消、完整译文、上下文和 Qt 生命周期回归。"""
+
+import ctypes as C
+import gc
+import os
+import threading
+import unittest
+import warnings
+import weakref
+from unittest.mock import Mock
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import numpy as np
+from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtWidgets import QApplication
+
+from app.config import DEFAULTS
+from app.latest_frame_buffer import FramePacket
+from app.main import App
+from app.ocr_engine import OcrLine
+from app.storage import Storage
+from app.translation_runtime.contracts import (
+    IncompleteTranslationError, TranslationContextError, TranslationRequest, TranslationResult,
+)
+from app.translation_runtime.llama_native import LlamaNativeBackend
+from app.translation_runtime.prompts import clean_output
+from app.translation_runtime.router import TranslationRouter
+from app.window_watcher import WindowWatcher
+
+
+class NativeContextTests(unittest.TestCase):
+    def backend(self, max_tokens, token_count):
+        backend = LlamaNativeBackend("runtime/llama-native", dict(DEFAULTS, max_tokens=max_tokens))
+        backend._model = backend._ctx = 1
+        backend._prompt = Mock(return_value=b"prompt")
+        dll = Mock()
+        dll.llama_n_ctx.return_value = 2048
+        dll.llama_tokenize.side_effect = (
+            lambda vocab, text, length, tokens, capacity, *args:
+            token_count if capacity >= token_count else -token_count
+        )
+        dll.llama_decode.return_value = 0
+        dll.llama_sampler_sample.return_value = 1
+        dll.llama_vocab_is_eog.return_value = False
+
+        def token_piece(vocab, token, buffer, *args):
+            C.memmove(buffer, b"x", 1)
+            return 1
+
+        dll.llama_token_to_piece.side_effect = token_piece
+        backend._dll = dll
+        return backend
+
+    def test_large_output_presets_use_remaining_context(self):
+        request = TranslationRequest("Hello", "自动", "简体中文", "ai", "model", 0, lambda: False)
+        for max_tokens in (512, 2048, 4096, 8192):
+            with self.subTest(max_tokens=max_tokens):
+                backend = self.backend(max_tokens, 2046)
+                self.assertEqual(backend.translate(request).text, "xx")
+                self.assertEqual(backend._dll.llama_sampler_sample.call_count, 2)
+
+    def test_prompt_without_output_space_raises_typed_context_error(self):
+        backend = self.backend(8192, 2048)
+        request = TranslationRequest("Hello", "自动", "简体中文", "ai", "model", 0, lambda: False)
+        with self.assertRaises(TranslationContextError):
+            backend.translate(request)
+        backend._dll.llama_decode.assert_not_called()
+
+
+class _RouterTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.qapp = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.storage = Storage(":memory:")
+        self.router = TranslationRouter(dict(DEFAULTS), self.storage)
+        self.router._ai.preload = Mock()
+        self.router._ai.close = Mock()
+        self.router.preload()
+
+    def tearDown(self):
+        self.router.close()
+        self.storage.close()
+
+    @staticmethod
+    def result(request, text):
+        return TranslationResult(text, request.source_language, request.target_language,
+                                 request.mode, request.model_id, request.session_version)
+
+
+class RouterCompletenessTests(_RouterTestCase):
+    def test_cancel_discards_batch_and_does_not_start_remaining_lines(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def infer(request):
+            entered.set()
+            release.wait(3)
+            return self.result(request, "old")
+
+        self.router._ai.translate = Mock(side_effect=infer)
+        output = []
+        worker = threading.Thread(target=lambda: output.append(
+            self.router.translate_lines(["one", "two", "three"], session_tag="watch")
+        ))
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.router.abort_inflight("watch")
+        finally:
+            release.set()
+            worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(output, [["", "", ""]])
+        self.assertEqual(self.router._ai.translate.call_count, 1)
+        self.assertEqual(self.storage.count_translation_cache(), 0)
+        self.router._ai.translate.side_effect = lambda request: self.result(request, "new")
+        self.assertEqual(self.router.translate("next", session_tag="watch"), "new")
+
+    def test_chinese_context_error_splits_source(self):
+        seen = []
+
+        def infer(request):
+            seen.append(request.text)
+            if len(request.text) > 256:
+                raise TranslationContextError("翻译提示超过 llama.cpp 上下文上限")
+            return self.result(request, "part")
+
+        self.router._ai.translate = Mock(side_effect=infer)
+        source = "汉" * 500
+        self.assertEqual(self.router.translate(source), "part\npart")
+        self.assertEqual(seen, [source, source[:250], source[250:]])
+
+    def test_empty_fragment_is_not_cached_as_whole_source(self):
+        source = "A" * 350 + " " + "B" * 350
+        self.router._ai.translate = Mock(side_effect=lambda request: self.result(
+            request, "甲" if request.text.startswith("A") else ""
+        ))
+        with self.assertRaises(IncompleteTranslationError):
+            self.router.translate(source)
+        self.assertEqual(self.storage.count_translation_cache(), 0)
+        self.router._ai.translate.side_effect = lambda request: self.result(
+            request, "甲" if request.text.startswith("A") else "乙"
+        )
+        self.assertEqual(self.router.translate(source), "甲\n乙")
+        calls = self.router._ai.translate.call_count
+        self.assertEqual(self.router.translate(source), "甲\n乙")
+        self.assertEqual(self.router._ai.translate.call_count, calls)
+
+    def test_old_incomplete_cache_namespace_is_not_reused(self):
+        model = f"{self.router.model_id}:source=自动"
+        self.router.cache.put("Hello", "简体中文", model, "local-ai-v1", "残缺旧结果")
+        self.router._ai.translate = Mock(side_effect=lambda request: self.result(request, "完整新结果"))
+        self.assertEqual(self.router.translate("Hello"), "完整新结果")
+        self.router._ai.translate.assert_called_once()
+
+
+class LiveCompletenessTests(_RouterTestCase):
+    def run_frames(self, mode, texts):
+        watcher = WindowWatcher(Mock(), self.router, dict(DEFAULTS), region=(0, 0, 64, 32),
+                                profile="region", display_mode=mode)
+        self.addCleanup(watcher.deleteLater)
+        frames = iter(texts)
+        current = {"text": ""}
+
+        def packet(timeout=None):
+            try:
+                text, revision = next(frames)
+            except StopIteration:
+                watcher._running = False
+                watcher._consumer_stop_event.set()
+                return None
+            current["text"] = text
+            watcher._content_revision = watcher._content_epoch = revision
+            frame = np.full((32, 64, 3), revision, dtype=np.uint8)
+            return FramePacket(frame, epoch=revision, has_changed=True, changed_ratio=1.0,
+                               work_revision=revision, content_revision=revision)
+
+        watcher._frame_buffer.get = packet
+        watcher._recognize_live_lines = Mock(side_effect=lambda *args: [
+            OcrLine(line, .99, (0, i * 12, 20, i * 12 + 10))
+            for i, line in enumerate(current["text"].splitlines())
+        ])
+        watcher._result_manager.dispatch_annotations = Mock(return_value=True)
+        watcher._result_manager.dispatch_subtitle = Mock(return_value=True)
+        watcher._result_manager.dispatch_history = Mock(return_value=True)
+        watcher._inference_loop()
+        return watcher
+
+    def test_partial_live_reply_retries_missing_line_before_history(self):
+        for mode in ("annotate", "subtitle"):
+            with self.subTest(mode=mode):
+                self.router.clear_cache()
+                seen = []
+
+                def infer(request):
+                    seen.append(request.text)
+                    value = "你好" if request.text == "Hello" else "世界" if seen.count("World") > 1 else ""
+                    return self.result(request, value)
+
+                self.router._ai.translate = Mock(side_effect=infer)
+                watcher = self.run_frames(mode, [("Hello\nWorld", 1)] * 10)
+                self.assertEqual(seen, ["Hello", "World", "World"])
+                history = watcher._result_manager.dispatch_history
+                history.assert_called_once()
+                self.assertEqual(history.call_args.args[:2], ("Hello\nWorld", "你好\n世界"))
+                dispatcher = (watcher._result_manager.dispatch_annotations if mode == "annotate"
+                              else watcher._result_manager.dispatch_subtitle)
+                self.assertEqual(dispatcher.call_count, 2)
+                self.assertEqual(dispatcher.call_args_list[0].args[0], [] if mode == "annotate" else "")
+
+    def test_empty_new_frame_clears_old_display_and_stops_after_retry(self):
+        self.router._ai.translate = Mock(side_effect=lambda request: self.result(
+            request, "旧译文" if request.text == "Previous" else ""
+        ))
+        watcher = self.run_frames("annotate", [("Previous", 1)] + [("Untranslated", 2)] * 10)
+        self.assertEqual([call.args[0].text for call in self.router._ai.translate.call_args_list],
+                         ["Previous", "Untranslated", "Untranslated"])
+        self.assertEqual(watcher._result_manager.dispatch_annotations.call_args.args[0], [])
+        self.assertEqual(watcher._result_manager.dispatch_history.call_count, 1)
+
+
+class WatcherLifetimeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.qapp = QApplication.instance() or QApplication([])
+
+    def test_stopped_watcher_and_internal_bridges_are_destroyed(self):
+        app = App.__new__(App)
+        app._retired_watchers = []
+        app._stopping_watch = False
+        app.qapp = self.qapp
+        app.log = Mock()
+        watcher = WindowWatcher(Mock(), Mock(), {}, region=(0, 0, 64, 32))
+        seen = []
+        watcher.subtitle_ready[str, int, int].connect(
+            lambda text, gen, rev, w=watcher: seen.append(text)
+        )
+        watcher._running = False
+        watcher.start()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            self.assertTrue(app._join_watcher(watcher))
+        watcher.subtitle_ready[str, int, int].emit("late", 1, 1)
+        self.assertEqual(seen, [])
+        watcher_ref, result_ref = weakref.ref(watcher), weakref.ref(watcher.result_manager)
+        del watcher
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.qapp.processEvents()
+        gc.collect()
+        self.assertIsNone(watcher_ref())
+        self.assertIsNone(result_ref())
+
+    def test_retired_watcher_is_destroyed_after_thread_finishes(self):
+        entered, release = threading.Event(), threading.Event()
+
+        class HeldWatcher(WindowWatcher):
+            def run(self):
+                entered.set()
+                release.wait(3)
+
+        app = App.__new__(App)
+        app._retired_watchers = []
+        watcher = HeldWatcher(Mock(), Mock(), {}, region=(0, 0, 64, 32))
+        watcher.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            app._retain_watcher(watcher)
+            self.assertIn(watcher, app._retired_watchers)
+            self.assertIsNot(getattr(watcher, "_delete_scheduled", False), True)
+        finally:
+            release.set()
+            self.assertTrue(watcher.wait(3000))
+        watcher_ref = weakref.ref(watcher)
+        self.qapp.processEvents()
+        self.assertEqual(app._retired_watchers, [])
+        del watcher
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        gc.collect()
+        self.assertIsNone(watcher_ref())
+
+
+class DialogueCleaningTests(unittest.TestCase):
+    def test_normal_dialogue_prefixes_are_preserved(self):
+        for text in ("Of course I can help you.", "没问题，我明天会到。", "Sure, I'll come.",
+                     "当然可以。", "好的\n我们明天见。", "Sure translation is difficult."):
+            with self.subTest(text=text):
+                self.assertEqual(clean_output(text), text)

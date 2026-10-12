@@ -7,7 +7,7 @@ import os
 import threading
 from pathlib import Path
 
-from .contracts import TranslationRequest, TranslationResult
+from .contracts import TranslationContextError, TranslationRequest, TranslationResult
 
 
 LLAMA_COMMIT = "7fe450e19305b828c199d602c23a8337aaa1f03b"
@@ -297,9 +297,12 @@ class LlamaNativeBackend:
                 capacity = -count
                 tokens = (C.c_int32 * capacity)()
                 count = dll.llama_tokenize(vocab, prompt, len(prompt), tokens, capacity, True, True)
-            max_output = min(int(self._cfg.get("max_tokens", 512)), 8192)
-            if count <= 0 or count + max_output > dll.llama_n_ctx(self._ctx):
-                raise ValueError("翻译提示超过 llama.cpp 上下文上限")
+            if count <= 0:
+                raise ValueError("无法对翻译提示分词")
+            remaining = dll.llama_n_ctx(self._ctx) - count
+            if remaining <= 0:
+                raise TranslationContextError("翻译提示超过 llama.cpp 上下文上限")
+            max_output = min(int(self._cfg.get("max_tokens", 512)), 8192, remaining)
             dll.llama_memory_clear(dll.llama_get_memory(self._ctx), True)
             batch_size = min(512, int(self._cfg.get("batch_size", 512)))
             for start in range(0, count, batch_size):

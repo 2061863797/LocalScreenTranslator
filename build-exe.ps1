@@ -56,6 +56,8 @@ try {
         if ($process.ExitCode -ne 0) { throw "冻结 EXE 真实 GGUF 翻译失败（退出码 $($process.ExitCode)）" }
     }
     Write-Host "本机 EXE 已就绪：$exe"
+    Write-Host "构建安装包（需 Inno Setup 6）："
+    Write-Host "ISCC.exe /DAppSourceDir=`"$output`" /O`"$distRoot`" `"$(Join-Path $root 'installer.iss')`""
     Write-Host "请在设置里导入兼容 llama.cpp 的 GGUF 模型。"
 } finally {
     Pop-Location

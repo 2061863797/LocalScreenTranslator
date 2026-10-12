@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from typing import Callable, Protocol
 
 
+class TranslationContextError(ValueError):
+    """提示本身超过上下文容量，可由路由拆分原文后重试。"""
+
+
+class IncompleteTranslationError(RuntimeError):
+    """部分非空原文没有译文，不能作为完整结果派发或缓存。"""
+
+
 @dataclass(frozen=True)
 class TranslationRequest:
     text: str

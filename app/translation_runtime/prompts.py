@@ -38,7 +38,7 @@ def clean_output(value: str) -> str:
              if line.strip() and not re.fullmatch(r"```[^\r\n]*", line.strip())]
     chatter_prefix = re.compile(
         r"(?i)^(?:sure|certainly|of course|好的|当然|没问题)[，,！!：:\s]*"
-        r"(?:(?:here is the |以下是|这是)?(?:translation|translated text|translation result|译文|翻译结果|翻译如下|翻译)[^：:\n]*[：:\s]*)?"
+        r"(?:here is the |以下是|这是)?(?:translation result|translated text|translation|翻译结果|翻译如下|译文|翻译)(?:为)?\s*[：:]\s*"
     )
     refusal = re.compile(r"(?i)^(?:as an ai|作为(?:一个)?(?:ai|人工智能|语言模型)|i am an ai|我是一个?(?:ai|人工智能)).*(?:cannot|can't|unable|不能|无法|抱歉)")
     instruction_keywords = (

@@ -49,6 +49,8 @@ venv\Scripts\pythonw.exe run.py
 
 Each build creates a new `dist\local-timestamp\LocalScreenTranslator\` directory, automatically integrating `runtime\ocr` and `runtime\llama-native`. Run `LocalScreenTranslator.exe` directly.
 
+The build script also prints an `ISCC.exe` command for that output directory. Run it with Inno Setup 6 installed to create `LocalScreenTranslator-Setup.exe` in the same build directory.
+
 ## Import translation models
 
 **AI mode:** Under Tray → Settings → Advanced, import a compatible GGUF by direct path or copy it into the user models directory. HY-MT, Qwen, and Gemma require a chat template understood by this llama.cpp version. Select the model and CPU/GPU/Auto, then save.

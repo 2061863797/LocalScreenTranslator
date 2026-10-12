@@ -8,7 +8,7 @@ from dataclasses import replace
 from ..paths import resolve_path
 from ..storage import Storage
 from ..translation_cache import TranslationCache
-from .contracts import TranslationRequest
+from .contracts import IncompleteTranslationError, TranslationContextError, TranslationRequest
 from .llama_native import LlamaNativeBackend
 from .prompts import clean_output
 
@@ -51,7 +51,7 @@ class TranslationRouter:
 
     @property
     def prompt_version(self) -> str:
-        return "local-ai-v1"
+        return "local-ai-v2"
 
     @property
     def actual_device(self) -> str:
@@ -107,10 +107,18 @@ class TranslationRouter:
         self, text: str, target_language: str = "简体中文", session_tag: str = "default",
         *, source_language: str | None = None,
     ) -> str:
+        return self._translate_with_session(
+            text, target_language, self._session(session_tag), source_language=source_language
+        )
+
+    def _translate_with_session(
+        self, text: str, target_language: str, session: tuple[threading.Event, int],
+        *, source_language: str | None = None,
+    ) -> str:
         text = "".join(c for c in text if c in "\n\r\t" or ord(c) >= 32).strip()
         if not text:
             return ""
-        cancelled, version = self._session(session_tag)
+        cancelled, version = session
         if cancelled.is_set():
             return ""
         source = source_language or "自动"
@@ -156,27 +164,41 @@ class TranslationRouter:
             return ""
         text = request.text
         if len(text) > 600:
-            left, right = self._split_text(text)
-            parts = [self._infer_text(replace(request, text=piece)) for piece in (left, right) if piece]
-            return "\n".join(part for part in parts if part)
+            return self._infer_parts(request)
         try:
             result = self._ai.translate(request)
-        except ValueError as exc:
-            if "context" not in str(exc).lower() or len(text) < 32:
+        except TranslationContextError:
+            if len(text) < 32:
                 raise
-            left, right = self._split_text(text)
-            parts = [self._infer_text(replace(request, text=piece)) for piece in (left, right) if piece]
-            return "\n".join(part for part in parts if part)
+            return self._infer_parts(request)
         return clean_output(result.text)
+
+    def _infer_parts(self, request: TranslationRequest) -> str:
+        parts = []
+        for piece in self._split_text(request.text):
+            if not piece:
+                continue
+            value = self._infer_text(replace(request, text=piece))
+            if request.cancelled():
+                return ""
+            if not value:
+                raise IncompleteTranslationError("分段翻译缺少有效结果")
+            parts.append(value)
+        return "\n".join(parts)
 
     def translate_lines(
         self, lines: list[str], target_language: str = "简体中文",
         session_tag: str = "default", *, source_language: str | None = None,
     ) -> list[str]:
-        return [
-            self.translate(line, target_language, session_tag, source_language=source_language)
-            for line in lines
-        ]
+        session = self._session(session_tag)
+        values = []
+        for line in lines:
+            if session[0].is_set():
+                return [""] * len(lines)
+            values.append(self._translate_with_session(
+                line, target_language, session, source_language=source_language
+            ))
+        return [""] * len(lines) if session[0].is_set() else values
 
     def clear_cache(self) -> None:
         self.cache.clear()

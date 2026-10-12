@@ -753,18 +753,33 @@ class App:
             except (TypeError, RuntimeError):
                 pass
 
+        for sig, signature in (
+            (w.subtitle_ready, (str, int, int)),
+            (w.annotations_ready, (list, int, int)),
+            (w.history_ready, (str, str, str, int, int)),
+        ):
+            try:
+                sig[signature].disconnect()
+            except (TypeError, RuntimeError):
+                pass
+
     def _retain_watcher(self, w: WindowWatcher) -> None:
         """保留尚未退出的 QThread，避免局部引用释放时被销毁。"""
         if w in self._retired_watchers:
             return
         self._retired_watchers.append(w)
         w.finished.connect(lambda w=w: self._drop_retired_watcher(w))
+        if not w.isRunning():
+            self._drop_retired_watcher(w)
 
     def _drop_retired_watcher(self, w: WindowWatcher) -> None:
         try:
             self._retired_watchers.remove(w)
         except ValueError:
             pass
+        if getattr(w, "_delete_scheduled", False) is not True:
+            w._delete_scheduled = True
+            w.deleteLater()
 
     def _join_watcher(self, w, *, label: str = "监视线程") -> bool:
         """请求停止并短暂等待；尽量少进事件循环，避免停线程时重入开新会话。"""
@@ -777,6 +792,7 @@ class App:
         try:
             # 先纯等待，不处理用户输入事件
             if w.wait(1500):
+                self._drop_retired_watcher(w)
                 return True
             # 仍在跑：少量 processEvents（排除用户输入）保 UI 不假死
             for _ in range(10):
@@ -791,6 +807,7 @@ class App:
                 self.log.warning("%s仍在运行（可能卡在翻译请求），UI 已关闭", label)
                 self._retain_watcher(w)
                 return False
+            self._drop_retired_watcher(w)
             return True
         finally:
             self._stopping_watch = was

@@ -16,6 +16,7 @@ import threading
 from typing import Any, Callable
 
 from .translation_cache import TranslationCache
+from .translation_runtime.contracts import IncompleteTranslationError
 
 _log = logging.getLogger("st.trans_mgr")
 
@@ -229,6 +230,8 @@ class TranslationManager:
             valid_values = [v.strip() for v in values if v and v.strip()]
             if not valid_values:
                 return ""
+            if len(values) != len(selected) or len(valid_values) != len(selected):
+                raise IncompleteTranslationError("逐行翻译缺少有效结果")
             return "\n".join(valid_values)
 
         if isinstance(text_or_lines, str):
@@ -297,8 +300,8 @@ class TranslationManager:
                 for line, value in zip(selected, values)
                 if value and value.strip()
             ]
-            if not valid_pairs:
-                raise RuntimeError("逐行翻译缺少有效结果")
+            if len(values) != len(selected) or len(valid_pairs) != len(selected):
+                raise IncompleteTranslationError("逐行翻译缺少有效结果")
             items = [(line.box, val) for line, val in valid_pairs]
             return items, "\n".join(val for _, val in valid_pairs)
 
@@ -341,9 +344,8 @@ class TranslationManager:
                         self._line_cache[(s, target_language)] = tr
                         valid_count += 1
                 self.prune_cache(srcs)
-            if valid_count == 0 and len(unique) > 0:
-                # 只有全量空响应才触发异常重试
-                raise RuntimeError(
+            if valid_count < len(unique):
+                raise IncompleteTranslationError(
                     f"逐行翻译缺少有效结果: expected={len(unique)} got={valid_count}"
                 )
 

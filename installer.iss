@@ -5,6 +5,9 @@
 #define MyAppPublisher "本地屏译"
 #define MyAppURL "https://github.com/2061863797/LocalScreenTranslator"
 #define MyAppExeName "LocalScreenTranslator.exe"
+#ifndef AppSourceDir
+  #define AppSourceDir "dist\LocalScreenTranslator"
+#endif
 
 [Setup]
 AppId={{D37E8873-5F79-4B52-8729-183602D58E91}
@@ -19,7 +22,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=dist
-OutputBaseFilename=本地屏译-Setup
+OutputBaseFilename=LocalScreenTranslator-Setup
 SetupIconFile=icon.ico
 Compression=lzma2/normal
 SolidCompression=yes
@@ -45,7 +48,7 @@ Name: "{app}\runtime\models"
 
 [Files]
 ; 打包后的主程序与 Python 运行时（onedir 产物）
-Source: "dist\LocalScreenTranslator\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 进程内翻译运行资源：固定版本 llama.cpp 动态库
 Source: "runtime\llama-native\*"; DestDir: "{app}\runtime\llama-native"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; PP-OCRv6 ONNX 模型与清单
