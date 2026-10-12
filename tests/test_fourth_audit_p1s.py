@@ -219,7 +219,7 @@ class TestFourthAuditP1s(unittest.TestCase):
                 self.assertFalse(finished_args[0][0], "中断后必须发射失败/取消信号")
 
     def test_history_ready_generation_and_content_rev_guard(self):
-        """P2 验证：History 信号受 generation_id 与 content_revision 双重防护，过期信号被丢弃。"""
+        """History 信号按 generation 防护；仅背景像素变化（content_revision 前进）不丢弃。"""
         from app.main import App
 
         app = MagicMock(spec=App)
@@ -246,14 +246,14 @@ class TestFourthAuditP1s(unittest.TestCase):
         func("Hello", "你好2", "subtitle", session_id=1, watcher=mock_watcher, gen_id=4, content_rev=10)
         self.assertEqual(len(recorded_histories), 1, "过时 generation 历史信号必须被丢弃！")
 
-        # 3. 过期 content_revision: gen=5, rev=9 (current=10) -> 丢弃
+        # 3. 同一世代、仅像素版本落后（如视频背景变化）: gen=5, rev=9 (current=10) -> 记录
         func("Hello", "你好3", "subtitle", session_id=1, watcher=mock_watcher, gen_id=5, content_rev=9)
-        self.assertEqual(len(recorded_histories), 1, "过时 content_revision 历史信号必须被丢弃！")
+        self.assertEqual(len(recorded_histories), 2, "背景像素变化不应丢弃仍属当前世代的历史信号")
 
         # 4. 暂停状态：watch_paused=True -> 丢弃
         app._watch_paused = True
         func("Hello", "你好4", "subtitle", session_id=1, watcher=mock_watcher, gen_id=5, content_rev=10)
-        self.assertEqual(len(recorded_histories), 1, "暂停期间到达的历史信号必须被丢弃！")
+        self.assertEqual(len(recorded_histories), 2, "暂停期间到达的历史信号必须被丢弃！")
 
     def test_ocr_stabilizer_thread_safe_concurrent_reset_and_process(self):
         """P2 验证：OcrStabilizer 具备线程安全互斥保护，并发 reset 与 process 无竞态。"""

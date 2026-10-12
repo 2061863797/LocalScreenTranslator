@@ -143,6 +143,8 @@ class WindowWatcher(QThread):
         self._work_revision: int = 0
         self._content_revision: int = 0
         self._content_epoch: int = 0
+        # 最近一次重置（停止/暂停/移动选区/切换语言或显示模式）时的内容版本；更早截取的帧一律丢弃
+        self._reset_revision: int = 0
         self._content_epoch_lock = threading.Lock()
         self._consecutive_grab_fails: int = 0
         self._last_captured_frame: np.ndarray | None = None
@@ -222,10 +224,7 @@ class WindowWatcher(QThread):
         if mode not in ("subtitle", "annotate"):
             return
         self._display_mode = mode
-        self._generation_tracker.reset()
-        with self._content_epoch_lock:
-            self._content_revision += 1
-            self._content_epoch = self._content_revision
+        self._reset_revisions()
         self._scene_text_state.clear()
         self._last_captured_frame = None
         self._frame_buffer.clear()
@@ -240,10 +239,7 @@ class WindowWatcher(QThread):
         with self._region_lock:
             self._region = region
         self._capture_service.set_region(region)
-        self._generation_tracker.reset()
-        with self._content_epoch_lock:
-            self._content_revision += 1
-            self._content_epoch = self._content_revision
+        self._reset_revisions()
         self._scene_text_state.clear()
         self._last_captured_frame = None
         self._frame_buffer.clear()
@@ -275,10 +271,7 @@ class WindowWatcher(QThread):
 
     def on_target_language_changed(self) -> None:
         """目标语言改变时重置检测器与缓存，中断旧语言在途请求，强制当前帧重新翻译。"""
-        self._generation_tracker.reset()
-        with self._content_epoch_lock:
-            self._content_revision += 1
-            self._content_epoch = self._content_revision
+        self._reset_revisions()
         self._rotate_translation_session()
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=True)
@@ -291,10 +284,7 @@ class WindowWatcher(QThread):
         """停止监视并清空缓冲与世代。"""
         self._running = False
         self._consumer_stop_event.set()
-        self._generation_tracker.reset()
-        with self._content_epoch_lock:
-            self._content_revision += 1
-            self._content_epoch = self._content_revision
+        self._reset_revisions()
         self._frame_buffer.clear()
         self._scene_text_state.clear()
         self._last_captured_frame = None
@@ -316,10 +306,7 @@ class WindowWatcher(QThread):
         """
         if paused:
             self._paused.set()
-            self._generation_tracker.reset()
-            with self._content_epoch_lock:
-                self._content_revision += 1
-                self._content_epoch = self._content_revision
+            self._reset_revisions()
             self._rotate_translation_session()
         else:
             self._last_captured_frame = None
@@ -379,7 +366,7 @@ class WindowWatcher(QThread):
                 break
             if results[index] is not None:
                 continue
-            if not self._batch_is_current(packet_epoch, session_tag):
+            if not self._batch_is_current(gen_id, session_tag):
                 completed = False
                 break
             line_failed = False
@@ -395,7 +382,7 @@ class WindowWatcher(QThread):
                     _log.warning("单行翻译失败，暂显示原文 (gen=%s): %s", gen_id, e)
                 translated = ""
             # 暂停、切换语言、停止或画面已变：丢弃本批剩余行
-            if not self._batch_is_current(packet_epoch, session_tag):
+            if not self._batch_is_current(gen_id, session_tag):
                 completed = False
                 break
             results[index] = translated or source
@@ -419,14 +406,25 @@ class WindowWatcher(QThread):
                 self._text_change_detector.rollback(text)
             self._ocr_stabilizer.reset()
 
-    def _batch_is_current(self, packet_epoch: int, session_tag: str) -> bool:
-        """本批翻译是否仍有效：未停止、会话未轮换、画面内容未变。"""
+    def _reset_revisions(self) -> None:
+        """作废所有在途世代与已截取的帧（停止、暂停、移动选区、切换语言或显示模式时调用）。"""
+        self._generation_tracker.reset()
+        with self._content_epoch_lock:
+            self._content_revision += 1
+            self._content_epoch = self._content_revision
+            self._reset_revision = self._content_revision
+
+    def _batch_is_current(self, gen_id: int, session_tag: str) -> bool:
+        """本批翻译是否仍有效：未停止、会话未轮换、世代未前进。
+
+        只按世代判断（文字真正变化、清空、暂停、移动选区或切换语言时才前进），
+        不按像素变化判断：视频字幕等背景持续变化的场景不会打断翻译。
+        """
         if not self._running or self._consumer_stop_event.is_set():
             return False
         if session_tag != self._translation_session_tag:
             return False
-        with self._content_epoch_lock:
-            return packet_epoch == self._content_epoch
+        return self._generation_tracker.is_active(gen_id)
 
     def _is_content_invalidated(self, diff_res: Any, has_visual_change: bool) -> bool:
         """检查变动是否需要作废当前在途内容 (PR 1 / Content Revision).
@@ -730,6 +728,11 @@ class WindowWatcher(QThread):
 
                 img = pulled.frame
                 packet_epoch = pulled.content_revision or pulled.epoch
+                with self._content_epoch_lock:
+                    captured_before_reset = packet_epoch < self._reset_revision
+                if captured_before_reset:
+                    # 重置前截取的旧帧（如拖动选区前的位置），不识别也不翻译
+                    continue
                 packet_work_rev = pulled.work_revision
                 packet_roi = pulled.roi_box
                 has_visual_change = pulled.has_changed
@@ -806,14 +809,8 @@ class WindowWatcher(QThread):
                         lines, sim_threshold, exact_change=is_sub or confirmed
                     )
 
-                # 只有真实文本变化或清空才开启新世代；区域移动等重置期间的旧帧直接丢弃。
+                # 只有真实文本变化或清空才开启新世代；期间发生过重置（世代已作废）则丢弃本帧。
                 if event in ("change", "clear"):
-                    with self._content_epoch_lock:
-                        is_fresh = (packet_epoch == self._content_epoch)
-                    if not is_fresh:
-                        with self._state_lock:
-                            self._text_change_detector.rollback(text)
-                        continue
                     next_gen_id = self._generation_tracker.next_generation_if_active(frame_gen_id)
                     if next_gen_id is None:
                         with self._state_lock:

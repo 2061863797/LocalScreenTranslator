@@ -992,7 +992,7 @@ class App:
         self._watcher = watcher
 
         # 会话多重守卫：仅当信号来自当前活跃 watcher 且 session 匹配，
-        # 且 generation 和 content_revision 仍然有效时才渲染 UI，杜绝 Qt 队列排队滞留信号
+        # 且 generation 仍然有效（未暂停、未重置、文字未再变化）时才渲染 UI，杜绝 Qt 队列排队滞留信号
         try:
             watcher.subtitle_ready[str, int, int].connect(
                 lambda text, gen_id, rev, s=current_session, w=watcher: self._on_watch_subtitle_guarded(text, s, w, gen_id, rev)
@@ -1089,14 +1089,6 @@ class App:
             if not watcher.generation_tracker.is_active(gen_id):
                 self.log.debug("丢弃过时 generation 的字幕刷新信号: gen=%s", gen_id)
                 return
-        if content_rev is not None and hasattr(watcher, "content_revision"):
-            if watcher.content_revision != content_rev:
-                self.log.debug(
-                    "丢弃过时 content_revision 的字幕刷新信号: rev=%s current=%s",
-                    content_rev,
-                    watcher.content_revision,
-                )
-                return
         self.subtitle.set_text(text)
 
     def _on_watch_annotations_guarded(
@@ -1115,14 +1107,6 @@ class App:
         if gen_id is not None and hasattr(watcher, "generation_tracker"):
             if not watcher.generation_tracker.is_active(gen_id):
                 self.log.debug("丢弃过时 generation 的逐行备注信号: gen=%s", gen_id)
-                return
-        if content_rev is not None and hasattr(watcher, "content_revision"):
-            if watcher.content_revision != content_rev:
-                self.log.debug(
-                    "丢弃过时 content_revision 的逐行备注信号: rev=%s current=%s",
-                    content_rev,
-                    watcher.content_revision,
-                )
                 return
         self._on_watch_annotations(items)
 
@@ -1144,14 +1128,6 @@ class App:
         if gen_id is not None and hasattr(watcher, "generation_tracker"):
             if not watcher.generation_tracker.is_active(gen_id):
                 self.log.debug("丢弃过时 generation 的历史记录信号: gen=%s", gen_id)
-                return
-        if content_rev is not None and hasattr(watcher, "content_revision"):
-            if watcher.content_revision != content_rev:
-                self.log.debug(
-                    "丢弃过时 content_revision 的历史记录信号: rev=%s current=%s",
-                    content_rev,
-                    watcher.content_revision,
-                )
                 return
         self._on_watch_history(src, tr, mode)
 

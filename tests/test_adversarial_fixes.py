@@ -214,6 +214,46 @@ class LiveCompletenessTests(_RouterTestCase):
                 else:
                     self.assertEqual(shown, ["甲\n丙", "甲\n叉\n丙"])
 
+    def test_background_changes_during_translation_do_not_interrupt_or_drop(self):
+        # 视频字幕：文字不变而背景每帧变化，截屏线程在翻译期间不断推进内容版本
+        holder = {}
+
+        def infer(request):
+            watcher = holder["watcher"]
+            watcher._content_revision += 1
+            watcher._content_epoch = watcher._content_revision
+            return self.result(request, {"Hello": "你好", "World": "世界"}[request.text])
+
+        self.router._ai.translate = Mock(side_effect=infer)
+        frames = [("Hello\nWorld", rev) for rev in range(1, 30, 2)]
+        watcher = self.run_frames("subtitle", frames, on_create=lambda w: holder.update(watcher=w))
+        # 一次翻完，不因像素变化中断重来
+        self.assertEqual([c.args[0].text for c in self.router._ai.translate.call_args_list],
+                         ["Hello", "World"])
+        calls = watcher._result_manager.dispatch_subtitle.call_args_list
+        self.assertEqual([c.args[0] for c in calls], ["你好", "你好\n世界"])
+        watcher._result_manager.dispatch_history.assert_called_once()
+        # 界面守卫：此时内容版本已远超派发时的版本，但同一世代的译文仍应显示
+        app = App.__new__(App)
+        app._watch_session_id = 1
+        app._watcher = watcher
+        app._watch_paused = False
+        app.subtitle = Mock()
+        app.log = Mock()
+        text, gen_id = calls[-1].args[:2]
+        self.assertGreater(watcher.content_revision, calls[-1].kwargs["content_rev"])
+        app._on_watch_subtitle_guarded(text, 1, watcher, gen_id, calls[-1].kwargs["content_rev"])
+        app.subtitle.set_text.assert_called_once_with("你好\n世界")
+
+    def test_frames_captured_before_reset_are_skipped_without_ocr(self):
+        self.router._ai.translate = Mock(side_effect=lambda request: self.result(request, "新"))
+        # 最近一次重置发生在内容版本 5：版本 3 的帧是重置前截取的旧帧
+        watcher = self.run_frames("subtitle", [("Old", 3)] * 2 + [("New", 6)] * 3,
+                                  on_create=lambda w: setattr(w, "_reset_revision", 5))
+        self.assertEqual([c.args[0].text for c in self.router._ai.translate.call_args_list], ["New"])
+        # 旧帧不做识别；重置后首帧识别一次，其后相同画面按静止帧跳过
+        self.assertEqual(watcher._recognize_live_lines.call_count, 1)
+
     def test_changed_line_only_with_local_cache_disabled(self):
         # 关闭“保存本地翻译缓存”时，仍靠本次监视的内存记录只翻译变化的行，且不写入硬盘缓存
         self.router._cfg["translation_cache_enabled"] = False
