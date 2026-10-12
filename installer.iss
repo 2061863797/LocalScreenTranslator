@@ -48,14 +48,16 @@ Name: "{app}\runtime\models"
 
 [Files]
 ; 打包后的主程序与 Python 运行时（onedir 产物）
-Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Excludes: "runtime\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 进程内翻译运行资源：固定版本 llama.cpp 动态库
 Source: "runtime\llama-native\*"; DestDir: "{app}\runtime\llama-native"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; PP-OCRv6 ONNX 模型与清单
 Source: "runtime\ocr\*"; DestDir: "{app}\runtime\ocr"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 翻译模型目录：默认 Model-Free 解耦分发；仅当显式指定 IncludeModels=1 时打包模型文件
-#if Defined(IncludeModels) && IncludeModels == "1"
-Source: "runtime\models\*"; DestDir: "{app}\runtime\models"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+#ifdef IncludeModels
+  #if IncludeModels == "1"
+    Source: "runtime\models\*"; DestDir: "{app}\runtime\models"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+  #endif
 #endif
 ; 基础附属文件与许可证
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
