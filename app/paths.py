@@ -23,14 +23,21 @@ ROOT = (
     if getattr(sys, "frozen", False)
     else Path(__file__).resolve().parent.parent
 )
+DATA_DIR_ENV = "LOCALSCREEN_DATA_DIR"
 
 
 def get_data_dir() -> Path:
     """运行期可写用户数据目录（配置、日志与数据库）。
 
     - 便携模式：ROOT 下存在 portable.flag（或源码开发环境已有 config.json），数据保存在 ROOT；
-    - 安装模式（PyInstaller 安装包装入 Program Files）：写入系统标准 %LOCALAPPDATA%/LocalScreenTranslator。
+    - 安装模式（PyInstaller 安装包装入 Program Files）：写入系统标准 %LOCALAPPDATA%/LocalScreenTranslator；
+    - 环境变量 LOCALSCREEN_DATA_DIR 指定时优先使用（测试用来隔离真实数据）。
     """
+    override = os.environ.get(DATA_DIR_ENV)
+    if override:
+        p = Path(override)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
     if (ROOT / "portable.flag").exists():
         return ROOT
     if not getattr(sys, "frozen", False) and (ROOT / "config.json").exists():
@@ -64,7 +71,7 @@ def get_data_dir() -> Path:
 
 def _migrate_legacy_data_if_needed(data_dir: Path) -> None:
     """若从旧版本便携目录升级到安装版用户目录，自动平滑迁移现有配置与历史数据库。"""
-    if data_dir == ROOT or (ROOT / "portable.flag").exists():
+    if data_dir == ROOT or (ROOT / "portable.flag").exists() or os.environ.get(DATA_DIR_ENV):
         return
     import shutil
 
