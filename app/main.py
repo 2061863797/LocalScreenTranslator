@@ -741,9 +741,9 @@ class App:
                 pass
 
         for sig, signature in (
-            (w.subtitle_ready, (str, int, int)),
-            (w.annotations_ready, (list, int, int)),
-            (w.history_ready, (str, str, str, int, int)),
+            (w.subtitle_ready, (str, int)),
+            (w.annotations_ready, (list, int)),
+            (w.history_ready, (str, str, str, int)),
         ):
             try:
                 sig[signature].disconnect()
@@ -993,34 +993,18 @@ class App:
 
         # 会话多重守卫：仅当信号来自当前活跃 watcher 且 session 匹配，
         # 且 generation 仍然有效（未暂停、未重置、文字未再变化）时才渲染 UI，杜绝 Qt 队列排队滞留信号
-        try:
-            watcher.subtitle_ready[str, int, int].connect(
-                lambda text, gen_id, rev, s=current_session, w=watcher: self._on_watch_subtitle_guarded(text, s, w, gen_id, rev)
-            )
-        except Exception:
-            watcher.subtitle_ready.connect(
-                lambda text, s=current_session, w=watcher: self._on_watch_subtitle_guarded(text, s, w)
-            )
-
-        try:
-            watcher.annotations_ready[list, int, int].connect(
-                lambda items, gen_id, rev, s=current_session, w=watcher: self._on_watch_annotations_guarded(items, s, w, gen_id, rev)
-            )
-        except Exception:
-            watcher.annotations_ready.connect(
-                lambda items, s=current_session, w=watcher: self._on_watch_annotations_guarded(items, s, w)
-            )
-
-        try:
-            watcher.history_ready[str, str, str, int, int].connect(
-                lambda src, tr, m, g, r, s=current_session, w=watcher: self._on_watch_history_guarded(
-                    src, tr, m, s, w, gen_id=g, content_rev=r
-                )
-            )
-        except Exception:
-            watcher.history_ready.connect(
-                lambda src, tr, m, s=current_session, w=watcher: self._on_watch_history_guarded(src, tr, m, s, w)
-            )
+        watcher.subtitle_ready[str, int].connect(
+            lambda text, gen_id, s=current_session, w=watcher:
+                self._on_watch_subtitle_guarded(text, s, w, gen_id)
+        )
+        watcher.annotations_ready[list, int].connect(
+            lambda items, gen_id, s=current_session, w=watcher:
+                self._on_watch_annotations_guarded(items, s, w, gen_id)
+        )
+        watcher.history_ready[str, str, str, int].connect(
+            lambda src, tr, m, gen_id, s=current_session, w=watcher:
+                self._on_watch_history_guarded(src, tr, m, s, w, gen_id=gen_id)
+        )
         watcher.window_moved.connect(
             lambda x, y, w_, h_, s=current_session, w=watcher: self._on_target_window_moved_guarded(x, y, w_, h_, s, w)
         )
@@ -1078,7 +1062,6 @@ class App:
         session_id: int,
         watcher: Any,
         gen_id: int | None = None,
-        content_rev: int | None = None,
     ) -> None:
         if not self._is_active_watch_session(session_id, watcher):
             return
@@ -1097,7 +1080,6 @@ class App:
         session_id: int,
         watcher: Any,
         gen_id: int | None = None,
-        content_rev: int | None = None,
     ) -> None:
         if not self._is_active_watch_session(session_id, watcher):
             return
@@ -1118,7 +1100,6 @@ class App:
         session_id: int,
         watcher: Any,
         gen_id: int | None = None,
-        content_rev: int | None = None,
     ) -> None:
         if not self._is_active_watch_session(session_id, watcher):
             return

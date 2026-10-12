@@ -149,7 +149,7 @@ class LiveCompletenessTests(_RouterTestCase):
                 watcher._consumer_stop_event.set()
                 return None
             current["text"] = text
-            watcher._content_revision = watcher._content_epoch = revision
+            watcher._content_revision = revision
             frame = np.full((32, 64, 3), revision, dtype=np.uint8)
             return FramePacket(frame, epoch=revision, has_changed=True, changed_ratio=1.0,
                                work_revision=revision, content_revision=revision)
@@ -221,7 +221,6 @@ class LiveCompletenessTests(_RouterTestCase):
         def infer(request):
             watcher = holder["watcher"]
             watcher._content_revision += 1
-            watcher._content_epoch = watcher._content_revision
             return self.result(request, {"Hello": "你好", "World": "世界"}[request.text])
 
         self.router._ai.translate = Mock(side_effect=infer)
@@ -241,8 +240,7 @@ class LiveCompletenessTests(_RouterTestCase):
         app.subtitle = Mock()
         app.log = Mock()
         text, gen_id = calls[-1].args[:2]
-        self.assertGreater(watcher.content_revision, calls[-1].kwargs["content_rev"])
-        app._on_watch_subtitle_guarded(text, 1, watcher, gen_id, calls[-1].kwargs["content_rev"])
+        app._on_watch_subtitle_guarded(text, 1, watcher, gen_id)
         app.subtitle.set_text.assert_called_once_with("你好\n世界")
 
     def test_frames_captured_before_reset_are_skipped_without_ocr(self):
@@ -348,15 +346,15 @@ class WatcherLifetimeTests(unittest.TestCase):
         app.log = Mock()
         watcher = WindowWatcher(Mock(), Mock(), {}, region=(0, 0, 64, 32))
         seen = []
-        watcher.subtitle_ready[str, int, int].connect(
-            lambda text, gen, rev, w=watcher: seen.append(text)
+        watcher.subtitle_ready[str, int].connect(
+            lambda text, gen, w=watcher: seen.append(text)
         )
         watcher._running = False
         watcher.start()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             self.assertTrue(app._join_watcher(watcher))
-        watcher.subtitle_ready[str, int, int].emit("late", 1, 1)
+        watcher.subtitle_ready[str, int].emit("late", 1)
         self.assertEqual(seen, [])
         watcher_ref, result_ref = weakref.ref(watcher), weakref.ref(watcher.result_manager)
         del watcher

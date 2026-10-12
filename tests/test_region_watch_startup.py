@@ -20,7 +20,6 @@ class TestRegionWatchStartup(unittest.TestCase):
             region=(0, 0, 64, 32), profile="region", display_mode="annotate",
         )
         watcher._content_revision = 1
-        watcher._content_epoch = 1
         frame = np.zeros((32, 64, 3), dtype=np.uint8)
         first = FramePacket(frame, epoch=1, has_changed=True, changed_ratio=1.0,
                             work_revision=1, content_revision=1)
@@ -59,7 +58,7 @@ class TestRegionWatchStartup(unittest.TestCase):
         app.cfg = {}
         app.annotation = Mock()
         app.log = Mock()
-        App._on_watch_annotations_guarded(app, items, 1, watcher, queued_gen, 1)
+        App._on_watch_annotations_guarded(app, items, 1, watcher, queued_gen)
         app.annotation.set_items.assert_called_once_with(items)
 
     def test_blank_reply_shows_source_without_retry(self):
@@ -70,7 +69,6 @@ class TestRegionWatchStartup(unittest.TestCase):
             region=(0, 0, 64, 32), profile="region", display_mode="annotate",
         )
         watcher._content_revision = 1
-        watcher._content_epoch = 1
         frame = np.zeros((32, 64, 3), dtype=np.uint8)
         packets = iter(
             [FramePacket(frame, epoch=1, has_changed=True, changed_ratio=1.0,

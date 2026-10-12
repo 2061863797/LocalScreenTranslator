@@ -54,9 +54,9 @@ class WindowWatcher(QThread):
     - stopped(reason)                            监视结束
     """
 
-    subtitle_ready = Signal((str,), (str, int, int))
-    annotations_ready = Signal((list,), (list, int, int))
-    history_ready = Signal((str, str, str), (str, str, str, int, int))
+    subtitle_ready = Signal((str,), (str, int))
+    annotations_ready = Signal((list,), (list, int))
+    history_ready = Signal((str, str, str), (str, str, str, int))
     window_moved = Signal(int, int, int, int)
     content_cleared = Signal()
     stopped = Signal(str)
@@ -105,30 +105,16 @@ class WindowWatcher(QThread):
         self._text_change_detector = TextChangeDetector(empty_clear_delay_s=self._CLEAR_GRACE_SECONDS)
         self._result_manager = ResultManager(generation_tracker=self._generation_tracker, parent=self)
 
-        # 连接 ResultManager 内部信号至 WindowWatcher 公共信号（支持元数据多重重载透传）
-        try:
-            self._result_manager.subtitle_ready[str, int, int].connect(
-                lambda t, g, r: self.subtitle_ready[str, int, int].emit(t, g, r)
-            )
-        except Exception:
-            pass
-        self._result_manager.subtitle_ready.connect(self.subtitle_ready.emit)
-
-        try:
-            self._result_manager.annotations_ready[list, int, int].connect(
-                lambda items, g, r: self.annotations_ready[list, int, int].emit(items, g, r)
-            )
-        except Exception:
-            pass
-        self._result_manager.annotations_ready.connect(self.annotations_ready.emit)
-
-        try:
-            self._result_manager.history_ready[str, str, str, int, int].connect(
-                lambda s, t, m, g, r: self.history_ready[str, str, str, int, int].emit(s, t, m, g, r)
-            )
-        except Exception:
-            pass
-        self._result_manager.history_ready.connect(self.history_ready.emit)
+        # 把 ResultManager 的信号（含带世代号的重载）转发为 WindowWatcher 的公共信号
+        rm = self._result_manager
+        rm.subtitle_ready[str, int].connect(lambda t, g: self.subtitle_ready[str, int].emit(t, g))
+        rm.subtitle_ready.connect(self.subtitle_ready.emit)
+        rm.annotations_ready[list, int].connect(lambda i, g: self.annotations_ready[list, int].emit(i, g))
+        rm.annotations_ready.connect(self.annotations_ready.emit)
+        rm.history_ready[str, str, str, int].connect(
+            lambda s, t, m, g: self.history_ready[str, str, str, int].emit(s, t, m, g)
+        )
+        rm.history_ready.connect(self.history_ready.emit)
         self._result_manager.window_moved.connect(self.window_moved.emit)
         self._result_manager.content_cleared.connect(self.content_cleared.emit)
         self._result_manager.stopped.connect(self.stopped.emit)
@@ -142,10 +128,9 @@ class WindowWatcher(QThread):
         self._skipped_frames = 0
         self._work_revision: int = 0
         self._content_revision: int = 0
-        self._content_epoch: int = 0
         # 最近一次重置（停止/暂停/移动选区/切换语言或显示模式）时的内容版本；更早截取的帧一律丢弃
         self._reset_revision: int = 0
-        self._content_epoch_lock = threading.Lock()
+        self._revision_lock = threading.Lock()
         self._consecutive_grab_fails: int = 0
         self._last_captured_frame: np.ndarray | None = None
         self._scene_text_state = SceneTextState()
@@ -202,17 +187,12 @@ class WindowWatcher(QThread):
 
     @property
     def work_revision(self) -> int:
-        with self._content_epoch_lock:
+        with self._revision_lock:
             return self._work_revision
 
     @property
     def content_revision(self) -> int:
-        with self._content_epoch_lock:
-            return self._content_revision
-
-    @property
-    def content_epoch(self) -> int:
-        with self._content_epoch_lock:
+        with self._revision_lock:
             return self._content_revision
 
     # ==========================================
@@ -337,7 +317,7 @@ class WindowWatcher(QThread):
             return None
         return value.strip() if isinstance(value, str) and value.strip() else None
 
-    def _translate_and_show(self, lines: list[Any], text: str, gen_id: int, packet_epoch: int) -> None:
+    def _translate_and_show(self, lines: list[Any], text: str, gen_id: int) -> None:
         """增量显示一批文字行。
 
         先一次性显示缓存里已有译文的行，再只把未命中的行交给模型，翻完一行补上一行；
@@ -353,10 +333,10 @@ class WindowWatcher(QThread):
             ready = [(line, tr) for (line, _), tr in zip(entries, results) if tr is not None]
             if annotate:
                 return self._result_manager.dispatch_annotations(
-                    [(line.box, tr) for line, tr in ready], gen_id, content_rev=packet_epoch
+                    [(line.box, tr) for line, tr in ready], gen_id
                 )
             return self._result_manager.dispatch_subtitle(
-                "\n".join(tr for _, tr in ready), gen_id, content_rev=packet_epoch
+                "\n".join(tr for _, tr in ready), gen_id
             )
 
         completed = not any(tr is not None for tr in results) or show()
@@ -398,7 +378,7 @@ class WindowWatcher(QThread):
                 mode_tag = f"{self._profile}_{'annotate' if annotate else 'subtitle'}"
                 self._result_manager.dispatch_history(
                     text, "\n".join(tr for tr in results if tr is not None), mode_tag,
-                    gen_id, content_rev=packet_epoch,
+                    gen_id,
                 )
         else:
             # 被取消或出错的批次让下一帧重新处理
@@ -409,9 +389,8 @@ class WindowWatcher(QThread):
     def _reset_revisions(self) -> None:
         """作废所有在途世代与已截取的帧（停止、暂停、移动选区、切换语言或显示模式时调用）。"""
         self._generation_tracker.reset()
-        with self._content_epoch_lock:
+        with self._revision_lock:
             self._content_revision += 1
-            self._content_epoch = self._content_revision
             self._reset_revision = self._content_revision
 
     def _batch_is_current(self, gen_id: int, session_tag: str) -> bool:
@@ -635,14 +614,13 @@ class WindowWatcher(QThread):
                     or self._is_content_invalidated(diff_res, has_visual_change)
                 )
 
-                with self._content_epoch_lock:
+                with self._revision_lock:
                     if has_visual_change:
                         self._work_revision += 1
                     if invalidates_content:
                         self._content_revision += 1
                     current_work_rev = self._work_revision
                     current_content_rev = self._content_revision
-                    self._content_epoch = self._content_revision
 
                 if has_visual_change or self._last_captured_frame is None:
                     self._last_captured_frame = img
@@ -728,7 +706,7 @@ class WindowWatcher(QThread):
 
                 img = pulled.frame
                 packet_epoch = pulled.content_revision or pulled.epoch
-                with self._content_epoch_lock:
+                with self._revision_lock:
                     captured_before_reset = packet_epoch < self._reset_revision
                 if captured_before_reset:
                     # 重置前截取的旧帧（如拖动选区前的位置），不识别也不翻译
@@ -824,7 +802,7 @@ class WindowWatcher(QThread):
                     self._scene_text_state.clear()
                     self._result_manager.dispatch_cleared(frame_gen_id)
                 elif event == "change":
-                    self._translate_and_show(lines, text, frame_gen_id, packet_epoch)
+                    self._translate_and_show(lines, text, frame_gen_id)
 
                 # 10. 检查退出条件（用于同步单测：捕获循环已结束且缓冲已排空）
                 if not self._running and self._frame_buffer.is_empty:

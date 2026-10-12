@@ -22,9 +22,9 @@ class ResultManager(QObject):
     """管线结果派发管理器。
 
     管理并派发以下信号：
-    - subtitle_ready(translation[, gen_id, content_rev])
-    - annotations_ready(items[, gen_id, content_rev])
-    - history_ready(source, translation, mode[, gen_id, content_rev])
+    - subtitle_ready(translation[, gen_id])
+    - annotations_ready(items[, gen_id])
+    - history_ready(source, translation, mode[, gen_id])
     - window_moved(x, y, w, h)
     - content_cleared()
     - stopped(reason)
@@ -32,9 +32,9 @@ class ResultManager(QObject):
     译文类派发只在 gen_id 仍是当前世代时才 emit，过期结果计数后丢弃。
     """
 
-    subtitle_ready = Signal((str,), (str, int, int))
-    annotations_ready = Signal((list,), (list, int, int))
-    history_ready = Signal((str, str, str), (str, str, str, int, int))
+    subtitle_ready = Signal((str,), (str, int))
+    annotations_ready = Signal((list,), (list, int))
+    history_ready = Signal((str, str, str), (str, str, str, int))
     window_moved = Signal(int, int, int, int)
     content_cleared = Signal()
     stopped = Signal(str)
@@ -55,19 +55,19 @@ class ResultManager(QObject):
                    self.generation_tracker.current_generation)
         return False
 
-    def dispatch_subtitle(self, text: str, gen_id: int, content_rev: int = 0) -> bool:
+    def dispatch_subtitle(self, text: str, gen_id: int) -> bool:
         """派发字幕译文。若 gen_id 非当前活跃世代则丢弃。"""
         if not self._accept(gen_id, "subtitle"):
             return False
-        self.subtitle_ready[str, int, int].emit(text, gen_id, content_rev)
+        self.subtitle_ready[str, int].emit(text, gen_id)
         self.subtitle_ready.emit(text)
         return True
 
-    def dispatch_annotations(self, items: list[Any], gen_id: int, content_rev: int = 0) -> bool:
+    def dispatch_annotations(self, items: list[Any], gen_id: int) -> bool:
         """派发逐行标注译文。若 gen_id 非当前活跃世代则丢弃。"""
         if not self._accept(gen_id, "annotations"):
             return False
-        self.annotations_ready[list, int, int].emit(items, gen_id, content_rev)
+        self.annotations_ready[list, int].emit(items, gen_id)
         self.annotations_ready.emit(items)
         return True
 
@@ -77,15 +77,12 @@ class ResultManager(QObject):
         translation: str,
         mode: str,
         gen_id: int | None = None,
-        content_rev: int | None = None,
     ) -> bool:
         """派发历史记录。若指定了 gen_id 且已过期则丢弃（不计入过期译文数）。"""
         if gen_id is not None and not self.generation_tracker.is_active(gen_id):
             _log.debug("Dropped stale history: gen=%d", gen_id)
             return False
-        self.history_ready[str, str, str, int, int].emit(
-            source, translation, mode, gen_id or 0, content_rev or 0
-        )
+        self.history_ready[str, str, str, int].emit(source, translation, mode, gen_id or 0)
         self.history_ready.emit(source, translation, mode)
         return True
 
