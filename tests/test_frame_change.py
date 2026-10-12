@@ -14,261 +14,27 @@ and real-world document/video playback workloads.
 import time
 import unittest
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any
 import numpy as np
 
-# Try importing production modules if available
-try:
-    from app.frame_detector import FrameChangeDetector as _ProdFrameChangeDetector
-    from app.frame_detector import FrameDiffResult as _ProdFrameDiffResult
-except ImportError:
-    _ProdFrameChangeDetector = None
-    _ProdFrameDiffResult = None
+from app.frame_detector import FrameChangeDetector as _ProdFrameChangeDetector
+from app.frame_detector import FrameDiffResult as _ProdFrameDiffResult
 
-try:
-    from app.adaptive_polling import AdaptivePollingController as _ProdAdaptivePollingController
-    from app.adaptive_polling import PollingState as _ProdPollingState
-except ImportError:
-    _ProdAdaptivePollingController = None
-    _ProdPollingState = None
+from app.adaptive_polling import AdaptivePollingController as _ProdAdaptivePollingController
+from app.adaptive_polling import PollingState as _ProdPollingState
 
-try:
-    from app.ocr_stabilizer import OcrStabilizer as _ProdOcrStabilizer
-except ImportError:
-    _ProdOcrStabilizer = None
+from app.ocr_stabilizer import OcrStabilizer as _ProdOcrStabilizer
 
-try:
-    from app.ocr_service import OcrService as _ProdOcrService
-except ImportError:
-    _ProdOcrService = None
+from app.ocr_service import OcrService as _ProdOcrService
 
 
 # ==========================================
-# Contract Definitions (from PROJECT.md / spec_report.md)
 # ==========================================
-
-@dataclass(frozen=True)
-class ContractFrameDiffResult:
-    has_changed: bool
-    changed_ratio: float
-    changed_pixels: int
-    roi_box: tuple[int, int, int, int] | None  # (x1, y1, x2, y2)
-
-
-class ContractFrameChangeDetector:
-    """PR 3: High-performance two-stage frame change detector (<3ms on 1080p)."""
-
-    def __init__(
-        self,
-        step: int = 4,
-        pixel_threshold: int = 16,
-        min_changed_pixels: int = 40,
-        min_changed_ratio: float = 0.0002,
-    ):
-        self.step = step
-        self.pixel_threshold = pixel_threshold
-        self.min_changed_pixels = min_changed_pixels
-        self.min_changed_ratio = min_changed_ratio
-
-    def detect(self, previous: np.ndarray, current: np.ndarray) -> ContractFrameDiffResult:
-        if previous.shape != current.shape:
-            h, w = current.shape[:2]
-            return ContractFrameDiffResult(
-                has_changed=True,
-                changed_ratio=1.0,
-                changed_pixels=current.size,
-                roi_box=(0, 0, w, h),
-            )
-
-        # Stage 1: Downsampling
-        s = self.step
-        prev_sub = previous[::s, ::s]
-        curr_sub = current[::s, ::s]
-
-        # Convert to grayscale via integer coefficients: (R*77 + G*150 + B*29) >> 8
-        if len(curr_sub.shape) == 3:
-            prev_gray = (
-                prev_sub[:, :, 0].astype(np.int32) * 29
-                + prev_sub[:, :, 1].astype(np.int32) * 150
-                + prev_sub[:, :, 2].astype(np.int32) * 77
-            ) >> 8
-            curr_gray = (
-                curr_sub[:, :, 0].astype(np.int32) * 29
-                + curr_sub[:, :, 1].astype(np.int32) * 150
-                + curr_sub[:, :, 2].astype(np.int32) * 77
-            ) >> 8
-        else:
-            prev_gray = prev_sub.astype(np.int32)
-            curr_gray = curr_sub.astype(np.int32)
-
-        # Stage 2: Diff and Thresholding
-        diff = np.abs(curr_gray - prev_gray)
-        mask = diff > self.pixel_threshold
-        changed_count = int(np.count_nonzero(mask))
-        total_sub_pixels = mask.size
-        ratio = changed_count / total_sub_pixels
-
-        # Noise & Cursor Filtering (< 40 downsampled pixels)
-        if changed_count < self.min_changed_pixels:
-            return ContractFrameDiffResult(
-                has_changed=False,
-                changed_ratio=ratio,
-                changed_pixels=changed_count,
-                roi_box=None,
-            )
-
-        # ROI Bounding Box Computation
-        y_indices, x_indices = np.nonzero(mask)
-        x1 = int(x_indices.min() * s)
-        y1 = int(y_indices.min() * s)
-        x2 = int((x_indices.max() + 1) * s)
-        y2 = int((y_indices.max() + 1) * s)
-        h, w = current.shape[:2]
-        roi_box = (max(0, x1), max(0, y1), min(w, x2), min(h, y2))
-
-        return ContractFrameDiffResult(
-            has_changed=True,
-            changed_ratio=ratio,
-            changed_pixels=changed_count,
-            roi_box=roi_box,
-        )
-
-
-class ContractPollingState(str, Enum):
-    ACTIVE = "ACTIVE"
-    WARM = "WARM"
-    IDLE = "IDLE"
-    DEEP_IDLE = "DEEP_IDLE"
-
-
-class ContractAdaptivePollingController:
-    """PR 4: Dynamic polling state machine."""
-
-    def __init__(
-        self,
-        active_interval: float = 0.12,
-        warm_interval: float = 0.25,
-        idle_interval: float = 0.50,
-        deep_idle_interval: float = 0.80,
-        warm_threshold: int = 2,
-        idle_threshold: int = 5,
-        deep_idle_threshold: int = 20,
-    ):
-        self.active_interval = active_interval
-        self.warm_interval = warm_interval
-        self.idle_interval = idle_interval
-        self.deep_idle_interval = deep_idle_interval
-        self.warm_threshold = warm_threshold
-        self.idle_threshold = idle_threshold
-        self.deep_idle_threshold = deep_idle_threshold
-
-        self._state = ContractPollingState.ACTIVE
-        self._static_count = 0
-
-    def on_frame(self, has_changed: bool) -> float:
-        if has_changed:
-            self._static_count = 0
-            self._state = ContractPollingState.ACTIVE
-            return self.active_interval
-
-        self._static_count += 1
-        if self._static_count >= self.deep_idle_threshold:
-            self._state = ContractPollingState.DEEP_IDLE
-            return self.deep_idle_interval
-        elif self._static_count >= self.idle_threshold:
-            self._state = ContractPollingState.IDLE
-            return self.idle_interval
-        elif self._static_count >= self.warm_threshold:
-            self._state = ContractPollingState.WARM
-            return self.warm_interval
-        else:
-            self._state = ContractPollingState.ACTIVE
-            return self.active_interval
-
-    @property
-    def state(self) -> ContractPollingState:
-        return self._state
-
 
 @dataclass
 class OcrLineStub:
     text: str
     box: tuple[int, int, int, int]  # (x1, y1, x2, y2)
     confidence: float = 0.99
-
-
-class ContractOcrService:
-    """PR 5: Localized ROI OCR with 24px padding and full OCR fallback."""
-
-    def __init__(
-        self,
-        mock_ocr_fn=None,
-        padding: int = 24,
-        max_roi_ratio: float = 0.6,
-        health_check_interval: int = 25,
-    ):
-        self.mock_ocr_fn = mock_ocr_fn or (lambda crop: [OcrLineStub("sample text", (0, 0, 100, 20))])
-        self.padding = padding
-        self.max_roi_ratio = max_roi_ratio
-        self.health_check_interval = health_check_interval
-        self.frames_since_full_ocr = 0
-        self.last_was_fallback = False
-        self.last_padded_roi: tuple[int, int, int, int] | None = None
-
-    def compute_padded_roi(
-        self, roi_box: tuple[int, int, int, int], width: int, height: int
-    ) -> tuple[int, int, int, int]:
-        x1, y1, x2, y2 = roi_box
-        p = self.padding
-        return (
-            max(0, x1 - p),
-            max(0, y1 - p),
-            min(width, x2 + p),
-            min(height, y2 + p),
-        )
-
-    def recognize_frame(
-        self,
-        frame: np.ndarray,
-        roi_box: tuple[int, int, int, int] | None,
-        force_full: bool = False,
-    ) -> list[OcrLineStub]:
-        h, w = frame.shape[:2]
-        self.frames_since_full_ocr += 1
-
-        # Fallback check 1: periodic health check
-        if force_full or self.frames_since_full_ocr >= self.health_check_interval or roi_box is None:
-            self.frames_since_full_ocr = 0
-            self.last_was_fallback = True
-            return self.mock_ocr_fn(frame)
-
-        # Apply 24px padding
-        padded_roi = self.compute_padded_roi(roi_box, w, h)
-        self.last_padded_roi = padded_roi
-        px1, py1, px2, py2 = padded_roi
-        roi_area = (px2 - px1) * (py2 - py1)
-        full_area = w * h
-        area_ratio = roi_area / max(1, full_area)
-
-        # Fallback check 2: area ratio > 0.6
-        if area_ratio > self.max_roi_ratio:
-            self.frames_since_full_ocr = 0
-            self.last_was_fallback = True
-            return self.mock_ocr_fn(frame)
-
-        # Localized ROI recognition with coordinate remapping
-        self.last_was_fallback = False
-        crop = frame[py1:py2, px1:px2]
-        crop_lines = self.mock_ocr_fn(crop)
-
-        # Coordinate remapping: add px1, py1 to each line's bounding box
-        remapped_lines = []
-        for line in crop_lines:
-            bx1, by1, bx2, by2 = line.box
-            remapped_box = (bx1 + px1, by1 + py1, bx2 + px1, by2 + py1)
-            remapped_lines.append(OcrLineStub(line.text, remapped_box, line.confidence))
-        return remapped_lines
 
 
 def _levenshtein(s1: str, s2: str) -> int:
@@ -288,70 +54,21 @@ def _levenshtein(s1: str, s2: str) -> int:
     return prev[-1]
 
 
-class ContractOcrStabilizer:
-    """PR 6: Temporal debounce (2 frames) & Levenshtein edit-distance jitter suppression."""
-
-    def __init__(self, debounce_frames: int = 2, max_jitter_dist: int = 2):
-        self.debounce_frames = debounce_frames
-        self.max_jitter_dist = max_jitter_dist
-        self._stable_lines: list[OcrLineStub] = []
-        self._candidate_lines: list[OcrLineStub] = []
-        self._candidate_repeat_count: int = 0
-
-    def process(self, lines: list[OcrLineStub]) -> tuple[bool, list[OcrLineStub]]:
-        """Returns (is_substantive_change, stabilized_lines)."""
-        if not self._stable_lines:
-            # Initial state
-            self._stable_lines = lines
-            return True, lines
-
-        curr_text = " ".join([l.text for l in lines])
-        prev_text = " ".join([l.text for l in self._stable_lines])
-
-        dist = _levenshtein(curr_text, prev_text)
-
-        # If identical or minor single-frame jitter (Levenshtein distance <= max_jitter_dist)
-        if dist <= self.max_jitter_dist:
-            if curr_text == prev_text:
-                self._candidate_repeat_count = 0
-                return False, self._stable_lines
-
-            # Jitter candidate: check if it repeats for debounce_frames
-            cand_text = " ".join([l.text for l in self._candidate_lines])
-            if curr_text == cand_text:
-                self._candidate_repeat_count += 1
-                if self._candidate_repeat_count >= self.debounce_frames:
-                    self._stable_lines = lines
-                    self._candidate_repeat_count = 0
-                    return True, self._stable_lines
-                return False, self._stable_lines
-            else:
-                self._candidate_lines = lines
-                self._candidate_repeat_count = 1
-                return False, self._stable_lines
-
-        # Substantive text change (Levenshtein distance > threshold)
-        self._stable_lines = lines
-        self._candidate_lines = []
-        self._candidate_repeat_count = 0
-        return True, lines
-
-
 # Factory helpers
 def create_frame_detector():
-    return _ProdFrameChangeDetector() if _ProdFrameChangeDetector else ContractFrameChangeDetector()
+    return _ProdFrameChangeDetector()
 
 
 def create_adaptive_polling():
-    return _ProdAdaptivePollingController() if _ProdAdaptivePollingController else ContractAdaptivePollingController()
+    return _ProdAdaptivePollingController()
 
 
 def create_ocr_stabilizer():
-    return _ProdOcrStabilizer() if _ProdOcrStabilizer else ContractOcrStabilizer()
+    return _ProdOcrStabilizer()
 
 
 def create_ocr_service():
-    return _ProdOcrService() if _ProdOcrService else ContractOcrService()
+    return _ProdOcrService()
 
 
 class TestFrameChangeTiers(unittest.TestCase):
@@ -394,28 +111,28 @@ class TestFrameChangeTiers(unittest.TestCase):
 
     def test_adaptive_polling_progression(self):
         """Tier 1: Continuous static frames transition ACTIVE -> WARM -> IDLE -> DEEP_IDLE."""
-        self.assertEqual(self.polling.state, ContractPollingState.ACTIVE)
+        self.assertEqual(self.polling.state, _ProdPollingState.ACTIVE)
 
         # 1 static frame -> still ACTIVE
         t1 = self.polling.on_frame(has_changed=False)
-        self.assertEqual(self.polling.state, ContractPollingState.ACTIVE)
+        self.assertEqual(self.polling.state, _ProdPollingState.ACTIVE)
         self.assertAlmostEqual(t1, 0.12)
 
         # 2 static frames -> WARM (>=2)
         t2 = self.polling.on_frame(has_changed=False)
-        self.assertEqual(self.polling.state, ContractPollingState.WARM)
+        self.assertEqual(self.polling.state, _ProdPollingState.WARM)
         self.assertAlmostEqual(t2, 0.25)
 
         # 5 static frames total -> IDLE (>=5)
         for _ in range(3):
             self.polling.on_frame(has_changed=False)
-        self.assertEqual(self.polling.state, ContractPollingState.IDLE)
+        self.assertEqual(self.polling.state, _ProdPollingState.IDLE)
         self.assertAlmostEqual(self.polling.idle_interval, 0.50)
 
         # 20 static frames total -> DEEP_IDLE (>=20)
         for _ in range(15):
             self.polling.on_frame(has_changed=False)
-        self.assertEqual(self.polling.state, ContractPollingState.DEEP_IDLE)
+        self.assertEqual(self.polling.state, _ProdPollingState.DEEP_IDLE)
         self.assertAlmostEqual(self.polling.deep_idle_interval, 0.80)
 
     def test_adaptive_polling_immediate_wake(self):
@@ -423,11 +140,11 @@ class TestFrameChangeTiers(unittest.TestCase):
         # Drive into DEEP_IDLE
         for _ in range(25):
             self.polling.on_frame(has_changed=False)
-        self.assertEqual(self.polling.state, ContractPollingState.DEEP_IDLE)
+        self.assertEqual(self.polling.state, _ProdPollingState.DEEP_IDLE)
 
         # Wake up on change
         delay = self.polling.on_frame(has_changed=True)
-        self.assertEqual(self.polling.state, ContractPollingState.ACTIVE)
+        self.assertEqual(self.polling.state, _ProdPollingState.ACTIVE)
         self.assertAlmostEqual(delay, 0.12)
 
     def test_ocr_stabilizer_accepts_stable_lines(self):
@@ -571,20 +288,20 @@ class TestFrameChangeTiers(unittest.TestCase):
         # Step 1: Detect no change
         res = self.detector.detect(f1, f2)
         delay = self.polling.on_frame(res.has_changed)
-        self.assertEqual(self.polling.state, ContractPollingState.ACTIVE)
+        self.assertEqual(self.polling.state, _ProdPollingState.ACTIVE)
 
         # 5 identical frames
         for _ in range(5):
             res = self.detector.detect(f1, f2)
             delay = self.polling.on_frame(res.has_changed)
-        self.assertEqual(self.polling.state, ContractPollingState.IDLE)
+        self.assertEqual(self.polling.state, _ProdPollingState.IDLE)
 
         # Frame changes
         f3 = f1.copy()
         f3[20:60, 20:60] = 200
         res_change = self.detector.detect(f1, f3)
         delay_wake = self.polling.on_frame(res_change.has_changed)
-        self.assertEqual(self.polling.state, ContractPollingState.ACTIVE)
+        self.assertEqual(self.polling.state, _ProdPollingState.ACTIVE)
         self.assertAlmostEqual(delay_wake, 0.12)
 
     def test_roi_ocr_remapping_coordinates(self):
@@ -739,10 +456,7 @@ class TestMilestone2ProductionModules(unittest.TestCase):
         self.assertEqual(controller.static_count, 0)
 
     def test_ocr_service_edge_cases_and_remapping(self):
-        try:
-            from app.ocr_engine import OcrLine
-        except ImportError:
-            OcrLine = None
+        from app.ocr_engine import OcrLine
 
         service = _ProdOcrService(padding=20, max_roi_ratio=0.5, health_check_interval=10)
 
@@ -933,10 +647,7 @@ class TestMilestone2ProductionModules(unittest.TestCase):
 
     def test_ocr_service_coordinate_clamping_to_frame_bounds(self):
         """Verify OcrService clamps remapped boxes to frame bounds and has no dummy stubs."""
-        try:
-            from app.ocr_engine import OcrLine
-        except ImportError:
-            OcrLine = None
+        from app.ocr_engine import OcrLine
 
         if OcrLine is not None:
             # Mock OCR returns bounding box extending past crop bounds

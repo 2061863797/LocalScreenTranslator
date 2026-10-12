@@ -11,95 +11,27 @@ LatestFrameBuffer single-slot overwrites, dropped frame accounting, and real-wor
 import threading
 import time
 import unittest
-from dataclasses import dataclass
-from typing import Any
 import numpy as np
 
 from app.latest_frame_buffer import FramePacket
 
-# Try importing production components if available
-try:
-    from app.latest_frame_buffer import LatestFrameBuffer as _ProdLatestFrameBuffer
-except ImportError:
-    _ProdLatestFrameBuffer = None
+from app.latest_frame_buffer import LatestFrameBuffer as _ProdLatestFrameBuffer
 
-try:
-    from app.result_manager import ResultManager as _ProdResultManager
-except ImportError:
-    _ProdResultManager = None
+from app.result_manager import ResultManager as _ProdResultManager
 
-try:
-    from app.pipelines import GenerationTracker as _ProdGenerationTracker, WatchCycleContext
-except ImportError:
-    try:
-        from app.result_manager import GenerationTracker as _ProdGenerationTracker
-    except ImportError:
-        _ProdGenerationTracker = None
-
-    @dataclass(frozen=True)
-    class WatchCycleContext:
-        generation_id: int
-        timestamp: float
-        target_language: str
-
-
-class ContractGenerationTracker:
-    """Reference contract implementation of PR 2 GenerationTracker."""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._current_gen: int = 0
-
-    def next_generation(self) -> int:
-        with self._lock:
-            self._current_gen += 1
-            return self._current_gen
-
-    def is_active(self, gen_id: int) -> bool:
-        with self._lock:
-            return gen_id == self._current_gen
-
-    def reset(self) -> int:
-        with self._lock:
-            self._current_gen += 1
-            return self._current_gen
-
-    @property
-    def current_generation(self) -> int:
-        with self._lock:
-            return self._current_gen
-
-
-class ContractResultManager:
-    """Reference contract implementation of generation-guarded result dispatching."""
-
-    def __init__(self, tracker: ContractGenerationTracker):
-        self.tracker = tracker
-        self.latest_dispatched: str | None = None
-        self.dropped_stale_count: int = 0
-        self.dispatched_history: list[tuple[int, str]] = []
-
-    def dispatch_subtitle(self, text: str, gen_id: int) -> bool:
-        if not self.tracker.is_active(gen_id):
-            self.dropped_stale_count += 1
-            return False
-        self.latest_dispatched = text
-        self.dispatched_history.append((gen_id, text))
-        return True
+from app.pipelines import GenerationTracker as _ProdGenerationTracker
 
 
 # Factory helpers
 def create_generation_tracker():
-    return _ProdGenerationTracker() if _ProdGenerationTracker else ContractGenerationTracker()
+    return _ProdGenerationTracker()
 
 
 def create_latest_frame_buffer():
-    return _ProdLatestFrameBuffer() if _ProdLatestFrameBuffer else ContractLatestFrameBuffer()
+    return _ProdLatestFrameBuffer()
 
 
 def create_result_manager(tracker):
-    if not _ProdResultManager:
-        return ContractResultManager(tracker)
     rm = _ProdResultManager(tracker)
     # 通过信号记录最后一次成功派发的字幕，供断言使用
     rm.latest_dispatched = None

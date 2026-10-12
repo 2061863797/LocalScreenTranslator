@@ -11,10 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 
-try:
-    import cv2
-except ImportError:
-    cv2 = None
+import cv2
 
 
 @dataclass(frozen=True)
@@ -154,35 +151,22 @@ class FrameChangeDetector:
             prev_sub = prev_sub.astype(np.uint8)
 
         # Stage 2: Grayscale conversion and difference
-        if cv2 is not None:
-            if curr_sub.ndim == 3:
-                channels = curr_sub.shape[2]
-                if channels == 3:
-                    prev_gray = cv2.cvtColor(prev_sub, cv2.COLOR_BGR2GRAY)
-                    curr_gray = cv2.cvtColor(curr_sub, cv2.COLOR_BGR2GRAY)
-                elif channels == 4:
-                    prev_gray = cv2.cvtColor(prev_sub, cv2.COLOR_BGRA2GRAY)
-                    curr_gray = cv2.cvtColor(curr_sub, cv2.COLOR_BGRA2GRAY)
-                else:
-                    prev_gray = prev_sub[:, :, 0]
-                    curr_gray = curr_sub[:, :, 0]
+        if curr_sub.ndim == 3:
+            channels = curr_sub.shape[2]
+            if channels == 3:
+                prev_gray = cv2.cvtColor(prev_sub, cv2.COLOR_BGR2GRAY)
+                curr_gray = cv2.cvtColor(curr_sub, cv2.COLOR_BGR2GRAY)
+            elif channels == 4:
+                prev_gray = cv2.cvtColor(prev_sub, cv2.COLOR_BGRA2GRAY)
+                curr_gray = cv2.cvtColor(curr_sub, cv2.COLOR_BGRA2GRAY)
             else:
-                prev_gray = prev_sub
-                curr_gray = curr_sub
-
-            diff = cv2.absdiff(curr_gray, prev_gray)
+                prev_gray = prev_sub[:, :, 0]
+                curr_gray = curr_sub[:, :, 0]
         else:
-            # Fallback pure NumPy integer arithmetic (diff-first vectorization)
-            if curr_sub.ndim == 3:
-                c0 = curr_sub[:, :, 0].astype(np.int32)
-                c1 = curr_sub[:, :, 1].astype(np.int32)
-                c2 = curr_sub[:, :, 2].astype(np.int32)
-                p0 = prev_sub[:, :, 0].astype(np.int32)
-                p1 = prev_sub[:, :, 1].astype(np.int32)
-                p2 = prev_sub[:, :, 2].astype(np.int32)
-                diff = np.abs(((c2 - p2) * 77 + (c1 - p1) * 150 + (c0 - p0) * 29) >> 8)
-            else:
-                diff = np.abs(curr_sub.astype(np.int32) - prev_sub.astype(np.int32))
+            prev_gray = prev_sub
+            curr_gray = curr_sub
+
+        diff = cv2.absdiff(curr_gray, prev_gray)
 
         mask = diff > self.pixel_threshold
         changed_count = int(np.count_nonzero(mask))

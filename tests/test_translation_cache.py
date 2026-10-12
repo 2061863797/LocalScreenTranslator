@@ -59,6 +59,23 @@ class TestTranslationCacheTiers(unittest.TestCase):
         self.assertIn(key, self.cache._l1)
         self.assertEqual(self.cache.get("Fast test", "zh", "model", "v1"), "快速测试")
 
+    def test_l2_hits_backfill_l1_and_commit_access_stats_in_batches(self):
+        for i in range(60):
+            self.cache.put(f"src_{i}", "zh", "m", "v1", f"译_{i}")
+        self.cache._l1.clear()
+        self.cache.l1_capacity = 30
+        # 60 次二级缓存命中：每条都能读回并回填一级缓存（超出容量淘汰最旧的），
+        # 满 50 次批量提交一次访问统计
+        for i in range(60):
+            self.assertEqual(self.cache.get(f"src_{i}", "zh", "m", "v1"), f"译_{i}")
+        self.assertEqual(len(self.cache._l1), 30)
+        self.assertEqual(self.cache._pending_reads, 10)
+        key = self.cache.make_key("src_0", "zh", "m", "v1")
+        count = self.cache._conn.execute(
+            "SELECT access_count FROM translation_cache WHERE cache_key = ?", (key,)
+        ).fetchone()[0]
+        self.assertEqual(count, 2)
+
     def test_l2_sqlite_persistent_cache_hit_across_instances(self):
         """Tier 1: Cache entries survive in SQLite and load into new cache instance."""
         self.cache.put("Persistent item", "zh", "model1", "v1", "持久条目")

@@ -14,133 +14,15 @@ from unittest.mock import MagicMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
-from PySide6.QtGui import QFont, QFontMetrics, QImage
-from PySide6.QtWidgets import QApplication, QScrollBar, QWidget
+from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication
 
-# Dynamic resolution of SubtitleBar
-# If the production SubtitleBar implements PR1/PR10 contracts, test it.
-# Otherwise, provide a contract-compliant reference stub matching PROJECT.md.
-try:
-    from app.ui.subtitle_bar import SubtitleBar as _ProdSubtitleBar
-
-    # Check if production SubtitleBar already has PR1/PR10 contracts
-    _has_pr1 = hasattr(_ProdSubtitleBar, "prepare_layout") or hasattr(_ProdSubtitleBar, "_reflow_text")
-except ImportError:
-    _ProdSubtitleBar = None
-
-
-class ContractSubtitleBar(QWidget):
-    """Reference implementation of PR 1 & PR 10 SubtitleBar contract.
-
-    Guarantees:
-    1. Invisible at startup until first valid translation.
-    2. Empty/whitespace strings never cause window to show.
-    3. prepare_layout() / layout calculation completes BEFORE show().
-    4. Controls, scrollbar, and resize grip are child widgets sharing a single native HWND.
-    """
-
-    _MIN_W = 200
-    _MIN_H = 60
-    _SCROLL_W = 12
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._text = ""
-        self._layout_calculated_before_show = False
-        self._layout_runs = 0
-        self._content_h = 0
-        self._user_size = None
-        self._font = QFont("Microsoft YaHei", 12)
-
-        # PR 10: Child widgets with parent=self (single top-level HWND)
-        self._ctrl = QWidget(self)
-        self._ctrl.resize(80, 24)
-        self._ctrl.hide()
-
-        self._vscroll = QScrollBar(Qt.Orientation.Vertical, self)
-        self._vscroll.resize(self._SCROLL_W, 40)
-        self._vscroll.hide()
-
-        self._grip = QWidget(self)
-        self._grip.resize(16, 16)
-        self._grip.hide()
-
-        # Hidden by default at startup
-        self.hide()
-
-    def is_single_hwnd(self) -> bool:
-        """Returns True if self is top-level window and all controls are child widgets."""
-        children_non_native = (
-            self._ctrl.windowHandle() is None
-            and not self._ctrl.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
-            and self._vscroll.windowHandle() is None
-            and not self._vscroll.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
-            and self._grip.windowHandle() is None
-            and not self._grip.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
-        )
-        return (
-            self.isWindow()
-            and not self._ctrl.isWindow()
-            and self._ctrl.parent() is self
-            and not self._vscroll.isWindow()
-            and self._vscroll.parent() is self
-            and not self._grip.isWindow()
-            and self._grip.parent() is self
-            and children_non_native
-        )
-
-    def prepare_layout(self, text: str) -> None:
-        """Calculates text reflow, dimensions, and positions chrome prior to show()."""
-        self._layout_runs += 1
-        fm = QFontMetrics(self._font)
-        # Approximate content height
-        lines = text.split("\n")
-        self._content_h = max(len(lines) * fm.lineSpacing(), self._MIN_H)
-        target_w = max(self.width(), self._MIN_W)
-        target_h = max(self.height(), self._MIN_H)
-        self.resize(target_w, target_h)
-        self._place_chrome()
-        self._layout_calculated_before_show = True
-
-    def _place_chrome(self) -> None:
-        """Place child controls relative to self client coordinates."""
-        self._ctrl.move(max(0, self.width() - self._ctrl.width() - 4), 4)
-        self._vscroll.move(
-            max(0, self.width() - self._SCROLL_W),
-            self._ctrl.height() + 4,
-        )
-        self._vscroll.resize(self._SCROLL_W, max(10, self.height() - self._ctrl.height() - 24))
-        self._grip.move(max(0, self.width() - 16), max(0, self.height() - 16))
-
-    def set_text(self, text: str | None) -> None:
-        """Sets subtitle text according to PR 1 Zero-Flicker specification."""
-        clean_text = (text or "").strip()
-        if not clean_text:
-            self._text = ""
-            # Empty / whitespace must not trigger show
-            return
-
-        self._text = clean_text
-        if not self.isVisible():
-            # Crucial requirement: layout must be prepared BEFORE self.show()
-            self.prepare_layout(self._text)
-            self.show()
-            self._ctrl.show()
-            self._grip.show()
-        else:
-            self.prepare_layout(self._text)
-        self.update()
+from app.ui.subtitle_bar import SubtitleBar as _ProdSubtitleBar
 
 
 def create_test_subtitle_bar():
-    return _ProdSubtitleBar() if _ProdSubtitleBar else ContractSubtitleBar()
+    return _ProdSubtitleBar()
 
 
 class TestSubtitleOverlayTiers(unittest.TestCase):
