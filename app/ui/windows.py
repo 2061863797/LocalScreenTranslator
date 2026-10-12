@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import config
+from .. import autostart, config
 from ..applog import LOG_PATH, get_log_emitter, recent_lines
 from ..translation_runtime.languages import LANGUAGES as TRANSLATION_LANGUAGES
 from ..paths import (
@@ -414,6 +414,11 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._translation_font_size = _font_size_combo()
         self._history_enabled = QCheckBox()
         self._translation_cache_enabled = QCheckBox()
+        self._autostart = QCheckBox()
+        self._watch_interval_hint = QLabel()
+        self._watch_interval_hint.setWordWrap(True)
+        self._watch_interval_hint.setStyleSheet("color:rgba(255,255,255,120);font-size:11px;")
+        self._watch_interval_hint.setContentsMargins(16, 6, 16, 0)  # 与卡片内容左缘对齐
         self._history_privacy_tip = QLabel()
         self._history_privacy_tip.setWordWrap(True)
         self._history_privacy_tip.setStyleSheet("color:#aaa;font-size:12px;")
@@ -497,8 +502,7 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._stack = QStackedWidget()
         self._stack.addWidget(self._page_general())
         self._stack.addWidget(self._page_hotkeys())
-        self._stack.addWidget(self._page_window())
-        self._stack.addWidget(self._page_region())
+        self._stack.addWidget(self._page_watch())
         self._stack.addWidget(self._page_advanced())
         self._stack.addWidget(self._page_log())
 
@@ -511,7 +515,7 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
         self._nav_btns: list[QPushButton] = []
-        for i in range(6):
+        for i in range(5):
             btn = QPushButton()
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -600,8 +604,7 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._btn_close.setToolTip(tr("close"))
         self._btn_save.setText(tr("save"))
         nav_keys = (
-            "nav_general", "nav_hotkeys", "nav_window",
-            "nav_region", "nav_advanced", "nav_log",
+            "nav_general", "nav_hotkeys", "nav_watch", "nav_advanced", "nav_log",
         )
         for btn, k in zip(self._nav_btns, nav_keys):
             btn.setText(tr(k))
@@ -638,6 +641,10 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._history_enabled.setText(tr("history_enabled"))
         self._translation_cache_enabled.setText(tr("translation_cache_enabled"))
         self._history_privacy_tip.setText(tr("history_privacy_tip"))
+        self._autostart.setText(tr("autostart_enabled"))
+        self._card_start_title.setText(tr("card_startup"))
+        self._card_start_hint.setText(tr("card_startup_hint"))
+        self._watch_interval_hint.setText(tr("interval_hint"))
         self._runtime_title.setText(tr("runtime_status"))
         self._runtime_retry.setText(tr("runtime_retry"))
         self._refresh_runtime_status()
@@ -693,7 +700,8 @@ class SettingsWindow(_DraggableMixin, QWidget):
         for index, key in enumerate(("llama_device_auto", "llama_device_gpu", "llama_device_cpu")):
             self._llama_device.setItemText(index, tr(key))
         self._llama_device.setToolTip(tr("llama_device_tip"))
-        self._lab_max_tokens.setText("max_tokens")
+        self._lab_max_tokens.setText(tr("max_tokens_label"))
+        self._lab_max_tokens.setToolTip(tr("max_tokens_tip"))
         self._max_tokens.setToolTip(tr("max_tokens_tip"))
         self._max_tokens_custom.setToolTip(tr("max_tokens_tip"))
         self._max_tokens_presets.setText(tr("max_tokens_presets"))
@@ -844,6 +852,10 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._ann_color_note.setStyleSheet("color:rgba(255,255,255,120);font-size:11px;")
         lay1.addWidget(self._ann_color_note)
 
+        # 卡片：启动
+        card_start, lay_start, self._card_start_title, self._card_start_hint = _settings_card("", "")
+        lay_start.addWidget(self._autostart)
+
         # 卡片 2：本地数据存储
         card2, lay2, title_engine, hint_engine = _settings_card(
             "本地数据存储" if self._lang == "zh" else "Data Storage",
@@ -855,7 +867,7 @@ class SettingsWindow(_DraggableMixin, QWidget):
         lay2.addWidget(self._translation_cache_enabled)
         lay2.addWidget(self._history_privacy_tip)
 
-        return self._wrap_scroll(card_runtime, card1, card2)
+        return self._wrap_scroll(card_runtime, card1, card_start, card2)
 
     def set_runtime_status(self, state: dict):
         self._runtime_state = dict(state)
@@ -899,23 +911,20 @@ class SettingsWindow(_DraggableMixin, QWidget):
             lay.addLayout(r)
         return self._wrap_scroll(card)
 
-    def _page_window(self) -> QWidget:
-        card, lay, self._card_win_title, self._card_win_hint = _settings_card("", "")
+    def _page_watch(self) -> QWidget:
+        """持续翻译：窗口与区域两张卡片合为一页。"""
+        card_win, lay_win, self._card_win_title, self._card_win_hint = _settings_card("", "")
         r1, self._lab_win_interval = _form_row("", self._win_interval_widget)
         r2, self._lab_win_font_size = _form_row("", self._win_font_size)
-        lay.addLayout(r1)
-        lay.addLayout(r2)
-        return self._wrap_scroll(card)
-
-    def _page_region(self) -> QWidget:
-        card, lay, self._card_reg_title, self._card_reg_hint = _settings_card("", "")
-        r1, self._lab_reg_interval = _form_row("", self._reg_interval_widget)
-        r2, self._lab_reg_font_size = _form_row("", self._reg_font_size)
-        r3, self._lab_reg_mode = _form_row("", self._reg_annotate)
-        lay.addLayout(r1)
-        lay.addLayout(r2)
-        lay.addLayout(r3)
-        return self._wrap_scroll(card)
+        lay_win.addLayout(r1)
+        lay_win.addLayout(r2)
+        card_reg, lay_reg, self._card_reg_title, self._card_reg_hint = _settings_card("", "")
+        r3, self._lab_reg_interval = _form_row("", self._reg_interval_widget)
+        r4, self._lab_reg_font_size = _form_row("", self._reg_font_size)
+        r5, self._lab_reg_mode = _form_row("", self._reg_annotate)
+        for row in (r3, r4, r5):
+            lay_reg.addLayout(row)
+        return self._wrap_scroll(self._watch_interval_hint, card_win, card_reg)
 
     def _page_advanced(self) -> QWidget:
         card, lay, self._card_adv_title, self._card_adv_hint = _settings_card("", "")
@@ -1029,6 +1038,8 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._translation_cache_enabled.setChecked(
             bool(cfg.get("translation_cache_enabled", True))
         )
+        # 开机自启动以注册表为准，不存入配置
+        self._autostart.setChecked(autostart.is_enabled())
         self._hk_shot.set_value(cfg["hotkey_screenshot"])
         self._hk_word.set_value(cfg["hotkey_word"])
         self._hk_win.set_value(cfg["hotkey_window"])
@@ -1310,6 +1321,12 @@ class SettingsWindow(_DraggableMixin, QWidget):
             return
         self._cfg.update(draft)
         config.save(self._cfg)
+        wanted = self._autostart.isChecked()
+        if wanted != autostart.is_enabled() and not autostart.set_enabled(wanted):
+            self._autostart.setChecked(not wanted)
+            topmost_message(
+                "warning", self._tr("autostart_fail_title"), self._tr("autostart_fail_body"), parent=self,
+            )
         if self._on_saved:
             self._on_saved()
         geo = self.frameGeometry()

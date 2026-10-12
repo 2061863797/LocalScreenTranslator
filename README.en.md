@@ -72,7 +72,7 @@ The tray opens Settings, History, Logs, and Quit. One window or region live sess
 - **Region annotation mode**: The control bar merges into a single strip docked on the top-left of the selection area, including drag handle, Pin, target language, subtitle switch, pause, and close.
 - **Instant language switching**: Click the language button directly on the control bar to open the target language menu and retranslate immediately.
 
-Window geometry and settings are persisted. Translation history and cache can be viewed and cleared under History or Settings.
+Window geometry and settings are persisted. Translation history and cache can be viewed and cleared under History or Settings. Start with Windows can be enabled under Settings → General → Startup (models load about 30 s after boot to ease startup).
 
 ## Troubleshooting
 

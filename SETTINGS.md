@@ -12,7 +12,8 @@
 | OCR 设备 | `ocr_provider`、`ocr_device_id` | 默认自动优先 DirectML；失败时回退 CPU，也可在配置中指定 CPU |
 | OCR 长边限制 | `ocr_max_side` | 默认 1600；0 表示不做额外长边缩放 |
 | OCR 最低置信度 | `ocr_score_min` | 默认 0.45；低于此值的识别行会被丢弃 |
-| 生成上限 | `max_tokens` | 默认 512；可选 64–8192，实际生成不超过提示占用后剩余的上下文容量 |
+| 开机自启动 | Windows 启动项 `HKCU\…\Run`（不在 config.json） | 设置「常规 → 启动」开关；开机启动时约 30 秒后再加载模型，期间开始翻译会立即加载；卸载时自动删除 |
+| 单次最大输出长度 | `max_tokens` | 默认 512；可选 64–8192，实际生成不超过提示占用后剩余的上下文容量 |
 | CPU 线程 | `threads` | llama.cpp 推理线程数 |
 | 上下文 | `ctx_size` | 默认 2048 |
 | 翻译缓存 | `translation_cache_enabled` | 关闭后不再写入；旧缓存可在历史窗口清除 |

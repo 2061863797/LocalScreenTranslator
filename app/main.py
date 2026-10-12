@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
-from . import capture, config
+from . import autostart, capture, config
 from . import __version__
 from .applog import LOG_PATH, get_logger, setup_logging
 from .hotkeys import HotkeyManager
@@ -64,6 +64,8 @@ def _hotkey_text(pynput_str: str) -> str:
 
 
 class App:
+    _AUTOSTART_PRELOAD_DELAY_MS = 30_000
+
     def __init__(self):
         setup_logging()
         self.log = get_logger("app")
@@ -223,7 +225,7 @@ class App:
         # 预创建框选遮罩原生窗口，减轻首次截屏翻译整屏闪一下
         self.selector.prepare()
         # 托盘建好后后台预热：先初始化 OCR，再加载翻译模型
-        self._preload_models()
+        self._schedule_preload()
 
     # ---------- 初始化 ----------
     def _build_tray(self):
@@ -320,6 +322,9 @@ class App:
             return False
         if self.translator.is_ready():
             return True
+        if not getattr(self, "_preload_started", False):
+            # 开机自启的延迟加载尚未开始：用户已在使用，立即开始加载
+            self._preload_models()
         state = self._preload_status.get("llama", "pending")
         if state == "fail" and not self._has_live_preload("translation-preload"):
             self.log.info("翻译模型上次加载失败，后台重试")
@@ -435,6 +440,14 @@ class App:
         self._load_ocr()
         if not self._quitting:
             self._load_llama()
+
+    def _schedule_preload(self) -> None:
+        """开机自启时推迟加载模型，避免与开机程序争抢资源；期间一旦用到翻译会立即加载。"""
+        if autostart.launched_at_startup():
+            self.log.info("开机自启动，%d 秒后加载模型", self._AUTOSTART_PRELOAD_DELAY_MS // 1000)
+            QTimer.singleShot(self._AUTOSTART_PRELOAD_DELAY_MS, self._preload_models)
+        else:
+            self._preload_models()
 
     def _preload_models(self):
         """启动时先完成 OCR 初始化，再加载本地翻译模型。"""

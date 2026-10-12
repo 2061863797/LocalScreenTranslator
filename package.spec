@@ -36,6 +36,7 @@ hidden_imports = [
 datas = [
     (str(ROOT / "icon.ico"), "."),
     (str(ROOT / "config.example.json"), "."),
+    (str(ROOT / "app" / "ui" / "check.svg"), "app/ui"),
 ]
 
 a = Analysis(

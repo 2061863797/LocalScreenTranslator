@@ -7,11 +7,15 @@ InputTranslateWindow 保持独立样式表；其它窗口、控制条、滚动�
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QSizeGrip, QWidget
 
 # —— 现代 Fluent 半透明暗色设计令牌 ——
+# 勾选框选中时的白色对勾（打包时随 app/ui 一并复制）
+CHECK_ICON = (Path(__file__).resolve().parent / "check.svg").as_posix()
 PANEL_BG = "rgba(18, 22, 30, 235)"
 PANEL_BORDER = "rgba(255, 255, 255, 28)"
 PANEL_RADIUS = 10
@@ -279,6 +283,7 @@ QCheckBox::indicator:hover {{
 QCheckBox::indicator:checked {{
   background: {BTN_CHECKED};
   border-color: rgba(0, 180, 255, 220);
+  image: url({CHECK_ICON});
 }}
 QSpinBox::up-button, QSpinBox::down-button {{
   background: {BTN_BG};
@@ -512,6 +517,7 @@ QCheckBox::indicator:hover {{
 QCheckBox::indicator:checked {{
   background: rgba(0, 150, 255, 190);
   border-color: rgba(0, 180, 255, 230);
+  image: url({CHECK_ICON});
 }}
 QSpinBox::up-button, QSpinBox::down-button {{
   background: rgba(255, 255, 255, 28);
