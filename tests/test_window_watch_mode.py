@@ -100,5 +100,32 @@ class RegionFrameMoveTests(unittest.TestCase):
         app.annotation.set_items.assert_called_once_with([])
 
 
+class HideWatchUiTests(unittest.TestCase):
+    def test_one_failing_step_does_not_stop_hiding_others(self):
+        app = app_main.App.__new__(app_main.App)
+        for name in ("_region_topmost_timer", "_window_follow_timer", "subtitle",
+                     "annotation", "annotate_ctrl", "region_frame"):
+            setattr(app, name, Mock())
+        app._set_watch_layer_owner = Mock()
+        app.subtitle.set_paused.side_effect = RuntimeError("已销毁")
+        app._hide_watch_ui()
+        app.subtitle.hide.assert_called_once_with()
+        app.annotation.hide.assert_called_once_with()
+        app.annotate_ctrl.hide.assert_called_once_with()
+        app.region_frame.hide_frame.assert_called_once_with()
+        app._set_watch_layer_owner.assert_called_once_with(None)
+
+    def test_continuous_active_tolerates_missing_or_destroyed_overlays(self):
+        app = app_main.App.__new__(app_main.App)
+        app._watcher = None
+        app.subtitle = Mock()
+        app.subtitle.isVisible.side_effect = RuntimeError("已销毁")
+        app.region_frame = Mock()
+        app.region_frame.isVisible.return_value = True
+        self.assertTrue(app._is_continuous_active())
+        app.region_frame.isVisible.return_value = False
+        self.assertFalse(app._is_continuous_active())
+
+
 if __name__ == "__main__":
     unittest.main()

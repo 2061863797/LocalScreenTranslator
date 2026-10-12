@@ -586,26 +586,12 @@ class App:
         """是否已有持续翻译会话：监视线程在跑，或任一浮层仍显示。"""
         if self._watcher is not None and self._watcher.isRunning():
             return True
-        try:
-            if self.subtitle.isVisible():
-                return True
-        except Exception:
-            pass
-        try:
-            if self.annotation.isVisible():
-                return True
-        except Exception:
-            pass
-        try:
-            if self.annotate_ctrl.isVisible():
-                return True
-        except Exception:
-            pass
-        try:
-            if self.region_frame.isVisible():
-                return True
-        except Exception:
-            pass
+        for name in ("subtitle", "annotation", "annotate_ctrl", "region_frame"):
+            try:
+                if getattr(self, name).isVisible():
+                    return True
+            except Exception:  # 退出时浮层可能已销毁
+                pass
         return False
 
     def _is_continuous_selecting(self) -> bool:
@@ -656,47 +642,30 @@ class App:
             self.log.info("框选已取消 mode=%s", mode)
 
     def _hide_watch_ui(self):
-        """立刻藏起所有持续翻译浮层（不等线程结束）。"""
-        try:
-            self._region_topmost_timer.stop()
-        except Exception:
-            pass
-        try:
-            self._window_follow_timer.stop()
-        except Exception:
-            pass
-        try:
-            self.subtitle.set_paused(False)
-            self.subtitle.set_interactive(False)
-            self.subtitle.hide()
-            self.subtitle.set_capture_visible(True)
-        except Exception:
-            pass
-        try:
-            self.annotation.hide()
-            self.annotation.clear()
-        except Exception:
-            pass
-        try:
-            self.annotate_ctrl.set_paused(False)
-            self.annotate_ctrl.hide()
-        except Exception:
-            pass
-        try:
-            self.region_frame.hide_frame()
-        except Exception:
-            pass
-        try:
-            self.region_frame.set_control_bar_external(False)
-            self.subtitle.set_region_controls_visible(False)
-            self.annotate_ctrl.set_region_controls_visible(False)
-        except Exception:
-            pass
-        # 隐藏后再解绑，恢复默认置顶（供区域翻译）；避免改 flag 时闪一下
-        try:
-            self._set_watch_layer_owner(None)
-        except Exception:
-            pass
+        """立刻藏起所有持续翻译浮层（不等线程结束）；每一步独立容错，一处失败不影响其余。"""
+        steps = (
+            lambda: self._region_topmost_timer.stop(),
+            lambda: self._window_follow_timer.stop(),
+            lambda: self.subtitle.set_paused(False),
+            lambda: self.subtitle.set_interactive(False),
+            lambda: self.subtitle.hide(),
+            lambda: self.subtitle.set_capture_visible(True),
+            lambda: self.annotation.hide(),
+            lambda: self.annotation.clear(),
+            lambda: self.annotate_ctrl.set_paused(False),
+            lambda: self.annotate_ctrl.hide(),
+            lambda: self.region_frame.hide_frame(),
+            lambda: self.region_frame.set_control_bar_external(False),
+            lambda: self.subtitle.set_region_controls_visible(False),
+            lambda: self.annotate_ctrl.set_region_controls_visible(False),
+            # 隐藏后再解绑，恢复默认置顶（供区域翻译）；避免改 flag 时闪一下
+            lambda: self._set_watch_layer_owner(None),
+        )
+        for step in steps:
+            try:
+                step()
+            except Exception:
+                pass
 
     def _set_watch_layer_owner(self, owner_hwnd: int | None) -> None:
         """窗口备注层跟目标窗同层；None=不绑定（区域翻译仍置顶）。"""
@@ -1056,61 +1025,36 @@ class App:
             and self._watcher is watcher
         )
 
-    def _on_watch_subtitle_guarded(
-        self,
-        text: str,
-        session_id: int,
-        watcher: Any,
-        gen_id: int | None = None,
-    ) -> None:
+    def _accept_watch_result(self, session_id: int, watcher: Any, gen_id: int | None, kind: str) -> bool:
+        """译文类信号仅在会话仍活跃、未暂停且世代未过期时渲染，丢弃排队晚到的旧信号。"""
         if not self._is_active_watch_session(session_id, watcher):
-            return
+            return False
         if self._watch_paused or (hasattr(watcher, "_paused") and watcher._paused.is_set()):
-            self.log.debug("持续翻译已暂停，丢弃排队晚到的字幕刷新信号")
-            return
+            self.log.debug("持续翻译已暂停，丢弃排队晚到的%s信号", kind)
+            return False
         if gen_id is not None and hasattr(watcher, "generation_tracker"):
             if not watcher.generation_tracker.is_active(gen_id):
-                self.log.debug("丢弃过时 generation 的字幕刷新信号: gen=%s", gen_id)
-                return
-        self.subtitle.set_text(text)
+                self.log.debug("丢弃过时 generation 的%s信号: gen=%s", kind, gen_id)
+                return False
+        return True
+
+    def _on_watch_subtitle_guarded(
+        self, text: str, session_id: int, watcher: Any, gen_id: int | None = None,
+    ) -> None:
+        if self._accept_watch_result(session_id, watcher, gen_id, "字幕刷新"):
+            self.subtitle.set_text(text)
 
     def _on_watch_annotations_guarded(
-        self,
-        items: list,
-        session_id: int,
-        watcher: Any,
-        gen_id: int | None = None,
+        self, items: list, session_id: int, watcher: Any, gen_id: int | None = None,
     ) -> None:
-        if not self._is_active_watch_session(session_id, watcher):
-            return
-        if self._watch_paused or (hasattr(watcher, "_paused") and watcher._paused.is_set()):
-            self.log.debug("持续翻译已暂停，丢弃排队晚到的逐行备注信号")
-            return
-        if gen_id is not None and hasattr(watcher, "generation_tracker"):
-            if not watcher.generation_tracker.is_active(gen_id):
-                self.log.debug("丢弃过时 generation 的逐行备注信号: gen=%s", gen_id)
-                return
-        self._on_watch_annotations(items)
+        if self._accept_watch_result(session_id, watcher, gen_id, "逐行备注"):
+            self._on_watch_annotations(items)
 
     def _on_watch_history_guarded(
-        self,
-        src: str,
-        tr: str,
-        mode: str,
-        session_id: int,
-        watcher: Any,
-        gen_id: int | None = None,
+        self, src: str, tr: str, mode: str, session_id: int, watcher: Any, gen_id: int | None = None,
     ) -> None:
-        if not self._is_active_watch_session(session_id, watcher):
-            return
-        if self._watch_paused or (hasattr(watcher, "_paused") and watcher._paused.is_set()):
-            self.log.debug("持续翻译已暂停，丢弃排队晚到的历史记录信号")
-            return
-        if gen_id is not None and hasattr(watcher, "generation_tracker"):
-            if not watcher.generation_tracker.is_active(gen_id):
-                self.log.debug("丢弃过时 generation 的历史记录信号: gen=%s", gen_id)
-                return
-        self._on_watch_history(src, tr, mode)
+        if self._accept_watch_result(session_id, watcher, gen_id, "历史记录"):
+            self._on_watch_history(src, tr, mode)
 
     def _on_target_window_moved_guarded(self, x: int, y: int, w: int, h: int, session_id: int, watcher: Any) -> None:
         if not self._is_active_watch_session(session_id, watcher):

@@ -234,7 +234,8 @@ class TestFourthAuditP1s(unittest.TestCase):
         mock_watcher._paused.is_set.return_value = False
         mock_watcher.generation_tracker.is_active.side_effect = lambda g: g == 5
 
-        # 用真实的 _on_watch_history_guarded 函数
+        # 用真实的 _on_watch_history_guarded 与其依赖的 _accept_watch_result
+        app._accept_watch_result = App._accept_watch_result.__get__(app, App)
         func = App._on_watch_history_guarded.__get__(app, App)
 
         # 1. 正常匹配：gen=5, rev=10 -> 记录
