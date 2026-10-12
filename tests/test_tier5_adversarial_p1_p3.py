@@ -161,6 +161,8 @@ class TestPhase1Adversarial(unittest.TestCase):
     def test_result_manager_drops_out_of_order_stale_responses(self):
         """Verify ResultManager drops older responses (Result 1 arriving after Result 2)."""
         rm = ResultManager(generation_tracker=self.tracker)
+        rm.latest_dispatched = None
+        rm.subtitle_ready.connect(lambda text: setattr(rm, "latest_dispatched", text))
         emitted_subtitles: list[str] = []
         rm.subtitle_ready.connect(lambda s: emitted_subtitles.append(s))
 

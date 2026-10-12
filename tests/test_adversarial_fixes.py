@@ -91,33 +91,6 @@ class _RouterTestCase(unittest.TestCase):
 
 
 class RouterCompletenessTests(_RouterTestCase):
-    def test_cancel_discards_batch_and_does_not_start_remaining_lines(self):
-        entered, release = threading.Event(), threading.Event()
-
-        def infer(request):
-            entered.set()
-            release.wait(3)
-            return self.result(request, "old")
-
-        self.router._ai.translate = Mock(side_effect=infer)
-        output = []
-        worker = threading.Thread(target=lambda: output.append(
-            self.router.translate_lines(["one", "two", "three"], session_tag="watch")
-        ))
-        worker.start()
-        try:
-            self.assertTrue(entered.wait(1))
-            self.router.abort_inflight("watch")
-        finally:
-            release.set()
-            worker.join(3)
-        self.assertFalse(worker.is_alive())
-        self.assertEqual(output, [["", "", ""]])
-        self.assertEqual(self.router._ai.translate.call_count, 1)
-        self.assertEqual(self.storage.count_translation_cache(), 0)
-        self.router._ai.translate.side_effect = lambda request: self.result(request, "new")
-        self.assertEqual(self.router.translate("next", session_tag="watch"), "new")
-
     def test_chinese_context_error_splits_source(self):
         seen = []
 

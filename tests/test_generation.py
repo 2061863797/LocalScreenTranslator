@@ -98,7 +98,13 @@ def create_latest_frame_buffer():
 
 
 def create_result_manager(tracker):
-    return _ProdResultManager(tracker) if _ProdResultManager else ContractResultManager(tracker)
+    if not _ProdResultManager:
+        return ContractResultManager(tracker)
+    rm = _ProdResultManager(tracker)
+    # 通过信号记录最后一次成功派发的字幕，供断言使用
+    rm.latest_dispatched = None
+    rm.subtitle_ready.connect(lambda text: setattr(rm, "latest_dispatched", text))
+    return rm
 
 
 class TestGenerationTiers(unittest.TestCase):

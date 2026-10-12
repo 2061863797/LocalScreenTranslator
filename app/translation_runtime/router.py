@@ -107,18 +107,10 @@ class TranslationRouter:
         self, text: str, target_language: str = "简体中文", session_tag: str = "default",
         *, source_language: str | None = None,
     ) -> str:
-        return self._translate_with_session(
-            text, target_language, self._session(session_tag), source_language=source_language
-        )
-
-    def _translate_with_session(
-        self, text: str, target_language: str, session: tuple[threading.Event, int],
-        *, source_language: str | None = None,
-    ) -> str:
         text = "".join(c for c in text if c in "\n\r\t" or ord(c) >= 32).strip()
         if not text:
             return ""
-        cancelled, version = session
+        cancelled, version = self._session(session_tag)
         if cancelled.is_set():
             return ""
         source = source_language or "自动"
@@ -130,10 +122,7 @@ class TranslationRouter:
         if cache_enabled:
             cached = self.cache.get(text, target_language, scoped_model, prompt_version)
             if cached is not None:
-                cleaned = clean_output(cached)
-                if cleaned != cached:
-                    self.cache.put(text, target_language, scoped_model, prompt_version, cleaned)
-                return cleaned if not cancelled.is_set() else ""
+                return cached if not cancelled.is_set() else ""
         with self._lock:
             if cancelled.is_set():
                 return ""
@@ -185,20 +174,6 @@ class TranslationRouter:
                 raise IncompleteTranslationError("分段翻译缺少有效结果")
             parts.append(value)
         return "\n".join(parts)
-
-    def translate_lines(
-        self, lines: list[str], target_language: str = "简体中文",
-        session_tag: str = "default", *, source_language: str | None = None,
-    ) -> list[str]:
-        session = self._session(session_tag)
-        values = []
-        for line in lines:
-            if session[0].is_set():
-                return [""] * len(lines)
-            values.append(self._translate_with_session(
-                line, target_language, session, source_language=source_language
-            ))
-        return [""] * len(lines) if session[0].is_set() else values
 
     def clear_cache(self) -> None:
         self.cache.clear()

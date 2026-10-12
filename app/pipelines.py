@@ -99,13 +99,19 @@ class OneShotPipeline:
             return None
         translation = ""
         if translate and source:
-            if lines and hasattr(self._translator, "translate_lines"):
-                values = self._translator.translate_lines(
-                    [line.text for line in lines], target_language,
-                    session_tag="one_shot",
-                )
-                valid_values = [v.strip() for v in values if v and v.strip()]
-                translation = "\n".join(valid_values) if valid_values else ""
+            if lines:
+                # 逐行翻译；空译文的行显示原文，与实时翻译一致
+                parts = []
+                for line in lines:
+                    if cancelled():
+                        return None
+                    text_line = line.text.strip()
+                    if text_line:
+                        value = self._translator.translate(
+                            text_line, target_language, session_tag="one_shot"
+                        )
+                        parts.append(str(value or "").strip() or text_line)
+                translation = "\n".join(parts)
             else:
                 try:
                     translation = self._translator.translate(

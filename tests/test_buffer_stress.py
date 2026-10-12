@@ -281,9 +281,9 @@ class TestLatestFrameBufferStress(unittest.TestCase):
         tracker = GenerationTracker()
         received_subtitles: list[tuple[int, str]] = []
 
-        result_mgr = ResultManager(
-            tracker,
-            on_subtitle=lambda text: received_subtitles.append((tracker.current_generation, text)),
+        result_mgr = ResultManager(tracker)
+        result_mgr.subtitle_ready.connect(
+            lambda text: received_subtitles.append((tracker.current_generation, text))
         )
 
         # Advance tracker through generations 1, 2, 3, 4, 5

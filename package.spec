@@ -5,7 +5,8 @@
 1. 采用 onedir 模式，保证启动效率与 DLL 依赖清晰；
 2. 显式过滤外部注入的 icuuc.dll / icudt*.dll，确保使用 Windows 系统级标准库，
    彻底解决 `ImportError: DLL load failed while importing QtCore: 找不到指定的程序`；
-3. 声明项目全部核心模块与 C 扩展的 hiddenimports。
+3. 只声明 PyInstaller 无法自动分析到的 C 扩展与平台模块；
+4. 排除未使用的大体积二进制（视频读写、软件 OpenGL）与 QtNetwork。
 """
 
 from pathlib import Path
@@ -17,25 +18,6 @@ hidden_imports = [
     "PySide6.QtCore",
     "PySide6.QtGui",
     "PySide6.QtWidgets",
-    "app.main",
-    "app.applog",
-    "app.capture",
-    "app.config",
-    "app.hotkeys",
-    "app.i18n",
-    "app.translation_runtime.router",
-    "app.translation_runtime.llama_native",
-    "app.ocr_engine",
-    "app.paths",
-    "app.pipelines",
-    "app.runtime_resources",
-    "app.selection",
-    "app.storage",
-    "app.window_watcher",
-    "app.workers",
-    "app.ui.overlays",
-    "app.ui.topmost",
-    "app.ui.windows",
     "pywintypes",
     "win32gui",
     "win32con",
@@ -65,7 +47,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "IPython", "jupyter"],
+    excludes=["tkinter", "matplotlib", "IPython", "jupyter", "PySide6.QtNetwork"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -73,12 +55,17 @@ a = Analysis(
 )
 
 EXCLUDED_BINARY_PREFIXES = ("icuuc", "icudt", "icuin", "icutu", "icutest", "icui18n")
+# 用不到的大文件：OpenCV 视频读写（约 30MB，只在打开视频时加载）、Qt 软件 OpenGL（约 20MB，纯控件界面不需要）
+UNUSED_BINARY_PREFIXES = ("opencv_videoio_ffmpeg", "opengl32sw")
 cleaned_binaries = []
 for binary in a.binaries:
     dest_name, src_path, type_code = binary
     dest_lower = dest_name.lower()
     if any(dest_lower.startswith(prefix) for prefix in EXCLUDED_BINARY_PREFIXES):
         print(f"[package.spec] 已过滤外部冲突 DLL: {dest_name} (来源: {src_path})")
+        continue
+    if any(Path(dest_lower).name.startswith(prefix) for prefix in UNUSED_BINARY_PREFIXES):
+        print(f"[package.spec] 已排除未使用的文件: {dest_name}")
         continue
     cleaned_binaries.append(binary)
 

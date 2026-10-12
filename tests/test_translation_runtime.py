@@ -93,7 +93,7 @@ class RouterTests(unittest.TestCase):
         self.router.preload()
         lines = ["OK", "你好世界", "混合文字 Build 42", "日本語の説明"]
         self.assertEqual(
-            self.router.translate_lines(lines, "英语", session_tag="watch"),
+            [self.router.translate(line, "英语", session_tag="watch") for line in lines],
             ["translated"] * len(lines),
         )
         self.assertEqual([request.text for request in seen], lines)

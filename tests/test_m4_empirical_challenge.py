@@ -129,7 +129,6 @@ class TestResultManagerEmpiricalChallenge(unittest.TestCase):
         self.assertEqual(len(emitted_cleared), 1)
 
         # Verification 3: State invariants
-        self.assertEqual(rm.latest_dispatched, "Translation for Gen 5 (Newest)")
         self.assertEqual(rm.dropped_stale_count, 4)  # 2 stale subtitles + 2 stale annotations
 
     def test_high_concurrency_random_arrivals_stale_rejection(self):

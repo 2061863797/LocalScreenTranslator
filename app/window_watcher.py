@@ -488,6 +488,9 @@ class WindowWatcher(QThread):
 
                 p = self._profile
                 cfg_interval = float(self._cfg.get(f"{p}_watch_interval_ms", 120)) / 1000.0
+                # 用户设置的间隔作为长时间静止时的轮询间隔（可调大到 800ms 以上）
+                if cfg_interval > 0:
+                    self._polling_controller.deep_idle_interval = cfg_interval
 
                 t0 = time.time()
 
@@ -564,11 +567,7 @@ class WindowWatcher(QThread):
                 self._frame_buffer.put(packet)
 
                 # 自适应轮询间隔休眠
-                dynamic_delay = (
-                    self._polling_controller.current_interval
-                    if hasattr(self._polling_controller, "current_interval")
-                    else 0.12
-                )
+                dynamic_delay = self._polling_controller.current_interval
                 effective_interval = (
                     min(cfg_interval, dynamic_delay)
                     if cfg_interval > 0
