@@ -209,7 +209,7 @@ class RuntimeSafetyTests(unittest.TestCase):
         overlay = Mock()
         with (
             patch("app.ui.annotation_overlay._exclude_from_capture") as exclude,
-            patch("app.ui.annotation_overlay._allow_capture") as allow,
+            patch("app.ui.overlay_base._allow_capture") as allow,
         ):
             AnnotationOverlay._apply_capture_affinity(overlay)
             exclude.assert_called_once_with(overlay)

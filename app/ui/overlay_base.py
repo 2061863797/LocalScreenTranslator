@@ -8,7 +8,7 @@ from ctypes import wintypes
 
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QShowEvent
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from ..capture import set_window_capture_excluded
 
@@ -112,6 +112,40 @@ class _DraggableMixin:
     def mouseReleaseEvent(self, event):
         self._drag_offset = None
         super().mouseReleaseEvent(event)
+
+
+class _FloatingCtrlMixin:
+    """独立浮动控制条：层级跟随目标窗口，并贴在目标区域左上方（不遮挡内容）。"""
+
+    _layer_owner: int | None = None
+
+    def set_layer_owner(self, owner_hwnd: int | None) -> None:
+        self._layer_owner = int(owner_hwnd) if owner_hwnd else None
+        dispatch_set_overlay_layer(self, self._layer_owner)
+        if self.isVisible():
+            _allow_capture(self)
+
+    def restack_layer(self) -> None:
+        if not self.isVisible():
+            return
+        if QApplication.activePopupWidget() is not None:
+            return
+        if self._layer_owner:
+            from .topmost import restack_above_owner
+
+            restack_above_owner(self, self._layer_owner)
+        else:
+            dispatch_set_overlay_layer(self, None)
+
+    def place_above(self, rect: tuple[int, int, int, int]) -> None:
+        x, y, _, _ = rect
+        self.adjustSize()
+        first = not self.isVisible()
+        _move_if_changed(self, x, y - self.height() - 4)
+        _show_once(self)
+        if first:
+            _allow_capture(self)
+        self.restack_layer()
 
 
 class _DragHandle(QLabel):

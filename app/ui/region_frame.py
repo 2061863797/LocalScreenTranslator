@@ -21,13 +21,12 @@ from .overlay_base import (
     _allow_capture,
     _CaptureAllowedMixin,
     _DragHandle,
-    _move_if_changed,
+    _FloatingCtrlMixin,
     _set_geo_if_changed,
     _show_once,
     dispatch_set_overlay_layer as set_overlay_layer,
 )
 from .theme import BORDER_QCOLOR, CTRL_STYLE, paint_size_grip
-from .topmost import restack_above_owner
 
 
 class _RegionFrameDragHandle(_DragHandle):
@@ -52,7 +51,7 @@ class _RegionFrameDragHandle(_DragHandle):
         self._frame._emit_moved()
 
 
-class _RegionCtrl(_CaptureAllowedMixin, QWidget):
+class _RegionCtrl(_FloatingCtrlMixin, _CaptureAllowedMixin, QWidget):
     """区域识别框控制条：拖动手柄 + 固定/取消固定。"""
 
     def __init__(self, frame: RegionWatchFrame):
@@ -87,22 +86,6 @@ class _RegionCtrl(_CaptureAllowedMixin, QWidget):
         self._sync_pin_text()
         self.adjustSize()
 
-    def set_layer_owner(self, owner_hwnd: int | None) -> None:
-        self._layer_owner = int(owner_hwnd) if owner_hwnd else None
-        set_overlay_layer(self, self._layer_owner)
-        if self.isVisible():
-            _allow_capture(self)
-
-    def restack_layer(self) -> None:
-        if not self.isVisible():
-            return
-        if QApplication.activePopupWidget() is not None:
-            return
-        if self._layer_owner:
-            restack_above_owner(self, self._layer_owner)
-        else:
-            set_overlay_layer(self, None)
-
     def _sync_pin_text(self):
         on = self._frame.pinned
         self._btn_pin.blockSignals(True)
@@ -114,19 +97,6 @@ class _RegionCtrl(_CaptureAllowedMixin, QWidget):
     def _on_pin(self):
         self._frame.set_pinned(self._btn_pin.isChecked())
         self._sync_pin_text()
-
-    def place_above(self, rect: tuple[int, int, int, int]):
-        """贴在识别区上方左侧（右侧留给备注控制条，与窗口翻译一致不抢位）。"""
-        x, y, w, h = rect
-        self.adjustSize()
-        nx = x
-        ny = y - self.height() - 4
-        first = not self.isVisible()
-        _move_if_changed(self, nx, ny)
-        _show_once(self)
-        if first:
-            _allow_capture(self)
-        self.restack_layer()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and not self._frame.pinned:

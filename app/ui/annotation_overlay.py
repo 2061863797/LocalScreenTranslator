@@ -6,7 +6,6 @@ from __future__ import annotations
 from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QShowEvent
 from PySide6.QtWidgets import (
-    QApplication,
     QHBoxLayout,
     QPushButton,
     QVBoxLayout,
@@ -18,11 +17,10 @@ from .language_popup import LanguagePairButton
 from .overlay_base import (
     _FLAGS_TOP,
     _STATUS_BAR_HEIGHT,
-    _allow_capture,
     _CaptureAllowedMixin,
     _DragHandle,
+    _FloatingCtrlMixin,
     _exclude_from_capture,
-    _move_if_changed,
     _set_geo_if_changed,
     _show_once,
     dispatch_set_overlay_layer as set_overlay_layer,
@@ -50,7 +48,7 @@ class _RegionDragHandle(_DragHandle):
         self._owner._region_frame.move_content_to(point.x(), point.y())
 
 
-class AnnotateCtrl(_CaptureAllowedMixin, QWidget):
+class AnnotateCtrl(_FloatingCtrlMixin, _CaptureAllowedMixin, QWidget):
     """备注模式控制条：区域拖动/固定、目标语言、切换字幕、暂停与关闭。"""
 
     stop_requested = Signal()
@@ -154,40 +152,10 @@ class AnnotateCtrl(_CaptureAllowedMixin, QWidget):
         self._language_button.sync_languages(source, target)
         self.adjustSize()
 
-    def set_layer_owner(self, owner_hwnd: int | None) -> None:
-        self._layer_owner = int(owner_hwnd) if owner_hwnd else None
-        set_overlay_layer(self, self._layer_owner)
-        if self.isVisible():
-            _allow_capture(self)
-
-    def restack_layer(self) -> None:
-        if not self.isVisible():
-            return
-        if QApplication.activePopupWidget() is not None:
-            return
-        if self._layer_owner:
-            restack_above_owner(self, self._layer_owner)
-        else:
-            set_overlay_layer(self, None)
-
     def set_subtitle_button_visible(self, visible: bool) -> None:
         """窗口模式不提供字幕切换；区域备注模式保留该按钮。"""
         self._btn_sub.setVisible(bool(visible))
         self.adjustSize()
-
-    def place_above(self, win_rect: tuple[int, int, int, int]):
-        """贴在目标左上角外侧，不挡内容。"""
-        x, y, w, h = win_rect
-        self.adjustSize()
-        nx = x
-        ny = y - self.height() - 4
-        first = not self.isVisible()
-        _move_if_changed(self, nx, ny)
-        _show_once(self)
-        if first:
-            _allow_capture(self)
-        self.restack_layer()
-
 
 class AnnotationOverlay(_CaptureAllowedMixin, QWidget):
     """备注模式：每行译文贴在对应原文正下方（越界则贴上方），
