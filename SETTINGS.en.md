@@ -20,7 +20,7 @@ Open Settings from the tray. Saving applies model and device settings within the
 | UI language | `ui_language` | `zh` or `en` |
 | Translation window font | `translate_window_font_size` | 0=default or 12–20 px |
 | Annotation color | `annotate_text_color` | `#RRGGBB` |
-| Window/region interval | `window_watch_interval_ms` / `region_watch_interval_ms` | Default 800 ms each |
+| Window/region interval | `window_watch_interval_ms` / `region_watch_interval_ms` | Default 800 ms each; check interval while the screen stays still (checks speed up immediately when it changes) |
 | Window/region font | `window_watch_font_size` / `region_watch_font_size` | 0=default or 12–20 px |
 | Region annotations | `region_watch_annotate` | Boolean |
 | Hotkeys | `hotkey_screenshot`, `hotkey_word`, `hotkey_window`, `hotkey_region_watch` | Alt+Q/W/E/R by default |

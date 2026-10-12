@@ -20,7 +20,7 @@
 | 界面语言 | `ui_language` | `zh` 或 `en` |
 | 翻译窗口字号 | `translate_window_font_size` | 0=默认，或 12–20 px |
 | 备注译文颜色 | `annotate_text_color` | `#RRGGBB` |
-| 窗口/区域监视间隔 | `window_watch_interval_ms` / `region_watch_interval_ms` | 默认各 800 ms |
+| 窗口/区域监视间隔 | `window_watch_interval_ms` / `region_watch_interval_ms` | 默认各 800 ms；画面长时间静止时的检查间隔，画面变化时仍会立即加快检查 |
 | 窗口/区域字号 | `window_watch_font_size` / `region_watch_font_size` | 0=默认，或 12–20 px |
 | 区域备注 | `region_watch_annotate` | 布尔值 |
 | 热键 | `hotkey_screenshot`、`hotkey_word`、`hotkey_window`、`hotkey_region_watch` | 默认 Alt+Q/W/E/R |
