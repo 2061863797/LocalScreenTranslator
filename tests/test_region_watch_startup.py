@@ -14,8 +14,10 @@ from app.window_watcher import WindowWatcher
 
 class TestRegionWatchStartup(unittest.TestCase):
     def test_static_frame_cannot_invalidate_queued_first_translation(self):
+        translator = Mock()
+        translator.translate.return_value = "你好"
         watcher = WindowWatcher(
-            Mock(), Mock(), {"region_watch_diff_threshold": 0.9},
+            Mock(), translator, {"region_watch_diff_threshold": 0.9},
             region=(0, 0, 64, 32), profile="region", display_mode="annotate",
         )
         watcher._content_revision = 1
@@ -39,15 +41,13 @@ class TestRegionWatchStartup(unittest.TestCase):
         line = OcrLine("Hello", 0.99, (4, 4, 30, 20))
         watcher._recognize_live_lines = Mock(return_value=[line])
         items = [(line.box, "你好")]
-        watcher._translation_manager.translate_annotations = Mock(
-            return_value=(items, "你好")
-        )
         watcher._result_manager.dispatch_annotations = Mock(return_value=True)
         watcher._result_manager.dispatch_history = Mock()
 
         watcher._inference_loop()
 
         watcher._result_manager.dispatch_annotations.assert_called_once()
+        self.assertEqual(watcher._result_manager.dispatch_annotations.call_args.args[0], items)
         queued_gen = watcher._result_manager.dispatch_annotations.call_args.args[1]
         self.assertTrue(watcher.generation_tracker.is_active(queued_gen))
 
@@ -63,9 +63,9 @@ class TestRegionWatchStartup(unittest.TestCase):
         App._on_watch_annotations_guarded(app, items, 1, watcher, queued_gen, 1)
         app.annotation.set_items.assert_called_once_with(items)
 
-    def test_blank_reply_retries_without_moving_region(self):
+    def test_blank_reply_shows_source_without_retry(self):
         translator = Mock()
-        translator.translate_lines.side_effect = [[""], ["你好"]]
+        translator.translate.return_value = ""
         watcher = WindowWatcher(
             Mock(), translator, {"region_watch_diff_threshold": 0.9},
             region=(0, 0, 64, 32), profile="region", display_mode="annotate",
@@ -96,18 +96,14 @@ class TestRegionWatchStartup(unittest.TestCase):
 
         watcher._inference_loop()
 
-        self.assertEqual(translator.translate_lines.call_count, 2)
-        self.assertEqual(watcher._result_manager.dispatch_annotations.call_count, 2)
-        self.assertEqual(
-            watcher._result_manager.dispatch_annotations.call_args_list[0].args[0], []
-        )
+        # 空译文是模型的确定结果：显示原文，不重试，不记历史
+        self.assertEqual(translator.translate.call_count, 1)
+        watcher._result_manager.dispatch_annotations.assert_called_once()
         self.assertEqual(
             watcher._result_manager.dispatch_annotations.call_args.args[0],
-            [(line.box, "你好")],
+            [(line.box, "Hello")],
         )
-        self.assertTrue(watcher.generation_tracker.is_active(
-            watcher._result_manager.dispatch_annotations.call_args.args[1]
-        ))
+        watcher._result_manager.dispatch_history.assert_not_called()
 
     def test_empty_model_reply_is_retried_for_same_source(self):
         translator = Mock()

@@ -835,7 +835,7 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
         ]
         trans_mock = MagicMock()
         # Simulate compute-intensive translation (200ms)
-        trans_mock.translate.side_effect = lambda t, tgt: (time.sleep(0.2) or "Translated")
+        trans_mock.translate.side_effect = lambda t, tgt, **kw: (time.sleep(0.2) or "Translated")
 
         cfg = dict(DEFAULTS)
         cfg["window_watch_interval_ms"] = 20  # 50 FPS capture

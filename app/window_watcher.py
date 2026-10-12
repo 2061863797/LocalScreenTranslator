@@ -36,7 +36,6 @@ from .result_manager import ResultManager
 from .scene_text_state import SceneTextState, _boxes_intersect
 from .text_change_detector import TextChangeDetector
 from .translation_manager import TranslationManager
-from .translation_runtime.contracts import IncompleteTranslationError
 from .translation_runtime.router import TranslationRouter
 
 _log = get_logger("watch")
@@ -171,7 +170,7 @@ class WindowWatcher(QThread):
         self._last_processed_work_rev: int = 0
         self._last_processed_epoch: int = 0
         self._translation_session_tag: str = f"watcher_{uuid.uuid4().hex[:8]}"
-        self._failed_text_retries: dict[str, int] = {}
+        self._last_translate_error: str = ""
 
     # ==========================================
     # 解耦组件只读访问器
@@ -349,6 +348,15 @@ class WindowWatcher(QThread):
             self._last_captured_frame = None
             self._last_frame = None
             self._paused.clear()
+
+    def _batch_is_current(self, packet_epoch: int, session_tag: str) -> bool:
+        """本批翻译是否仍有效：未停止、会话未轮换、画面内容未变。"""
+        if not self._running or self._consumer_stop_event.is_set():
+            return False
+        if session_tag != self._translation_session_tag:
+            return False
+        with self._content_epoch_lock:
+            return packet_epoch == self._content_epoch
 
     def _is_content_invalidated(self, diff_res: Any, has_visual_change: bool) -> bool:
         """检查变动是否需要作废当前在途内容 (PR 1 / Content Revision).
@@ -754,100 +762,64 @@ class WindowWatcher(QThread):
                 # 9. 结果派发与增量翻译，内部异常隔离防护
                 if event == "clear":
                     _log.info("连续空 OCR 已确认，清空持续翻译显示")
-                    self._failed_text_retries.clear()
                     self._scene_text_state.clear()
                     self._result_manager.dispatch_cleared(frame_gen_id)
                 elif event == "change":
                     target = str(self._cfg.get("target_language", "zh"))
-                    mode_tag = (
-                        f"{self._profile}_annotate"
-                        if self._display_mode == "annotate"
-                        else f"{self._profile}_subtitle"
-                    )
-                    try:
-                        if self._display_mode == "annotate":
-                            items, translation = self._translation_manager.translate_annotations(
-                                lines,
-                                target,
-                                frame_gen_id,
-                                is_running_fn=lambda: self._running and not self._consumer_stop_event.is_set(),
-                                session_tag=self._translation_session_tag,
-                            )
-                            if self._running and not self._consumer_stop_event.is_set():
-                                # Latest-Content-Wins 校验：翻译耗时期间画面若有实质新变化，丢弃旧译文防闪烁
-                                with self._content_epoch_lock:
-                                    is_fresh = (packet_epoch == self._content_epoch)
-                                if not is_fresh:
-                                    _log.debug("画面内容已变动，丢弃过时逐行备注 (epoch=%s vs %s)", packet_epoch, self._content_epoch)
-                                    with self._state_lock:
-                                        self._text_change_detector.rollback(text)
-                                    continue
-
-                                dispatched = self._result_manager.dispatch_annotations(items, frame_gen_id, content_rev=packet_epoch)
-                                if dispatched:
-                                    self._failed_text_retries.pop(text, None)
-                                    if translation:
-                                        self._result_manager.dispatch_history(
-                                            text, translation, mode_tag, frame_gen_id, content_rev=packet_epoch
-                                        )
-                                else:
-                                    with self._state_lock:
-                                        self._text_change_detector.rollback(text)
-                        else:
-                            if not self._running or self._consumer_stop_event.is_set():
-                                break
-                            translation = self._translation_manager.translate_subtitle(
-                                lines if isinstance(self._translator, TranslationRouter) else text,
-                                target,
-                                frame_gen_id,
-                                session_tag=self._translation_session_tag,
-                            )
-                            if not translation.strip():
-                                raise IncompleteTranslationError("逐行翻译缺少有效结果")
-                            if self._running and not self._consumer_stop_event.is_set():
-                                # Latest-Content-Wins 校验：翻译耗时期间画面若有实质新变化，丢弃旧译文防闪烁
-                                with self._content_epoch_lock:
-                                    is_fresh = (packet_epoch == self._content_epoch)
-                                if not is_fresh:
-                                    _log.debug("画面内容已变动，丢弃过时字幕译文 (epoch=%s vs %s)", packet_epoch, self._content_epoch)
-                                    with self._state_lock:
-                                        self._text_change_detector.rollback(text)
-                                    continue
-
-                                dispatched = self._result_manager.dispatch_subtitle(translation, frame_gen_id, content_rev=packet_epoch)
-                                if dispatched:
-                                    self._failed_text_retries.pop(text, None)
-                                    if translation:
-                                        self._result_manager.dispatch_history(
-                                            text, translation, mode_tag, frame_gen_id, content_rev=packet_epoch
-                                        )
-                                else:
-                                    with self._state_lock:
-                                        self._text_change_detector.rollback(text)
-                    except Exception as e:
-                        if isinstance(e, IncompleteTranslationError):
-                            with self._content_epoch_lock:
-                                is_fresh = (packet_epoch == self._content_epoch)
-                            if is_fresh and self._running and not self._consumer_stop_event.is_set():
-                                # 用带版本的结果信号清空，过期失败不能清掉新画面的译文。
-                                if self._display_mode == "annotate":
-                                    self._result_manager.dispatch_annotations([], frame_gen_id, content_rev=packet_epoch)
-                                else:
-                                    self._result_manager.dispatch_subtitle("", frame_gen_id, content_rev=packet_epoch)
-                        retries = self._failed_text_retries.get(text, 0) + 1
-                        self._failed_text_retries[text] = retries
-                        if retries <= 1:
-                            _log.warning("翻译处理异常 (gen=%s): %s，安排快速重试", frame_gen_id, e)
-                            with self._state_lock:
-                                self._text_change_detector.rollback(text)
-                            self._ocr_stabilizer.reset()
-                        else:
-                            _log.info("翻译在重试后仍无有效结果 (gen=%s): %s，锁定状态避免死锁报警", frame_gen_id, e)
-                            if len(self._failed_text_retries) > 30:
-                                self._failed_text_retries.clear()
-                        if not self._running and self._frame_buffer.is_empty:
+                    annotate = self._display_mode == "annotate"
+                    mode_tag = f"{self._profile}_{'annotate' if annotate else 'subtitle'}"
+                    session_tag = self._translation_session_tag
+                    # 逐行翻译，翻完一行立即显示一行；空译文或出错的行显示原文
+                    done: list[tuple[Any, str]] = []
+                    completed = True
+                    failed = False
+                    for line in lines:
+                        source = line.text.strip()
+                        if not source:
+                            continue
+                        if not self._batch_is_current(packet_epoch, session_tag):
+                            completed = False
                             break
-                        continue
+                        try:
+                            translated = str(self._translator.translate(
+                                source, target, session_tag=session_tag
+                            ) or "").strip()
+                        except Exception as e:
+                            # 出错（如模型尚未加载完）可能是暂时的，整批结束后交给下一帧重试
+                            failed = True
+                            if str(e) != self._last_translate_error:
+                                self._last_translate_error = str(e)
+                                _log.warning("单行翻译失败，暂显示原文 (gen=%s): %s", frame_gen_id, e)
+                            translated = ""
+                        # 暂停、切换语言、停止或画面已变：丢弃本批剩余行
+                        if not self._batch_is_current(packet_epoch, session_tag):
+                            completed = False
+                            break
+                        done.append((line, translated or source))
+                        if annotate:
+                            shown = self._result_manager.dispatch_annotations(
+                                [(ln.box, tr) for ln, tr in done], frame_gen_id, content_rev=packet_epoch
+                            )
+                        else:
+                            shown = self._result_manager.dispatch_subtitle(
+                                "\n".join(tr for _, tr in done), frame_gen_id, content_rev=packet_epoch
+                            )
+                        if not shown:
+                            completed = False
+                            break
+                    if completed and not failed:
+                        self._last_translate_error = ""
+                        # 全是原文时不记历史
+                        if any(tr != ln.text.strip() for ln, tr in done):
+                            self._result_manager.dispatch_history(
+                                text, "\n".join(tr for _, tr in done), mode_tag,
+                                frame_gen_id, content_rev=packet_epoch,
+                            )
+                    else:
+                        # 被取消或出错的批次让下一帧重新处理
+                        with self._state_lock:
+                            self._text_change_detector.rollback(text)
+                        self._ocr_stabilizer.reset()
 
                 # 10. 检查退出条件（用于同步单测：捕获循环已结束且缓冲已排空）
                 if not self._running and self._frame_buffer.is_empty:

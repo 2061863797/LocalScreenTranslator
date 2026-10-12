@@ -157,10 +157,12 @@ class RouterCompletenessTests(_RouterTestCase):
 
 
 class LiveCompletenessTests(_RouterTestCase):
-    def run_frames(self, mode, texts):
+    def run_frames(self, mode, texts, on_create=None):
         watcher = WindowWatcher(Mock(), self.router, dict(DEFAULTS), region=(0, 0, 64, 32),
                                 profile="region", display_mode=mode)
         self.addCleanup(watcher.deleteLater)
+        if on_create is not None:
+            on_create(watcher)
         frames = iter(texts)
         current = {"text": ""}
 
@@ -188,37 +190,82 @@ class LiveCompletenessTests(_RouterTestCase):
         watcher._inference_loop()
         return watcher
 
-    def test_partial_live_reply_retries_missing_line_before_history(self):
+    def dispatcher(self, watcher, mode):
+        manager = watcher._result_manager
+        return manager.dispatch_annotations if mode == "annotate" else manager.dispatch_subtitle
+
+    def test_lines_are_shown_one_by_one_and_empty_line_falls_back_to_source(self):
         for mode in ("annotate", "subtitle"):
             with self.subTest(mode=mode):
                 self.router.clear_cache()
-                seen = []
-
-                def infer(request):
-                    seen.append(request.text)
-                    value = "你好" if request.text == "Hello" else "世界" if seen.count("World") > 1 else ""
-                    return self.result(request, value)
-
-                self.router._ai.translate = Mock(side_effect=infer)
+                self.router._ai.translate = Mock(side_effect=lambda request: self.result(
+                    request, "你好" if request.text == "Hello" else ""
+                ))
                 watcher = self.run_frames(mode, [("Hello\nWorld", 1)] * 10)
-                self.assertEqual(seen, ["Hello", "World", "World"])
+                # 每行只翻译一次，空译文不重试
+                self.assertEqual([c.args[0].text for c in self.router._ai.translate.call_args_list],
+                                 ["Hello", "World"])
+                shown = [c.args[0] for c in self.dispatcher(watcher, mode).call_args_list]
+                if mode == "annotate":
+                    self.assertEqual(shown, [[((0, 0, 20, 10), "你好")],
+                                             [((0, 0, 20, 10), "你好"), ((0, 12, 20, 22), "World")]])
+                else:
+                    self.assertEqual(shown, ["你好", "你好\nWorld"])
                 history = watcher._result_manager.dispatch_history
                 history.assert_called_once()
-                self.assertEqual(history.call_args.args[:2], ("Hello\nWorld", "你好\n世界"))
-                dispatcher = (watcher._result_manager.dispatch_annotations if mode == "annotate"
-                              else watcher._result_manager.dispatch_subtitle)
-                self.assertEqual(dispatcher.call_count, 2)
-                self.assertEqual(dispatcher.call_args_list[0].args[0], [] if mode == "annotate" else "")
+                self.assertEqual(history.call_args.args[:2], ("Hello\nWorld", "你好\nWorld"))
 
-    def test_empty_new_frame_clears_old_display_and_stops_after_retry(self):
+    def test_untranslated_frame_shows_source_without_history(self):
         self.router._ai.translate = Mock(side_effect=lambda request: self.result(
             request, "旧译文" if request.text == "Previous" else ""
         ))
         watcher = self.run_frames("annotate", [("Previous", 1)] + [("Untranslated", 2)] * 10)
-        self.assertEqual([call.args[0].text for call in self.router._ai.translate.call_args_list],
-                         ["Previous", "Untranslated", "Untranslated"])
-        self.assertEqual(watcher._result_manager.dispatch_annotations.call_args.args[0], [])
+        self.assertEqual([c.args[0].text for c in self.router._ai.translate.call_args_list],
+                         ["Previous", "Untranslated"])
+        self.assertEqual(watcher._result_manager.dispatch_annotations.call_args.args[0],
+                         [((0, 0, 20, 10), "Untranslated")])
         self.assertEqual(watcher._result_manager.dispatch_history.call_count, 1)
+
+    def test_pause_mid_batch_drops_remaining_lines_and_retranslates(self):
+        for mode in ("annotate", "subtitle"):
+            with self.subTest(mode=mode):
+                self.router.clear_cache()
+                holder, seen = {}, []
+
+                def infer(request):
+                    seen.append(request.text)
+                    if len(seen) == 1:
+                        # 翻译第一行途中用户暂停/切换语言：会话被轮换
+                        holder["watcher"]._rotate_translation_session()
+                    return self.result(request, {"Hello": "你好", "World": "世界"}[request.text])
+
+                self.router._ai.translate = Mock(side_effect=infer)
+                watcher = self.run_frames(mode, [("Hello\nWorld", 1)] * 10,
+                                          on_create=lambda w: holder.update(watcher=w))
+                # 被取消的第一批不显示；下一帧重新翻译并完整显示
+                self.assertEqual(seen, ["Hello", "Hello", "World"])
+                last = self.dispatcher(watcher, mode).call_args.args[0]
+                expected = ([((0, 0, 20, 10), "你好"), ((0, 12, 20, 22), "世界")]
+                            if mode == "annotate" else "你好\n世界")
+                self.assertEqual(last, expected)
+                self.assertEqual(self.dispatcher(watcher, mode).call_count, 2)
+                watcher._result_manager.dispatch_history.assert_called_once()
+
+    def test_translation_error_shows_source_then_retries_next_frame(self):
+        calls = []
+
+        def infer(request):
+            calls.append(request.text)
+            if len(calls) == 1:
+                raise RuntimeError("模型尚未加载完")
+            return self.result(request, "你好")
+
+        self.router._ai.translate = Mock(side_effect=infer)
+        watcher = self.run_frames("subtitle", [("Hello", 1)] * 10)
+        self.assertEqual(calls, ["Hello", "Hello"])
+        shown = [c.args[0] for c in watcher._result_manager.dispatch_subtitle.call_args_list]
+        self.assertEqual(shown, ["Hello", "你好"])
+        watcher._result_manager.dispatch_history.assert_called_once()
 
 
 class WatcherLifetimeTests(unittest.TestCase):
