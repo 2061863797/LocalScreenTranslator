@@ -13,15 +13,9 @@ from PySide6.QtCore import QMimeData
 from PySide6.QtWidgets import QApplication
 
 from app import capture
-from app.main import (
-    App,
-    _PreloadSignals,
-    _SHUTDOWN_ABORT_SECONDS,
-    _SHUTDOWN_HARD_LIMIT_SECONDS,
-    _clone_mime_data,
-)
-from app.ui.overlays import AnnotationOverlay
-from app.window_watcher import WindowWatcher, _frame_changed
+from app.main import App, _PreloadSignals, _SHUTDOWN_ABORT_SECONDS, _SHUTDOWN_HARD_LIMIT_SECONDS
+from app.ui.annotation_overlay import AnnotationOverlay
+from app.window_watcher import WindowWatcher
 
 
 
@@ -186,33 +180,6 @@ class RuntimeSafetyTests(unittest.TestCase):
         # 第 1 帧与内容变化的第 3 帧各识别一次；相同的第 2 帧被跳过
         self.assertEqual(ocr.recognize.call_count, 2)
 
-    def test_frame_gate_ignores_noise_but_detects_text_changes(self):
-        base = np.zeros((40, 60, 3), dtype=np.uint8)
-        self.assertFalse(_frame_changed(base, base.copy()))
-
-        # 容差内的抖动（即使正好落在采样网格上）不应触发整轮 OCR
-        dimmed = base.copy()
-        for y in range(0, base.shape[0], 4):
-            for x in range(0, base.shape[1], 4):
-                dimmed[y, x] = np.clip(base[y, x].astype(np.int16) + 8, 0, 255)
-        self.assertFalse(_frame_changed(base, dimmed))
-
-        # 落在网格上的大幅变化必须触发（防止容差/采样被写坏后静默失效）
-        hot = base.copy()
-        hot[4, 8] = 255
-        hot[8, 12] = 255
-        self.assertTrue(_frame_changed(base, hot))
-
-        # 真正的文字变化：一小片反色必须被识别
-        text_changed = base.copy()
-        text_changed[10:26, 12:50] = 255 - text_changed[10:26, 12:50]
-        self.assertTrue(_frame_changed(base, text_changed))
-
-        # 整体亮度微变在容差内；尺寸变化一律算有变化
-        dimmer = np.clip(base.astype(np.int16) + 8, 0, 255).astype(np.uint8)
-        self.assertFalse(_frame_changed(base, dimmer))
-        self.assertTrue(_frame_changed(base, base[:20]))
-
     def test_small_text_change_breaks_static_skip(self):
         """静止画面跳过 OCR 后，小片文字变化必须立刻恢复识别。"""
         ocr = Mock()
@@ -241,8 +208,8 @@ class RuntimeSafetyTests(unittest.TestCase):
     def test_annotation_overlay_is_always_excluded_from_capture(self):
         overlay = Mock()
         with (
-            patch("app.ui.overlays._exclude_from_capture") as exclude,
-            patch("app.ui.overlays._allow_capture") as allow,
+            patch("app.ui.annotation_overlay._exclude_from_capture") as exclude,
+            patch("app.ui.annotation_overlay._allow_capture") as allow,
         ):
             AnnotationOverlay._apply_capture_affinity(overlay)
             exclude.assert_called_once_with(overlay)
@@ -268,7 +235,7 @@ class RuntimeSafetyTests(unittest.TestCase):
         overlay = Mock()
         overlay._layer_owner = None
         overlay.isVisible.return_value = True
-        with patch("app.ui.overlays.set_overlay_layer") as set_layer:
+        with patch("app.ui.topmost.set_overlay_layer") as set_layer:
             AnnotationOverlay.restack_layer(overlay)
         set_layer.assert_called_once_with(overlay, None)
 
@@ -313,16 +280,6 @@ class RuntimeSafetyTests(unittest.TestCase):
             ):
                 topmost.restack_above_owner(widget, 3333)
             self.assertEqual(swp.call_args.args[1], topmost._HWND_TOP)
-
-    def test_clipboard_mime_clone_preserves_all_formats(self):
-        source = QMimeData()
-        source.setText("plain")
-        source.setHtml("<b>rich</b>")
-        source.setData("application/x-screen-translator-test", b"payload")
-        cloned = _clone_mime_data(source)
-        self.assertEqual(cloned.text(), "plain")
-        self.assertEqual(cloned.html(), "<b>rich</b>")
-        self.assertEqual(bytes(cloned.data("application/x-screen-translator-test")), b"payload")
 
     def test_preload_signal_crosses_from_python_thread(self):
         app = QApplication.instance() or QApplication([])

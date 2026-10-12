@@ -42,7 +42,7 @@ from ..paths import (
     resolve_path,
     to_portable_path,
 )
-from .overlays import _DraggableMixin
+from .overlay_base import _DraggableMixin
 from .theme import (
     CornerSizeGrip,
     FLOAT_PANEL_STYLE,

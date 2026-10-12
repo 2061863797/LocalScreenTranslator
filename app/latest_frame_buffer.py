@@ -10,19 +10,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import threading
-from typing import Any
 import numpy as np
 
 
 @dataclass
 class FramePacket:
     """封装抓屏数据、工作版本、内容版本与变动区域的帧数据包。
-    
+
     双版本号设计 (PR 1)：
     - work_revision: 画面只要发生视觉变动即自增，保证 LatestFrameBuffer 覆盖后消费端知晓有新工作需处理；
     - content_revision: 仅在场景突变或变动 ROI 命中已有字幕行时自增，用于淘汰旧在途翻译结果；
-    - epoch: 向后兼容属性，与 content_revision 保持同义。
-    兼容性保证：支持迭代与索引解包 (img, epoch = packet)，保证与既有代码和测试 100% 兼容。
+    - epoch: 与 content_revision 同义，只给一个时另一个自动补齐。
     """
 
     frame: np.ndarray
@@ -40,132 +38,46 @@ class FramePacket:
         elif self.epoch == 0 and self.content_revision != 0:
             object.__setattr__(self, "epoch", self.content_revision)
 
-    def __iter__(self):
-        yield self.frame
-        yield self.epoch
-
-    def __getitem__(self, index: int):
-        if index == 0:
-            return self.frame
-        elif index == 1:
-            return self.epoch
-        raise IndexError(f"FramePacket index {index} out of range (0..1)")
-
 
 class LatestFrameBuffer:
-    """Thread-safe single-slot producer-consumer buffer guarded by threading.Condition.
-
-    Guarantees:
-    1. Single-slot capacity via unified single source of truth (_item).
-    2. Overwrites unconsumed frame with newer frame.
-    3. Increments dropped_count when an unconsumed frame is overwritten.
-    4. Thread-safe condition synchronization for get(timeout).
-    """
+    """单槽缓冲：新帧覆盖未消费的旧帧，并统计被覆盖的帧数。"""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
-        self._item: FramePacket | tuple[np.ndarray, int] | None = None
+        self._item: FramePacket | None = None
         self._dropped_count: int = 0
 
-    @property
-    def _frame(self) -> np.ndarray | None:
-        """兼容性属性：返回内部待消费帧图像，无帧时为 None。"""
-        if self._item is None:
-            return None
-        if isinstance(self._item, FramePacket):
-            return self._item.frame
-        return self._item[0]
-
-    @_frame.setter
-    def _frame(self, val: Any) -> None:
-        if val is None:
-            self._item = None
-
-    @property
-    def _packet(self) -> FramePacket | None:
-        """兼容性属性：返回内部待消费 FramePacket。"""
-        if isinstance(self._item, FramePacket):
-            return self._item
-        return None
-
-    @_packet.setter
-    def _packet(self, val: Any) -> None:
-        if val is None:
-            self._item = None
-        elif isinstance(val, FramePacket):
-            self._item = val
-
-    @property
-    def _gen_id(self) -> int | None:
-        """兼容性属性：返回内部待消费 generation ID。"""
-        if self._item is None:
-            return None
-        if isinstance(self._item, FramePacket):
-            return self._item.epoch
-        return self._item[1]
-
-    def put(
-        self,
-        frame: np.ndarray | FramePacket,
-        generation_id: int | None = None,
-        *,
-        gen_id: int | None = None,
-    ) -> None:
-        """Store the newest frame or FramePacket into the buffer, overwriting any unconsumed frame."""
-        if isinstance(frame, FramePacket):
-            new_item: FramePacket | tuple[np.ndarray, int] = frame
-        else:
-            gid = generation_id if generation_id is not None else (gen_id if gen_id is not None else 0)
-            new_item = (frame, gid)
-
+    def put(self, packet: FramePacket) -> None:
+        """放入最新帧，覆盖尚未消费的旧帧。"""
         with self._lock:
             if self._item is not None:
                 self._dropped_count += 1
-            self._item = new_item
+            self._item = packet
             self._cond.notify_all()
 
-    def get(self, timeout: float | None = None) -> tuple[np.ndarray, int] | FramePacket | None:
-        """Consume and return the latest frame or FramePacket from the buffer."""
+    def get(self, timeout: float | None = None) -> FramePacket | None:
+        """取出最新帧；超时仍无帧时返回 None。"""
         with self._lock:
             if self._item is None:
-                if not self._cond.wait(timeout):
-                    return None
-            if self._item is None:
-                return None
-
-            result = self._item
-            self._item = None
+                self._cond.wait(timeout)
+            result, self._item = self._item, None
             return result
 
     def clear(self) -> None:
-        """Clear any pending frame from the buffer without incrementing dropped_count."""
+        """丢弃待消费帧（不计入覆盖数），并唤醒等待中的消费者。"""
         with self._lock:
             self._item = None
             self._cond.notify_all()
 
     @property
     def dropped_count(self) -> int:
-        """Number of unconsumed frames dropped due to newer frames arriving."""
+        """被新帧覆盖而未消费的帧数。"""
         with self._lock:
             return self._dropped_count
 
-    def reset_dropped_count(self) -> None:
-        """Reset the dropped frame counter to zero."""
-        with self._lock:
-            self._dropped_count = 0
-
     @property
     def is_empty(self) -> bool:
-        """True if no unconsumed frame is waiting in the buffer."""
+        """当前没有待消费帧时为 True。"""
         with self._lock:
             return self._item is None
-
-    def peek(self) -> tuple[np.ndarray, int] | None:
-        """Return the current frame and generation ID without removing it from the buffer."""
-        with self._lock:
-            if self._item is None:
-                return None
-            if isinstance(self._item, FramePacket):
-                return (self._item.frame, self._item.epoch)
-            return self._item

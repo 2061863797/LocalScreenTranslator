@@ -4,7 +4,7 @@ from unittest import mock
 import numpy as np
 
 from app.ocr_engine import OcrLine
-from app.pipelines import LiveTranslationState, OneShotPipeline
+from app.pipelines import OneShotPipeline
 from app.window_watcher import WindowWatcher
 
 
@@ -32,19 +32,6 @@ class OneShotPipelineTests(unittest.TestCase):
 
 
 class LiveTranslationStateTests(unittest.TestCase):
-    def test_change_stability_and_two_empty_frames(self):
-        state = LiveTranslationState()
-        line = OcrLine("hello", 1.0, (0, 0, 10, 10))
-        self.assertEqual(state.observe([line], 0.9)[0], "change")
-        self.assertEqual(state.observe([line], 0.9)[0], "none")
-        self.assertEqual(state.observe([], 0.9)[0], "none")
-        self.assertEqual(state.observe([], 0.9)[0], "clear")
-
-    def test_cache_prunes_only_after_limit(self):
-        state = LiveTranslationState(line_cache={str(i): str(i) for i in range(5)})
-        state.prune_cache(["1", "3"], limit=4)
-        self.assertEqual(state.line_cache, {"1": "1", "3": "3"})
-
     def test_live_worker_can_start_and_stop_fifty_times(self):
         cfg = {
             "region_watch_interval_ms": 50,

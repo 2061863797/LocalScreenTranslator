@@ -54,8 +54,7 @@ from app.pipelines import GenerationTracker
 from app.result_manager import ResultManager
 from app.storage import Storage, MAX_CACHE_ENTRIES
 from app.translation_cache import TranslationCache
-from app.translation_manager import SubtitleIncrementalTranslator
-from app.ui.overlays import SubtitleBar
+from app.ui.subtitle_bar import SubtitleBar
 
 
 # =========================================================================
@@ -514,46 +513,6 @@ class TestPhase3Adversarial(unittest.TestCase):
             self.assertIsNone(small_cache.get("src_1", "zh", "m1", "v1"))
         finally:
             small_cache.close()
-
-    def test_subtitle_incremental_translator_line_diffs_and_ordering(self):
-        """Verify SubtitleIncrementalTranslator translates only modified lines and preserves line order."""
-        translated_lines_log: list[list[str]] = []
-
-        def mock_translate_lines(lines: list[str], target: str) -> list[str]:
-            translated_lines_log.append(list(lines))
-            return [f"[{target}]{line}" for line in lines]
-
-        inc_translator = SubtitleIncrementalTranslator(
-            cache=self.cache,
-            mock_translate_fn=mock_translate_lines,
-            model_id="test_model",
-            prompt_version="v1",
-        )
-
-        # Cycle 1: 3 lines
-        lines_c1 = ["First line of dialogue", "Second line of dialogue", "Third line of dialogue"]
-        sub1, used_cache1 = inc_translator.translate_subtitle_lines(lines_c1, "zh")
-
-        self.assertFalse(used_cache1, "First cycle has no cache")
-        self.assertEqual(len(translated_lines_log), 1)
-        self.assertEqual(translated_lines_log[0], lines_c1)
-        expected_sub1 = "[zh]First line of dialogue\n[zh]Second line of dialogue\n[zh]Third line of dialogue"
-        self.assertEqual(sub1, expected_sub1)
-
-        # Cycle 2: line 2 changes, lines 1 & 3 stay unchanged!
-        lines_c2 = ["First line of dialogue", "MODIFIED second line", "Third line of dialogue"]
-        translated_lines_log.clear()
-        sub2, used_cache2 = inc_translator.translate_subtitle_lines(lines_c2, "zh")
-
-        self.assertTrue(used_cache2, "Second cycle must reuse cached lines 1 and 3")
-        self.assertEqual(len(translated_lines_log), 1)
-        # ONLY the modified line was sent to the translator!
-        self.assertEqual(translated_lines_log[0], ["MODIFIED second line"])
-
-        # Strict ordering check: line 1 (cached), line 2 (new), line 3 (cached)
-        expected_sub2 = "[zh]First line of dialogue\n[zh]MODIFIED second line\n[zh]Third line of dialogue"
-        self.assertEqual(sub2, expected_sub2)
-
 
 if __name__ == "__main__":
     unittest.main()

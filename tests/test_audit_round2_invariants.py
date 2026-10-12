@@ -30,31 +30,6 @@ from app.window_watcher import WindowWatcher
 class TestAuditRound2Invariants(unittest.TestCase):
     """第二轮审查核心漏洞闭环实证测试集。"""
 
-    def test_latest_frame_buffer_clear_invariant_with_frame_packet(self):
-        """实证 1: put FramePacket 后调用 clear()，确保 is_empty 为 True 且 get() 必须为 None。"""
-        buf = LatestFrameBuffer()
-        pkt = FramePacket(
-            frame=np.ones((20, 20, 3), dtype=np.uint8),
-            epoch=42,
-            roi_box=(0, 0, 20, 20),
-            has_changed=True,
-            changed_ratio=0.5,
-        )
-        buf.put(pkt)
-        self.assertFalse(buf.is_empty)
-        self.assertIsNotNone(buf.peek())
-
-        # 执行 clear
-        buf.clear()
-
-        # 验证状态不变量：单一真相源下所有视图均必须显示为空
-        self.assertTrue(buf.is_empty, "clear() 后 is_empty 必须为 True")
-        self.assertIsNone(buf._frame, "clear() 后 _frame 必须为 None")
-        self.assertIsNone(buf._packet, "clear() 后 _packet 必须为 None")
-        self.assertIsNone(buf._gen_id, "clear() 后 _gen_id 必须为 None")
-        self.assertIsNone(buf.peek(), "clear() 后 peek() 必须为 None")
-        self.assertIsNone(buf.get(timeout=0.01), "clear() 后 get() 严禁再返回已清除的 packet")
-
     def test_first_subtitle_immediate_dispatch_without_delay(self):
         """实证 2: 字幕模式下首条文本以及新字幕必须立即触发 change，不进入两帧候选确认。"""
         detector = TextChangeDetector(candidate_confirm_frames=2)
@@ -101,36 +76,6 @@ class TestAuditRound2Invariants(unittest.TestCase):
         # 出现第二帧空文本：触发 clear
         tcd.observe("", threshold=0.5)
         self.assertFalse(tcd.has_pending_candidate, "清空完成后 pending 解除")
-
-    def test_scene_text_state_strict_x1_y1_x2_y2_intersect(self):
-        """实证 4: SceneTextState 正确解析 (x1, y1, x2, y2) 绝对坐标，杜绝将 (x2, y2) 当 (w, h) 误删文本。"""
-        # line1: 绝对坐标 (100, 100, 150, 120)
-        # 若当成 (x, y, w, h)，则范围会变成 x: 100~250, y: 100~220，进而误删相近区域
-        line1 = OcrLine(text="Line 1", score=0.9, box=(100, 100, 150, 120))
-        # line2: 位于 (160, 100, 200, 120)，在 X 轴上与 line1 完全分离
-        line2 = OcrLine(text="Line 2", score=0.9, box=(160, 100, 200, 120))
-
-        # 测试相交函数:
-        # ROI 仅覆盖 Line 1 (x: 95..155, y: 95..125)
-        roi_line1 = (95, 95, 155, 125)
-        self.assertTrue(_boxes_intersect(line1.box, roi_line1))
-        # Line 2 绝对不在该 ROI 内（160 > 155+4）
-        self.assertFalse(_boxes_intersect(line2.box, roi_line1))
-
-        # 测试 SceneTextState update_roi
-        scene = SceneTextState()
-        scene.update_full([line1, line2])
-        self.assertEqual(len(scene.lines), 2)
-
-        # 对 line1 所在区域做局部更新
-        new_line1 = OcrLine(text="Line 1 Updated", score=0.95, box=(100, 100, 150, 120))
-        merged = scene.update_roi([new_line1], roi_line1)
-
-        # 必须保留 line2，替换 line1
-        texts = [l.text for l in merged]
-        self.assertIn("Line 1 Updated", texts)
-        self.assertIn("Line 2", texts, "Line 2 严禁因坐标解释错误被误删！")
-        self.assertEqual(len(merged), 2)
 
     def test_content_epoch_overwritten_by_static_frame_triggers_ocr(self):
         """实证 5: 抓屏变动帧被后续静态最新帧覆盖时，推理端通过 epoch 比较必须照常识别，不丢失翻译。"""

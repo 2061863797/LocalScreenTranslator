@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import Any
 import numpy as np
 
+from app.latest_frame_buffer import FramePacket
+
 # Try importing production components if available
 try:
     from app.latest_frame_buffer import LatestFrameBuffer as _ProdLatestFrameBuffer
@@ -86,54 +88,6 @@ class ContractResultManager:
         return True
 
 
-class ContractLatestFrameBuffer:
-    """Reference contract implementation of PR 11 LatestFrameBuffer.
-
-    Guarantees:
-    1. Single-slot capacity.
-    2. Overwrites unconsumed frame with newer frame.
-    3. Increments dropped_count when an unconsumed frame is overwritten.
-    4. Thread-safe condition synchronization for get(timeout).
-    """
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._cond = threading.Condition(self._lock)
-        self._frame: np.ndarray | None = None
-        self._gen_id: int | None = None
-        self._dropped_count: int = 0
-
-    def put(self, frame: np.ndarray, generation_id: int) -> None:
-        with self._lock:
-            if self._frame is not None:
-                self._dropped_count += 1
-            self._frame = frame
-            self._gen_id = generation_id
-            self._cond.notify_all()
-
-    def get(self, timeout: float | None = None) -> tuple[np.ndarray, int] | None:
-        with self._lock:
-            if self._frame is None:
-                if not self._cond.wait(timeout):
-                    return None
-            if self._frame is None:
-                return None
-            res = (self._frame, self._gen_id)
-            self._frame = None
-            self._gen_id = None
-            return res
-
-    def clear(self) -> None:
-        with self._lock:
-            self._frame = None
-            self._gen_id = None
-
-    @property
-    def dropped_count(self) -> int:
-        with self._lock:
-            return self._dropped_count
-
-
 # Factory helpers
 def create_generation_tracker():
     return _ProdGenerationTracker() if _ProdGenerationTracker else ContractGenerationTracker()
@@ -199,13 +153,6 @@ class TestGenerationTiers(unittest.TestCase):
         self.assertTrue(self.tracker.is_active(new_gen))
         self.assertGreater(new_gen, gen1)
 
-    def test_watch_cycle_context_structure(self):
-        """Tier 1: Watch cycle context properly encapsulates metadata."""
-        ctx = WatchCycleContext(generation_id=5, timestamp=time.time(), target_language="zh")
-        self.assertEqual(ctx.generation_id, 5)
-        self.assertEqual(ctx.target_language, "zh")
-        self.assertGreater(ctx.timestamp, 0)
-
     # ==========================================
     # Tier 2: Boundary & Corner Cases
     # ==========================================
@@ -254,13 +201,13 @@ class TestGenerationTiers(unittest.TestCase):
         frame1 = np.ones((10, 10, 3), dtype=np.uint8) * 1
         frame2 = np.ones((10, 10, 3), dtype=np.uint8) * 2
 
-        self.buffer.put(frame1, 1)
-        self.buffer.put(frame2, 2)
+        self.buffer.put(FramePacket(frame1, epoch=1))
+        self.buffer.put(FramePacket(frame2, epoch=2))
 
         # Only frame2 should be consumed
         consumed = self.buffer.get(timeout=0.1)
         self.assertIsNotNone(consumed)
-        data, gid = consumed
+        data, gid = consumed.frame, consumed.epoch
         self.assertEqual(gid, 2)
         self.assertEqual(data[0, 0, 0], 2)
 
@@ -290,10 +237,11 @@ class TestGenerationTiers(unittest.TestCase):
         """Tier 3: Rapid producer putting 10 frames drops 9 frames."""
         for i in range(10):
             frame = np.ones((5, 5, 3), dtype=np.uint8) * i
-            self.buffer.put(frame, i)
+            self.buffer.put(FramePacket(frame, epoch=i))
 
         self.assertEqual(self.buffer.dropped_count, 9)
-        data, gid = self.buffer.get()
+        item = self.buffer.get()
+        data, gid = item.frame, item.epoch
         self.assertEqual(gid, 9)
         self.assertEqual(data[0, 0, 0], 9)
 
@@ -301,10 +249,11 @@ class TestGenerationTiers(unittest.TestCase):
         """Tier 3: Producer tags frames with generation; consumer processes latest matching generation."""
         gen_id = self.tracker.next_generation()
         f1 = np.zeros((10, 10, 3), dtype=np.uint8)
-        self.buffer.put(f1, gen_id)
+        self.buffer.put(FramePacket(f1, epoch=gen_id))
 
         # Consume
-        frame, gid = self.buffer.get()
+        item = self.buffer.get()
+        frame, gid = item.frame, item.epoch
         self.assertEqual(gid, gen_id)
         self.assertTrue(self.tracker.is_active(gid))
 
@@ -314,7 +263,7 @@ class TestGenerationTiers(unittest.TestCase):
     def test_buffer_clear_on_watch_reset(self):
         """Tier 3: Watch reset clears pending frame buffer."""
         f1 = np.zeros((10, 10, 3), dtype=np.uint8)
-        self.buffer.put(f1, 1)
+        self.buffer.put(FramePacket(f1, epoch=1))
         self.buffer.clear()
         self.assertIsNone(self.buffer.get(timeout=0.01))
 
@@ -331,14 +280,14 @@ class TestGenerationTiers(unittest.TestCase):
         def producer():
             for i in range(produced_count):
                 f = np.ones((4, 4, 3), dtype=np.uint8) * i
-                self.buffer.put(f, i)
+                self.buffer.put(FramePacket(f, epoch=i))
                 time.sleep(0.005)  # fast capture
 
         def consumer():
             while len(consumed) < 2 and producer_thread.is_alive():
                 item = self.buffer.get(timeout=0.05)
                 if item is not None:
-                    consumed.append(item[1])
+                    consumed.append(item.epoch)
                     time.sleep(0.04)  # slow inference
 
         producer_thread = threading.Thread(target=producer)
@@ -522,44 +471,6 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
         self.assertIsNotNone(_ProdLatestFrameBuffer, "Production LatestFrameBuffer must be imported")
         self.assertIsNotNone(_ProdResultManager, "Production ResultManager must be imported")
 
-    def test_latest_frame_buffer_api_completeness(self):
-        """PR 11: Verify LatestFrameBuffer put(gen_id/generation_id), get, peek, clear, and dropped_count."""
-        buf = _ProdLatestFrameBuffer()
-        self.assertTrue(buf.is_empty)
-        self.assertIsNone(buf.peek())
-
-        # Test put with keyword gen_id
-        f1 = np.ones((4, 4, 3), dtype=np.uint8) * 1
-        buf.put(f1, gen_id=101)
-        self.assertFalse(buf.is_empty)
-        peek_f, peek_id = buf.peek()
-        self.assertEqual(peek_id, 101)
-        self.assertEqual(peek_f[0, 0, 0], 1)
-
-        # Test overwrite increments dropped_count
-        f2 = np.ones((4, 4, 3), dtype=np.uint8) * 2
-        buf.put(f2, generation_id=102)
-        self.assertEqual(buf.dropped_count, 1)
-
-        # Test reset dropped count
-        buf.reset_dropped_count()
-        self.assertEqual(buf.dropped_count, 0)
-
-        # Test get consumes the frame and empties slot
-        consumed = buf.get(timeout=0.1)
-        self.assertIsNotNone(consumed)
-        f_got, id_got = consumed
-        self.assertEqual(id_got, 102)
-        self.assertEqual(f_got[0, 0, 0], 2)
-        self.assertTrue(buf.is_empty)
-
-        # Test clear
-        buf.put(f1, 103)
-        self.assertFalse(buf.is_empty)
-        buf.clear()
-        self.assertTrue(buf.is_empty)
-        self.assertIsNone(buf.get(timeout=0.01))
-
     def test_latest_frame_buffer_concurrent_producers(self):
         """PR 11: Multi-threaded producer pushing frames simultaneously into LatestFrameBuffer."""
         buf = _ProdLatestFrameBuffer()
@@ -568,7 +479,7 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
         def producer_worker(start_idx):
             for i in range(25):
                 frame = np.ones((2, 2, 3), dtype=np.uint8) * (start_idx + i)
-                buf.put(frame, gen_id=start_idx + i)
+                buf.put(FramePacket(frame, epoch=start_idx + i))
                 time.sleep(0.001)
 
         threads = [
@@ -674,116 +585,6 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
 
         self.assertTrue(CaptureService.is_invalid_window_handle_error(Win32Error()))
         self.assertFalse(CaptureService.is_invalid_window_handle_error(ValueError()))
-
-    def test_text_change_detector_behavior(self):
-        """PR 9: Verify TextChangeDetector sequence matching, stability, empty clearing."""
-        from app.text_change_detector import TextChangeDetector
-        from app.ocr_engine import OcrLine
-
-        detector = TextChangeDetector(empty_clear_threshold=2)
-
-        # 1. Initial observation of text
-        line1 = OcrLine(text="Initial line", box=(0, 0, 50, 10), score=0.99)
-        event, text = detector.observe([line1], threshold=0.5)
-        self.assertEqual(event, "change")
-        self.assertEqual(text, "Initial line")
-        self.assertTrue(detector.is_stable)
-
-        # 2. Identical text returns "none"
-        event, text = detector.observe([line1], threshold=0.5)
-        self.assertEqual(event, "none")
-
-        # 3. Substantive change returns "change"
-        line2 = OcrLine(text="Completely different text", box=(0, 0, 50, 10), score=0.99)
-        event, text = detector.observe([line2], threshold=0.5)
-        self.assertEqual(event, "change")
-        self.assertEqual(text, "Completely different text")
-
-        # 4. First empty frame: "none"
-        event, text = detector.observe([], threshold=0.5)
-        self.assertEqual(event, "none")
-        self.assertEqual(detector.empty_frames, 1)
-
-        # 5. Second empty frame: triggers "clear"
-        event, text = detector.observe([], threshold=0.5)
-        self.assertEqual(event, "clear")
-        self.assertEqual(text, "")
-        self.assertFalse(detector.is_stable)
-
-    def test_translation_manager_behavior(self):
-        """PR 9: Verify TranslationManager subtitle, annotations, and one-shot translations."""
-        from unittest.mock import MagicMock
-        from app.ocr_engine import OcrLine
-        from app.translation_manager import TranslationManager
-
-        translator_mock = MagicMock()
-        translator_mock.translate.side_effect = lambda text, target: f"[{target}]{text}"
-        translator_mock.translate_lines.side_effect = lambda lines, target: [f"[{target}]{l}" for l in lines]
-
-        tm = TranslationManager(translator_mock)
-
-        # 1. Subtitle translation
-        sub = tm.translate_subtitle("Hello World", "zh")
-        self.assertEqual(sub, "[zh]Hello World")
-
-        # 2. Annotations translation
-        lines = [
-            OcrLine(text="Line A", box=(0, 0, 20, 10), score=0.95),
-            OcrLine(text="Line B", box=(0, 15, 20, 25), score=0.95),
-        ]
-        items, joined = tm.translate_annotations(lines, "zh")
-        self.assertEqual(len(items), 2)
-        self.assertEqual(items[0][1], "[zh]Line A")
-        self.assertEqual(items[1][1], "[zh]Line B")
-        self.assertIn("[zh]Line A", joined)
-        self.assertIn("[zh]Line B", joined)
-
-        # Line cache hit on repeated call (translator_mock not called again for cached lines)
-        translator_mock.translate_lines.reset_mock()
-        items2, joined2 = tm.translate_annotations(lines, "zh")
-        translator_mock.translate_lines.assert_not_called()
-        self.assertEqual(len(items2), 2)
-
-        # 3. One-shot translation
-        one_shot = tm.translate_one_shot("Quick test", "zh")
-        self.assertEqual(one_shot, "[zh]Quick test")
-
-    def test_window_watcher_pipeline_components_exposed(self):
-        """PR 9: WindowWatcher exposes all single-responsibility pipeline components."""
-        from unittest.mock import MagicMock
-        from app.config import DEFAULTS
-        from app.window_watcher import WindowWatcher
-
-        watcher = WindowWatcher(
-            MagicMock(), MagicMock(), dict(DEFAULTS), hwnd=1
-        )
-
-        # Verify all decoupled components exist and are typed correctly
-        from app.capture_service import CaptureService
-        from app.latest_frame_buffer import LatestFrameBuffer
-        from app.frame_detector import FrameChangeDetector
-        from app.adaptive_polling import AdaptivePollingController
-        from app.ocr_service import OcrService
-        from app.text_change_detector import TextChangeDetector
-        from app.translation_manager import TranslationManager
-        from app.result_manager import ResultManager
-
-        self.assertIsInstance(watcher.capture_service, CaptureService)
-        self.assertIsInstance(watcher.frame_buffer, LatestFrameBuffer)
-        self.assertIsInstance(watcher.frame_detector, FrameChangeDetector)
-        self.assertIsInstance(watcher.polling_controller, AdaptivePollingController)
-        self.assertIsInstance(watcher.ocr_service, OcrService)
-        self.assertIsInstance(watcher.text_change_detector, TextChangeDetector)
-        self.assertIsInstance(watcher.translation_manager, TranslationManager)
-        self.assertIsInstance(watcher.result_manager, ResultManager)
-
-        # Verify all public signals exist
-        self.assertTrue(hasattr(watcher, "subtitle_ready"))
-        self.assertTrue(hasattr(watcher, "annotations_ready"))
-        self.assertTrue(hasattr(watcher, "history_ready"))
-        self.assertTrue(hasattr(watcher, "window_moved"))
-        self.assertTrue(hasattr(watcher, "content_cleared"))
-        self.assertTrue(hasattr(watcher, "stopped"))
 
     def test_window_watcher_transient_ocr_and_translation_exceptions_do_not_crash(self):
         """PR 11: Transient OCR and Translation exceptions are isolated and do not crash WindowWatcher."""

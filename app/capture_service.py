@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import threading
 from typing import Callable
 import numpy as np
@@ -59,10 +58,6 @@ class CaptureService:
         self._get_window_rect_fn = get_window_rect_fn or capture.get_window_rect
 
     @property
-    def backend(self) -> capture.CaptureBackend:
-        return self._backend
-
-    @property
     def hwnd(self) -> int | None:
         with self._target_lock:
             return self._hwnd
@@ -72,37 +67,10 @@ class CaptureService:
         with self._target_lock:
             return self._region
 
-    @property
-    def last_rect(self) -> tuple[int, int, int, int] | None:
-        with self._target_lock:
-            return self._last_rect
-
-    def set_target(
-        self,
-        hwnd: int | None = None,
-        region: tuple[int, int, int, int] | None = None,
-    ) -> None:
-        """更新捕获目标（窗口或区域）。"""
-        with self._target_lock:
-            self._hwnd = hwnd
-            self._region = region
-            self._last_rect = None
-
     def set_region(self, region: tuple[int, int, int, int] | None) -> None:
         """更新区域目标。"""
         with self._target_lock:
             self._region = region
-            self._last_rect = None
-
-    def set_hwnd(self, hwnd: int | None) -> None:
-        """更新窗口句柄目标。"""
-        with self._target_lock:
-            self._hwnd = hwnd
-            self._last_rect = None
-
-    def reset_moved_tracking(self) -> None:
-        """重置位移检测基准。"""
-        with self._target_lock:
             self._last_rect = None
 
     def has_moved(self, current_rect: tuple[int, int, int, int] | None) -> bool:
@@ -126,22 +94,6 @@ class CaptureService:
     def is_invalid_window_handle_error(exc: BaseException) -> bool:
         """检查异常是否为窗口句柄失效错误 (winerror 1400)。"""
         return is_invalid_window_handle_error(exc)
-
-    def is_valid_window(self, hwnd: int | None = None) -> bool:
-        """验证指定窗口句柄是否有效且存活。"""
-        target_hwnd = hwnd if hwnd is not None else self._hwnd
-        if target_hwnd is None:
-            return False
-        try:
-            h = int(target_hwnd)
-            if h <= 0:
-                return False
-            # Win32 IsWindow API
-            if hasattr(ctypes, "windll") and hasattr(ctypes.windll, "user32"):
-                return bool(ctypes.windll.user32.IsWindow(h))
-            return True
-        except Exception:
-            return False
 
     def grab(
         self,

@@ -8,13 +8,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
-from app.ui.overlays import (
-    AnnotateCtrl,
-    LanguagePairButton,
-    LanguageSelectPopup,
-    RegionWatchFrame,
-    SubtitleBar,
-)
+from app.ui.annotation_overlay import AnnotateCtrl
+from app.ui.language_popup import LanguagePairButton, LanguageSelectPopup
+from app.ui.region_frame import RegionWatchFrame
+from app.ui.subtitle_bar import SubtitleBar
 from app.translation_runtime.languages import LANGUAGES
 from app.ui.topmost import set_overlay_layer
 

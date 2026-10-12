@@ -36,8 +36,8 @@ from PySide6.QtWidgets import QApplication
 
 from app.config import DEFAULTS
 from app.ocr_engine import OcrLine
-from app.pipelines import GenerationTracker, WatchCycleContext
-from app.ui.overlays import SubtitleBar
+from app.pipelines import GenerationTracker
+from app.ui.subtitle_bar import SubtitleBar
 from app.window_watcher import WindowWatcher
 
 

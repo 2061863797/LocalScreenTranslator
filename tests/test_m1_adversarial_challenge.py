@@ -37,8 +37,8 @@ from PySide6.QtWidgets import QApplication
 
 from app.config import DEFAULTS
 from app.ocr_engine import OcrLine
-from app.pipelines import GenerationTracker, WatchCycleContext
-from app.ui.overlays import SubtitleBar
+from app.pipelines import GenerationTracker
+from app.ui.subtitle_bar import SubtitleBar
 from app.window_watcher import WindowWatcher
 
 
@@ -388,29 +388,6 @@ class TestGenerationTrackingAdversarial(unittest.TestCase):
         self.assertGreater(len(dispatched) + len(dropped), 50)
         # Resets should have successfully invalidated a substantial number of in-flight generations
         self.assertGreater(len(dropped), 0, "Reset spamming should have caused drops")
-
-    def test_dispatch_if_active_atomicity_and_race(self):
-        """Stress test dispatch_if_active with concurrent reset calls."""
-        tracker = GenerationTracker()
-        callback_executed_counts = 0
-        lock = threading.Lock()
-
-        def dummy_callback(gen):
-            nonlocal callback_executed_counts
-            with lock:
-                callback_executed_counts += 1
-
-        for _ in range(100):
-            gen = tracker.next_generation()
-            # Race reset in parallel thread
-            t = threading.Thread(target=tracker.reset)
-            t.start()
-            tracker.dispatch_if_active(gen, dummy_callback, gen)
-            t.join()
-
-        # Must execute cleanly without exceptions
-        self.assertGreaterEqual(callback_executed_counts, 0)
-
 
 class TestWindowWatcherAdversarial(unittest.TestCase):
     """Adversarial testing on WindowWatcher's integration with GenerationTracker."""

@@ -8,7 +8,6 @@ import numpy as np
 from app.main import App
 from app.latest_frame_buffer import FramePacket
 from app.ocr_engine import OcrLine
-from app.translation_manager import TranslationManager
 from app.window_watcher import WindowWatcher
 
 
@@ -104,21 +103,6 @@ class TestRegionWatchStartup(unittest.TestCase):
             [(line.box, "Hello")],
         )
         watcher._result_manager.dispatch_history.assert_not_called()
-
-    def test_empty_model_reply_is_retried_for_same_source(self):
-        translator = Mock()
-        translator.translate_lines.side_effect = [[""], ["你好"]]
-        manager = TranslationManager(translator)
-        lines = [OcrLine("Hello", 0.99, (4, 4, 30, 20))]
-
-        with self.assertRaisesRegex(RuntimeError, "缺少有效结果"):
-            manager.translate_annotations(lines, "简体中文")
-        items, translation = manager.translate_annotations(lines, "简体中文")
-
-        self.assertEqual(items, [((4, 4, 30, 20), "你好")])
-        self.assertEqual(translation, "你好")
-        self.assertEqual(translator.translate_lines.call_count, 2)
-
 
 if __name__ == "__main__":
     unittest.main()

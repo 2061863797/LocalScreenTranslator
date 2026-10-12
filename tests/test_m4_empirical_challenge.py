@@ -254,29 +254,5 @@ class TestTextChangeDetectorEmpiricalChallenge(unittest.TestCase):
         # Invariant: Speedup must be substantial (> 100x)
         self.assertGreater(speedup, 100.0, f"Speedup {speedup:.1f}x is lower than expected")
 
-    def test_text_change_detector_multithreaded_stress(self):
-        """Verify TextChangeDetector concurrency safety under 10 threads observing lines concurrently."""
-        detector = TextChangeDetector()
-        errors = []
-
-        def worker(idx: int):
-            try:
-                for i in range(100):
-                    lines = [OcrLine(text=f"Line {idx}_{i}", box=(0, 0, 10, 10), score=0.9)]
-                    event, text = detector.observe(lines, threshold=0.5)
-                    self.assertIn(event, ("none", "change", "clear"))
-                    _ = detector.is_stable
-            except Exception as e:
-                errors.append(e)
-
-        threads = [threading.Thread(target=worker, args=(t,)) for t in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        self.assertEqual(len(errors), 0, f"Concurrency errors encountered: {errors}")
-
-
 if __name__ == "__main__":
     unittest.main()

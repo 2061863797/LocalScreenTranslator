@@ -86,17 +86,6 @@ class SceneTextState:
             self._roi_update_count = 0
             return list(self._lines)
 
-    def update_roi(
-        self,
-        roi_lines: list[Any],
-        roi_box: tuple[int, int, int, int],
-    ) -> list[Any]:
-        """增量融合局部 ROI 结果：剔除落在 ROI 范围内的旧行，合入新识别行。"""
-        with self._lock:
-            self._roi_update_count += 1
-            self._lines = self._merge_roi_lines(self._lines, roi_lines, roi_box)
-            return list(self._lines)
-
     def preview_roi(
         self,
         roi_lines: list[Any],

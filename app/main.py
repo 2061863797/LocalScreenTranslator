@@ -6,8 +6,8 @@ import threading
 import time
 from typing import Any
 
-from PySide6.QtCore import QEventLoop, QMimeData, QObject, QSharedMemory, QTimer, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QPixmap
+from PySide6.QtCore import QEventLoop, QObject, QSharedMemory, QTimer, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QMenu,
@@ -21,12 +21,9 @@ from .hotkeys import HotkeyManager
 from .i18n import get_language, set_language, t as _t
 from .runtime_resources import RuntimeResources
 from .paths import ICON_ICO
-from .ui.overlays import (
-    AnnotateCtrl,
-    AnnotationOverlay,
-    RegionWatchFrame,
-    SubtitleBar,
-)
+from .ui.annotation_overlay import AnnotateCtrl, AnnotationOverlay
+from .ui.region_frame import RegionWatchFrame
+from .ui.subtitle_bar import SubtitleBar
 from .ui.region_selector import RegionSelector
 from .ui.window_picker import WindowPicker
 from .ui.windows import (
@@ -49,16 +46,6 @@ class _PreloadSignals(QObject):
     """把普通 Python 线程的预热结果安全送回 Qt 主线程。"""
 
     status = Signal(str, str, str, int)
-
-
-def _clone_mime_data(source) -> QMimeData:
-    """物化剪贴板全部 MIME 格式，之后可原样恢复。"""
-    clone = QMimeData()
-    if source is None:
-        return clone
-    for fmt in source.formats():
-        clone.setData(fmt, source.data(fmt))
-    return clone
 
 
 def _tray_icon() -> QIcon:

@@ -8,9 +8,6 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from app.frame_detector import FrameChangeDetector, FrameDiffResult
-from app.translation_manager import TranslationManager
-
-
 class TestFourthAuditP1s(unittest.TestCase):
     def test_dynamic_noise_does_not_invalidate_content(self):
         """P1 验证：背景微粒噪点绝不标记 invalidates_content，彻底根除 Result Starvation。"""
@@ -32,26 +29,6 @@ class TestFourthAuditP1s(unittest.TestCase):
         res_major = detector.detect(frame1, frame3)
         self.assertTrue(res_major.has_changed, "大面积变动应判定为视觉变动")
         self.assertTrue(res_major.invalidates_content, "大面积切屏（ratio>=0.35）应正确判定内容失效")
-
-    def test_translation_manager_cache_isolation_by_target(self):
-        """P1 验证：行缓存必须按 (source, target) 复合键隔离，防止多语言热切换串味。"""
-        fake_translator = MagicMock()
-        def mock_translate_lines(lines, target, session_tag="default"):
-            return [f"[{target}]{line}" for line in lines]
-        fake_translator.translate_lines = mock_translate_lines
-
-        tm = TranslationManager(fake_translator)
-
-        # 步骤 1: 翻译为简体中文
-        lines_zh = [MagicMock(text="Save File", box=[0, 0, 100, 20])]
-        items_zh, _ = tm.translate_annotations(lines_zh, "简体中文")
-        self.assertEqual(items_zh[0][1], "[简体中文]Save File")
-
-        # 步骤 2: 热切换目标语言为日语，必须返回日语译文，不能复用旧的中文译文
-        lines_ja = [MagicMock(text="Save File", box=[0, 0, 100, 20])]
-        items_ja, _ = tm.translate_annotations(lines_ja, "日语")
-        self.assertEqual(items_ja[0][1], "[日语]Save File", "切换目标语后行缓存不得返回旧语言译文！")
-
 
     def test_shape_mismatch_invalidates_content(self):
         """P1 验证：窗口尺寸改变（shape mismatch）必须 100% 标记 invalidates_content=True。"""

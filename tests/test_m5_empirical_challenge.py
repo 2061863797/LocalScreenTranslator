@@ -29,14 +29,7 @@ import unittest
 from pathlib import Path
 
 import app.storage as storage_mod
-from app.capture import (
-    CaptureBackend,
-    DxgiCaptureBackend,
-    MssCaptureBackend,
-    WgcCaptureBackend,
-    Win32PrintWindowBackend,
-)
-from app.pipeline_metrics import PipelineMetrics, PipelineStageTimers
+from app.capture import CaptureBackend, MssCaptureBackend
 from app.storage import AsyncHistoryStorage, Storage
 
 
@@ -202,82 +195,6 @@ class Milestone5EmpiricalChallenge(unittest.TestCase):
     # CHALLENGE 2: PipelineMetrics 10,000 Concurrent Events Across 5 Threads
     # =========================================================================
 
-    def test_challenge_2_pipeline_metrics_10000_concurrent_events(self):
-        """Concurrently record 10,000 pipeline stage events across 5 threads.
-
-        Verify:
-        - Thread safety under intense contention.
-        - Exact sample counts per stage sum to 10,000.
-        - Summary statistics (avg, p50, p95, max) are strictly monotonic and uncorrupted.
-        - format_table() renders without errors.
-        """
-        metrics = PipelineMetrics()
-        num_threads = 5
-        events_per_thread = 2000
-        total_events = num_threads * events_per_thread  # 10,000
-
-        stages = PipelineMetrics.STAGES
-        num_stages = len(stages)
-
-        # Expected counts per stage
-        expected_counts = {s: 0 for s in stages}
-        for thread_idx in range(num_threads):
-            for i in range(events_per_thread):
-                stg = stages[(thread_idx * events_per_thread + i) % num_stages]
-                expected_counts[stg] += 1
-
-        barrier = threading.Barrier(num_threads)
-
-        def worker(thread_idx: int):
-            barrier.wait()
-            for i in range(events_per_thread):
-                stg = stages[(thread_idx * events_per_thread + i) % num_stages]
-                dur = float((i % 50) + 1) * 0.5  # Deterministic duration 0.5ms to 25.0ms
-                if i % 10 == 0:
-                    # Test stage_timer / measure context manager
-                    with metrics.measure(stg):
-                        pass  # sub-millisecond execution
-                else:
-                    metrics.record_stage(stg, dur)
-
-        threads = [threading.Thread(target=worker, args=(t,)) for t in range(num_threads)]
-
-        t0 = time.perf_counter()
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10.0)
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-
-        stats = metrics.get_stats()
-        total_recorded = sum(s["count"] for s in stats.values())
-
-        print("\n" + "=" * 80)
-        print(f"CHALLENGE 2: PIPELINE METRICS 10,000 EVENTS CONCURRENCY (5 THREADS)")
-        print("=" * 80)
-        print(f"Elapsed Time: {elapsed_ms:.2f} ms ({total_events / (elapsed_ms / 1000):.0f} events/sec)")
-        print(f"Total Events Recorded: {total_recorded} / {total_events}")
-        for stg in stages:
-            s = stats[stg]
-            print(f"  Stage {stg:<15}: count={s['count']:>5}, avg={s['avg']:>6.2f}, p50={s['p50']:>6.2f}, p95={s['p95']:>6.2f}, max={s['max']:>6.2f}")
-        print("=" * 80)
-
-        table_str = metrics.format_table()
-        print("\nFormatted Telemetry Table:\n" + table_str + "\n")
-
-        # Assertions
-        self.assertEqual(total_recorded, total_events, "Every single one of the 10,000 events must be safely recorded")
-        for stg in stages:
-            s = stats[stg]
-            self.assertEqual(s["count"], expected_counts[stg], f"Stage {stg} count mismatch")
-            self.assertGreater(s["avg"], 0.0)
-            self.assertGreaterEqual(s["p50"], 0.0)
-            self.assertGreaterEqual(s["p95"], s["p50"], f"Stage {stg}: p95 must be >= p50")
-            self.assertGreaterEqual(s["max"], s["p95"], f"Stage {stg}: max must be >= p95")
-
-        self.assertIn("TOTAL PIPELINE", table_str)
-        self.assertIn("Throughput:", table_str)
-
     # =========================================================================
     # CHALLENGE 3: Edge Cases, Hostile Scenarios & Lifecycle Safety
     # =========================================================================
@@ -317,36 +234,6 @@ class Milestone5EmpiricalChallenge(unittest.TestCase):
         store.close()
         self.assertIsNone(store._conn)
 
-    def test_challenge_3c_concurrent_reset_and_recording(self):
-        """PipelineMetrics.reset() during high-volume recording must not cause data corruption."""
-        metrics = PipelineMetrics()
-        stop_flag = threading.Event()
-
-        def recorder():
-            while not stop_flag.is_set():
-                metrics.record_stage("capture", 1.5)
-                metrics.record_stage("ocr", 20.0)
-
-        threads = [threading.Thread(target=recorder) for _ in range(4)]
-        for t in threads:
-            t.start()
-
-        # Repeatedly reset and compute stats under fire
-        for _ in range(20):
-            time.sleep(0.01)
-            metrics.reset()
-            stats = metrics.get_stats()
-            self.assertIsInstance(stats, dict)
-
-        stop_flag.set()
-        for t in threads:
-            t.join()
-
-        # Final check
-        final_stats = metrics.get_stats()
-        self.assertIn("capture", final_stats)
-        self.assertIn("ocr", final_stats)
-
     def test_challenge_3d_extreme_data_payloads(self):
         """AsyncHistoryStorage handles empty strings, emojis, CJK, and 100KB large payloads."""
         db_path = self.db_dir / "extreme_payloads.db"
@@ -373,34 +260,6 @@ class Milestone5EmpiricalChallenge(unittest.TestCase):
         self.assertEqual(rows[1], ("🚀🔥✨🎉", "🚀🔥✨🎉 (translated)", "mode_unicode"))
         self.assertEqual(len(rows[2][0]), 100000)
         self.assertEqual(len(rows[2][1]), 50000)
-
-    def test_challenge_3e_capture_backend_contracts(self):
-        """Validate CaptureBackend inheritance and error boundaries."""
-        # 1. MssCaptureBackend
-        mss = MssCaptureBackend()
-        self.assertTrue(mss.is_supported())
-        mss.release()
-
-        # 2. Win32PrintWindowBackend
-        win32 = Win32PrintWindowBackend()
-        self.assertTrue(win32.is_supported())
-        win32.release()
-
-        # 3. Extensible hardware hooks
-        dxgi = DxgiCaptureBackend()
-        self.assertFalse(dxgi.is_supported())
-        with self.assertRaises(NotImplementedError):
-            dxgi.grab_region(0, 0, 10, 10)
-        with self.assertRaises(NotImplementedError):
-            dxgi.grab_window(1234)
-
-        wgc = WgcCaptureBackend()
-        self.assertFalse(wgc.is_supported())
-        with self.assertRaises(NotImplementedError):
-            wgc.grab_region(0, 0, 10, 10)
-        with self.assertRaises(NotImplementedError):
-            wgc.grab_window(1234)
-
 
 if __name__ == "__main__":
     unittest.main()

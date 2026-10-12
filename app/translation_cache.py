@@ -55,6 +55,8 @@ class TranslationCache:
         self.l2_max_entries: int = l2_max_entries
         self._l1: collections.OrderedDict[str, str] = collections.OrderedDict()
         self._pending_reads: int = 0
+        self._evict_check_every: int = max(1, min(50, l2_max_entries // 100))
+        self._writes_since_evict_check: int = 0
 
     @staticmethod
     def make_key(
@@ -126,49 +128,20 @@ class TranslationCache:
         self,
         source: str,
         target: str,
-        arg3: str | None = None,
-        arg4: str = "v1",
-        arg5: str | None = None,
-        *,
-        model_id: str | None = None,
-        prompt_version: str | None = None,
-        translation: str | None = None,
+        model_id: str,
+        prompt_version: str,
+        translation: str,
     ) -> None:
-        """写入两级缓存。
-        
-        支持调用形式：
-        - 5 参数: put(source, target, model_id, prompt_version, translation)
-        - 3 参数: put(source, target, translation)
-        - 命名关键字参数: put(source, target, model_id=..., prompt_version=..., translation=...)
-        """
-        if not source:
+        """写入两级缓存；空原文或空译文不写。"""
+        if not source or not translation:
             return
 
-        # 解析位置参数与关键字参数
-        if arg5 is not None:
-            # put(source, target, model_id, prompt_version, translation)
-            actual_model_id = arg3 or "default_model"
-            actual_prompt_version = arg4 or "v1"
-            actual_translation = arg5
-        elif translation is not None:
-            actual_model_id = model_id or arg3 or "default_model"
-            actual_prompt_version = prompt_version or (arg4 if arg3 is not None else "v1")
-            actual_translation = translation
-        else:
-            # put(source, target, translation)
-            actual_model_id = model_id or "default_model"
-            actual_prompt_version = prompt_version or "v1"
-            actual_translation = arg3 or ""
-
-        if not actual_translation:
-            return
-
-        key = self.make_key(source, target, actual_model_id, actual_prompt_version)
+        key = self.make_key(source, target, model_id, prompt_version)
         now = time.time()
 
         with self._lock:
             # 写入 / 更新 L1 内存
-            self._l1[key] = actual_translation
+            self._l1[key] = translation
             self._l1.move_to_end(key)
             while len(self._l1) > self.l1_capacity:
                 self._l1.popitem(last=False)
@@ -183,9 +156,13 @@ class TranslationCache:
                     last_accessed_at = excluded.last_accessed_at,
                     access_count = access_count + 1
                 """,
-                (key, source, target, actual_model_id, actual_prompt_version, actual_translation, now, now),
+                (key, source, target, model_id, prompt_version, translation, now, now),
             )
-            self._check_eviction()
+            # 每写入约 1% 容量才检查一次总数，避免每次写都 count(*)
+            self._writes_since_evict_check += 1
+            if self._writes_since_evict_check >= self._evict_check_every:
+                self._writes_since_evict_check = 0
+                self._check_eviction()
             self._conn.commit()
             self._pending_reads = 0
 

@@ -25,9 +25,6 @@ from typing import Any
 
 from app.storage import Storage, MAX_CACHE_ENTRIES, CACHE_EVICTION_BATCH
 from app.translation_cache import TranslationCache
-from app.translation_manager import SubtitleIncrementalTranslator
-
-
 class TestMilestone3AdversarialStress(unittest.TestCase):
     """Adversarial stress and empirical benchmark suite for Milestone 3."""
 
@@ -187,89 +184,6 @@ class TestMilestone3AdversarialStress(unittest.TestCase):
     # 3. Stress Test SubtitleIncrementalTranslator Line Ordering
     # =========================================================================
 
-    def test_subtitle_varied_insertions_deletions_reordering(self):
-        """Stress-test SubtitleIncrementalTranslator with chaotic subtitle sequence transitions:
-        - Insertion at head, middle, tail
-        - Deletion from head, middle, tail
-        - Line permutation and reversal
-        - Duplicate identical lines
-        """
-        translator = SubtitleIncrementalTranslator(
-            cache=self.cache,
-            mock_translate_fn=lambda lines, tgt: [f"[{tgt}]{line.strip()}" for line in lines],
-        )
-
-        # Step 1: Initial subtitle frame
-        frame1 = ["Alpha", "Beta", "Gamma", "Delta"]
-        out1, used1 = translator.translate_subtitle_lines(frame1, "zh")
-        self.assertFalse(used1)
-        self.assertEqual(out1, "[zh]Alpha\n[zh]Beta\n[zh]Gamma\n[zh]Delta")
-        self.assertEqual(translator.lines_translated_count, 4)
-
-        # Step 2: Line deletions (drop Alpha and Gamma)
-        frame2 = ["Beta", "Delta"]
-        out2, used2 = translator.translate_subtitle_lines(frame2, "zh")
-        self.assertTrue(used2)
-        self.assertEqual(out2, "[zh]Beta\n[zh]Delta")
-        self.assertEqual(translator.lines_translated_count, 4)  # No new lines translated
-
-        # Step 3: Insertions (insert Epsilon at top, Zeta in middle, Eta at bottom)
-        frame3 = ["Epsilon", "Beta", "Zeta", "Delta", "Eta"]
-        out3, used3 = translator.translate_subtitle_lines(frame3, "zh")
-        self.assertTrue(used3)
-        self.assertEqual(out3, "[zh]Epsilon\n[zh]Beta\n[zh]Zeta\n[zh]Delta\n[zh]Eta")
-        self.assertEqual(translator.lines_translated_count, 7)  # +3 new lines (Epsilon, Zeta, Eta)
-
-        # Step 4: Strict Re-ordering (Reversal of frame 3)
-        frame4 = ["Eta", "Delta", "Zeta", "Beta", "Epsilon"]
-        out4, used4 = translator.translate_subtitle_lines(frame4, "zh")
-        self.assertTrue(used4)
-        self.assertEqual(out4, "[zh]Eta\n[zh]Delta\n[zh]Zeta\n[zh]Beta\n[zh]Epsilon")
-        self.assertEqual(translator.lines_translated_count, 7)  # All from cache, 0 new translated
-
-        # Step 5: Arbitrary permutation
-        frame5 = ["Zeta", "Eta", "Epsilon", "Delta", "Beta"]
-        out5, used5 = translator.translate_subtitle_lines(frame5, "zh")
-        self.assertTrue(used5)
-        self.assertEqual(out5, "[zh]Zeta\n[zh]Eta\n[zh]Epsilon\n[zh]Delta\n[zh]Beta")
-        self.assertEqual(translator.lines_translated_count, 7)
-
-        # Step 6: Duplicate identical lines in different positions
-        frame6 = ["Beta", "Beta", "Delta", "Beta"]
-        out6, used6 = translator.translate_subtitle_lines(frame6, "zh")
-        self.assertTrue(used6)
-        self.assertEqual(out6, "[zh]Beta\n[zh]Beta\n[zh]Delta\n[zh]Beta")
-
-        # Step 7: Interleaved blank lines and trailing whitespaces
-        frame7 = ["  Beta  ", "", "   ", "Delta\t", "NewUniqueLine"]
-        out7, used7 = translator.translate_subtitle_lines(frame7, "zh")
-        self.assertEqual(out7, "[zh]Beta\n[zh]Delta\n[zh]NewUniqueLine")
-        self.assertEqual(translator.lines_translated_count, 8)
-
-    def test_subtitle_stress_batch_100_frames_simulation(self):
-        """Simulate 100 consecutive streaming subtitle frames with shifting rolling window."""
-        translator = SubtitleIncrementalTranslator(
-            cache=self.cache,
-            mock_translate_fn=lambda lines, tgt: [f"T({l})" for l in lines],
-        )
-
-        total_lines_streamed = 100
-        window_size = 4
-
-        # Rolling window: each frame has 4 lines: [i, i+1, i+2, i+3]
-        for frame_idx in range(total_lines_streamed - window_size + 1):
-            window = [f"Dialog line {frame_idx + offset}" for offset in range(window_size)]
-            out, used_cache = translator.translate_subtitle_lines(window, "zh")
-
-            expected = "\n".join([f"T(Dialog line {frame_idx + offset})" for offset in range(window_size)])
-            self.assertEqual(out, expected)
-
-            if frame_idx > 0:
-                self.assertTrue(used_cache)
-
-        # In 97 frames of 4 lines each (388 line views), only exactly 100 unique lines translated
-        self.assertEqual(translator.lines_translated_count, 100)
-
     # =========================================================================
     # 4. Test Cache Key Invalidation & Unicode Normalization
     # =========================================================================
@@ -376,6 +290,8 @@ class TestMilestone3AdversarialStress(unittest.TestCase):
                 (now + 1000,),
             )
 
+        # 本测试只关心淘汰结果，关闭“每 1% 写入才检查一次”的节流
+        self.cache._evict_check_every = 1
         # Trigger eviction by inserting 50,001st entry via cache.put
         t_evict_start = time.perf_counter()
         self.cache.put("Source_50001", "zh", "model", "v1", "译文_50001")

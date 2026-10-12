@@ -33,12 +33,6 @@ class MSG(ctypes.Structure):
 
 def _exclude_from_capture(widget: QWidget) -> None:
     """让仅用于框选的窗口不参与屏幕捕获。"""
-    import sys
-    mod = sys.modules.get("app.ui.overlays")
-    if mod is not None:
-        target = getattr(mod, "_exclude_from_capture", None)
-        if target is not None and target is not _exclude_from_capture:
-            return target(widget)
     try:
         hwnd = int(widget.winId())
         if hwnd:
@@ -49,12 +43,6 @@ def _exclude_from_capture(widget: QWidget) -> None:
 
 def _allow_capture(widget: QWidget) -> None:
     """恢复普通显示亲和性，让系统截图和录屏能捕获翻译浮层。"""
-    import sys
-    mod = sys.modules.get("app.ui.overlays")
-    if mod is not None:
-        target = getattr(mod, "_allow_capture", None)
-        if target is not None and target is not _allow_capture:
-            return target(widget)
     try:
         hwnd = int(widget.winId())
         if hwnd:
@@ -127,12 +115,6 @@ class _DraggableMixin:
 
 
 def dispatch_set_overlay_layer(widget: QWidget, owner_hwnd: int | None = None) -> None:
-    """分发置顶层级设置，优先遵循 app.ui.overlays 上可能存在的 mock 补丁。"""
-    import sys
-    mod = sys.modules.get("app.ui.overlays")
-    if mod is not None:
-        target = getattr(mod, "set_overlay_layer", None)
-        if target is not None and target is not dispatch_set_overlay_layer:
-            return target(widget, owner_hwnd)
-    from .topmost import set_overlay_layer
-    return set_overlay_layer(widget, owner_hwnd)
+    """设置浮层置顶层级（延迟导入 topmost，避免循环导入）。"""
+    from . import topmost
+    return topmost.set_overlay_layer(widget, owner_hwnd)

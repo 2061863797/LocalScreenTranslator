@@ -195,7 +195,7 @@ class QualityOfLifeTests(unittest.TestCase):
 
     def test_region_watch_subtitle_matches_region_size(self):
         """区域翻译下字幕条尺寸直接匹配区域尺寸，并贴在正下方。"""
-        from app.ui.overlays import SubtitleBar
+        from app.ui.subtitle_bar import SubtitleBar
 
         bar = SubtitleBar()
         try:
@@ -226,7 +226,7 @@ class QualityOfLifeTests(unittest.TestCase):
         """跟随模式下拖动控制条把手时自动切换为自由模式。"""
         from PySide6.QtCore import QPoint, Qt
         from PySide6.QtGui import QMouseEvent
-        from app.ui.overlays import SubtitleBar
+        from app.ui.subtitle_bar import SubtitleBar
 
         bar = SubtitleBar()
         try:

@@ -24,9 +24,6 @@ from unittest.mock import MagicMock
 
 from app.storage import Storage, MAX_CACHE_ENTRIES, CACHE_EVICTION_BATCH
 from app.translation_cache import TranslationCache
-from app.translation_manager import SubtitleIncrementalTranslator, TranslationManager
-
-
 class TestMilestone3Forensics(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
@@ -268,38 +265,6 @@ class TestMilestone3Forensics(unittest.TestCase):
     # =========================================================================
     # Phase 4: Subtitle Incremental Translation Ordering & Line-Diff
     # =========================================================================
-
-    def test_incremental_translation_preserves_strict_multiline_order(self):
-        """Forensic check: Interleaved cached and uncached lines are assembled in exact original order."""
-        translator = SubtitleIncrementalTranslator(cache=self.cache)
-
-        # Prepopulate cache for even numbered lines
-        for i in range(0, 10, 2):
-            self.cache.put(f"Line {i}", "zh", translator.model_id, translator.prompt_version, f"第{i}行(缓存)")
-
-        input_lines = [f"Line {i}" for i in range(10)]
-        result_sub, used_cache = translator.translate_subtitle_lines(input_lines, "zh")
-
-        self.assertTrue(used_cache)
-        # Only odd lines (5 lines) were translated
-        self.assertEqual(translator.lines_translated_count, 5)
-
-        output_lines = result_sub.split("\n")
-        self.assertEqual(len(output_lines), 10)
-
-        for i in range(10):
-            if i % 2 == 0:
-                self.assertEqual(output_lines[i], f"第{i}行(缓存)")
-            else:
-                self.assertEqual(output_lines[i], f"[zh]Line {i}")
-
-    def test_incremental_translation_empty_and_whitespace_lines(self):
-        """Forensic check: Pure whitespace lines are sanitized without breaking line processing."""
-        translator = SubtitleIncrementalTranslator(cache=self.cache)
-        sub, used = translator.translate_subtitle_lines(["   ", "\t\t", ""], "zh")
-        self.assertEqual(sub, "")
-        self.assertFalse(used)
-        self.assertEqual(translator.llm_calls_count, 0)
 
     # =========================================================================
     # Phase 5: Translator Component Integration

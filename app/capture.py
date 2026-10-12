@@ -260,11 +260,6 @@ class CaptureBackend(ABC):
         """释放后端所持有的显存、线程局部 DC 或 COM 句柄."""
         pass
 
-    def is_supported(self) -> bool:
-        """探针：检查当前环境是否支持该后端."""
-        return True
-
-
 class MssCaptureBackend(CaptureBackend):
     """基于 MSS 的多显示器 DPI 归一化屏幕捕获后端 (PR 12)."""
 
@@ -284,46 +279,3 @@ class MssCaptureBackend(CaptureBackend):
         release_mss()
 
 
-class Win32PrintWindowBackend(CaptureBackend):
-    """基于 Win32 PrintWindow (PW_RENDERFULLCONTENT) 的窗口捕获后端 (PR 12)."""
-
-    def grab_region(self, x: int, y: int, width: int, height: int) -> np.ndarray:
-        return grab_region(x, y, width, height)
-
-    def grab_window(self, hwnd: int) -> np.ndarray | None:
-        return grab_window(hwnd)
-
-    def release(self) -> None:
-        release_mss()
-
-
-class DxgiCaptureBackend(CaptureBackend):
-    """基于 DirectX 11 / DXGI Desktop Duplication 的硬件级高速捕获后端桩 (PR 12)."""
-
-    def is_supported(self) -> bool:
-        return False
-
-    def grab_region(self, x: int, y: int, width: int, height: int) -> np.ndarray:
-        raise NotImplementedError("DxgiCaptureBackend is not yet supported in current environment")
-
-    def grab_window(self, hwnd: int) -> np.ndarray | None:
-        raise NotImplementedError("DxgiCaptureBackend is not yet supported in current environment")
-
-    def release(self) -> None:
-        pass
-
-
-class WgcCaptureBackend(CaptureBackend):
-    """基于 Windows Graphics Capture (Windows.Graphics.Capture) 的现代低延迟捕获后端桩 (PR 12)."""
-
-    def is_supported(self) -> bool:
-        return False
-
-    def grab_region(self, x: int, y: int, width: int, height: int) -> np.ndarray:
-        raise NotImplementedError("WgcCaptureBackend is not yet supported in current environment")
-
-    def grab_window(self, hwnd: int) -> np.ndarray | None:
-        raise NotImplementedError("WgcCaptureBackend is not yet supported in current environment")
-
-    def release(self) -> None:
-        pass

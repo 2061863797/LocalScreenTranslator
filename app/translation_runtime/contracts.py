@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Callable
 
 
 class TranslationContextError(ValueError):
@@ -35,9 +35,3 @@ class TranslationResult:
     session_version: int
 
 
-class TranslationBackend(Protocol):
-    def preload(self, model_path: str, device: str) -> None: ...
-
-    def translate(self, request: TranslationRequest) -> TranslationResult: ...
-
-    def close(self) -> None: ...

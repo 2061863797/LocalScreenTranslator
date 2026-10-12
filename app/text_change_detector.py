@@ -84,12 +84,6 @@ class TextChangeDetector:
             self._line_cache = dict(value)
 
     @property
-    def is_stable(self) -> bool:
-        """当前是否处于有稳定文本且无连续空帧的状态。"""
-        with self._lock:
-            return bool(self._last_text) and self._empty_frames == 0
-
-    @property
     def has_pending_candidate(self) -> bool:
         """是否有正在等待确认的候选文本或待确认的清空帧。"""
         with self._lock:
@@ -219,11 +213,3 @@ class TextChangeDetector:
                     return "change", text
                 return "none", self._last_text
 
-    def prune_cache(self, active_lines: list[str], limit: int = 400) -> None:
-        """修剪逐行译文缓存，保留活跃行，限制最大条目数。"""
-        with self._lock:
-            if len(self._line_cache) > limit:
-                active = set(active_lines)
-                self._line_cache = {
-                    k: v for k, v in self._line_cache.items() if k in active
-                }

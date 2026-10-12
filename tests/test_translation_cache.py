@@ -22,7 +22,6 @@ from typing import Callable
 from unittest.mock import Mock
 
 from app.translation_cache import TranslationCache
-from app.translation_manager import SubtitleIncrementalTranslator, TranslationManager
 from app.storage import Storage, MAX_CACHE_ENTRIES
 
 
@@ -31,16 +30,11 @@ def create_translation_cache(db_path=None, l1_cap=5000, l2_max=50000):
     return TranslationCache(db_path=db_path, l1_capacity=l1_cap, l2_max_entries=l2_max)
 
 
-def create_incremental_translator(cache, mock_fn=None):
-    return SubtitleIncrementalTranslator(cache=cache, mock_translate_fn=mock_fn)
-
-
 class TestTranslationCacheTiers(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.db_file = Path(self.tmp_dir.name) / "test_cache.db"
         self.cache = create_translation_cache(db_path=self.db_file)
-        self.translator = create_incremental_translator(self.cache)
 
     def tearDown(self):
         if self.cache:
@@ -50,58 +44,6 @@ class TestTranslationCacheTiers(unittest.TestCase):
     # ==========================================
     # Tier 1: Primary Feature Behavior
     # ==========================================
-
-    def test_subtitle_incremental_line_diff(self):
-        """Tier 1: Incremental line-diff translates only new lines, reusing cached lines."""
-        initial_lines = ["Line Alpha", "Line Beta"]
-        sub1, used_cache1 = self.translator.translate_subtitle_lines(initial_lines, "zh")
-        self.assertIn("[zh]Line Alpha", sub1)
-        self.assertIn("[zh]Line Beta", sub1)
-        self.assertEqual(self.translator.lines_translated_count, 2)
-
-        # Second cycle: append Line Gamma
-        updated_lines = ["Line Alpha", "Line Beta", "Line Gamma"]
-        sub2, used_cache2 = self.translator.translate_subtitle_lines(updated_lines, "zh")
-        self.assertTrue(used_cache2)
-        # Exactly 1 new line translated
-        self.assertEqual(self.translator.lines_translated_count, 3)
-        self.assertIn("[zh]Line Gamma", sub2)
-
-    def test_subtitle_line_order_preserved(self):
-        """Tier 1: Reconstructed subtitle preserves strict sequential line order."""
-        lines = ["Third", "First", "Second"]
-        # Pre-seed "First" in cache
-        self.cache.put("First", "zh", "default_model", "v1", "第一")
-
-        sub, _ = self.translator.translate_subtitle_lines(lines, "zh")
-        expected_ordered = "[zh]Third\n第一\n[zh]Second"
-        self.assertEqual(sub, expected_ordered)
-
-    def test_annotation_translation_keeps_lines_already_in_target_language(self):
-        """备注模式不再按字符判断跳过原文，每条 OCR 行都送入翻译器。"""
-        backend = Mock()
-        backend.translate_lines.return_value = ["原文行译文", "英文行译文"]
-        manager = TranslationManager(backend, cache=self.cache)
-        lines = [
-            SimpleNamespace(text="这行本来就是中文", box=(0, 0, 100, 20)),
-            SimpleNamespace(text="This is English", box=(0, 24, 120, 44)),
-        ]
-
-        items, joined = manager.translate_annotations(lines, "简体中文")
-
-        backend.translate_lines.assert_called_once_with(
-            ["这行本来就是中文", "This is English"],
-            "简体中文",
-            session_tag="default",
-        )
-        self.assertEqual(
-            items,
-            [
-                ((0, 0, 100, 20), "原文行译文"),
-                ((0, 24, 120, 44), "英文行译文"),
-            ],
-        )
-        self.assertEqual(joined, "原文行译文\n英文行译文")
 
     def test_translation_cache_put_and_get(self):
         """Tier 1: Values stored in cache are retrievable with matching parameters."""
@@ -246,77 +188,9 @@ class TestTranslationCacheTiers(unittest.TestCase):
     # Tier 3: Pairwise & Component Interactions
     # ==========================================
 
-    def test_incremental_translator_with_partial_hits(self):
-        """Tier 3: Multi-line batch with mixed L1 hits, L2 hits, and misses."""
-        # Seed Line 1 into L1
-        self.cache.put("Line 1", "zh", "default_model", "v1", "第一行")
-
-        # Seed Line 2 directly into L2 (bypass L1)
-        k2 = self.cache.make_key("Line 2", "zh", "default_model", "v1")
-        with self.cache._conn:
-            self.cache._conn.execute(
-                "INSERT INTO translation_cache (cache_key, source_text, target_lang, model_id, prompt_version, translation, created_at, last_accessed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (k2, "Line 2", "zh", "default_model", "v1", "第二行", time.time(), time.time()),
-            )
-
-        # Translate 3 lines: Line 1 (L1 hit), Line 2 (L2 hit), Line 3 (miss)
-        res, used_cache = self.translator.translate_subtitle_lines(["Line 1", "Line 2", "Line 3"], "zh")
-        self.assertTrue(used_cache)
-        # Exactly 1 LLM translation call for Line 3
-        self.assertEqual(self.translator.lines_translated_count, 1)
-        self.assertEqual(res, "第一行\n第二行\n[zh]Line 3")
-
-    def test_cache_miss_populates_both_tiers(self):
-        """Tier 3: A translation miss translates and populates both L1 and L2."""
-        res, used_cache = self.translator.translate_subtitle_lines(["New line to cache"], "zh")
-        self.assertFalse(used_cache)
-
-        key = self.cache.make_key("New line to cache", "zh", "default_model", "v1")
-        # Present in L1
-        self.assertIn(key, self.cache._l1)
-        # Present in L2
-        cur = self.cache._conn.execute("SELECT translation FROM translation_cache WHERE cache_key = ?", (key,))
-        self.assertIsNotNone(cur.fetchone())
-
     # ==========================================
     # Tier 4: Real-World Scenarios
     # ==========================================
-
-    def test_scenario_repeated_identical_phrases(self):
-        """Tier 4 Scenario 4: Repeated phrases (game dialogs, UI labels) resolve 100% via cache."""
-        common_phrases = ["Press Start", "Continue Game", "Options", "Game Over", "Save"]
-        # First pass: translates all 5
-        self.translator.translate_subtitle_lines(common_phrases, "zh")
-        self.assertEqual(self.translator.lines_translated_count, 5)
-
-        initial_llm_calls = self.translator.llm_calls_count
-
-        # Subsequent 10 cycles of the same phrases
-        for _ in range(10):
-            res, used_cache = self.translator.translate_subtitle_lines(common_phrases, "zh")
-            self.assertTrue(used_cache)
-
-        # Zero additional LLM calls
-        self.assertEqual(self.translator.llm_calls_count, initial_llm_calls)
-        self.assertEqual(self.translator.lines_translated_count, 5)
-
-    def test_scenario_rolling_subtitles_stream(self):
-        """Tier 4 Scenario 1: Rolling subtitle window (3 lines visible, shifts down 1 line per frame)."""
-        # Window 1: Lines A, B, C
-        self.translator.translate_subtitle_lines(["Sub A", "Sub B", "Sub C"], "zh")
-        self.assertEqual(self.translator.lines_translated_count, 3)
-
-        # Window 2: Lines B, C, D (A dropped, D added)
-        sub2, used2 = self.translator.translate_subtitle_lines(["Sub B", "Sub C", "Sub D"], "zh")
-        self.assertTrue(used2)
-        # Only Sub D was translated (+1)
-        self.assertEqual(self.translator.lines_translated_count, 4)
-
-        # Window 3: Lines C, D, E (B dropped, E added)
-        sub3, used3 = self.translator.translate_subtitle_lines(["Sub C", "Sub D", "Sub E"], "zh")
-        self.assertTrue(used3)
-        # Only Sub E was translated (+1)
-        self.assertEqual(self.translator.lines_translated_count, 5)
 
     def test_l2_cache_eviction_at_50000(self):
         """Tier 2: When SQLite cache reaches 50,001 entries, LRU eviction deletes oldest 1,000 records."""
@@ -348,6 +222,8 @@ class TestTranslationCacheTiers(unittest.TestCase):
             cur = cache._conn.execute("SELECT count(*) FROM translation_cache")
             self.assertEqual(cur.fetchone()[0], 50000)
 
+            # 本测试只关心淘汰结果，关闭“每 1% 写入才检查一次”的节流
+            cache._evict_check_every = 1
             # Inserting 50,001st entry triggers eviction of oldest 1,000 entries
             cache.put("Word_50001", "zh", "model", "v1", "字_50001")
 

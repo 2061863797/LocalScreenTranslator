@@ -8,7 +8,8 @@ from PySide6.QtWidgets import QApplication
 
 from app.config import DEFAULTS
 from app.main import App
-from app.ui.overlays import AnnotationOverlay, SubtitleBar
+from app.ui.annotation_overlay import AnnotationOverlay
+from app.ui.subtitle_bar import SubtitleBar
 from app.ui.windows import InputTranslateWindow, SettingsWindow
 
 

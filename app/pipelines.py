@@ -3,10 +3,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from difflib import SequenceMatcher
+from dataclasses import dataclass
 import threading
-from typing import Any, Callable
+from typing import Callable
 
 import numpy as np
 
@@ -15,21 +14,14 @@ from .ocr_service import OcrService
 from .translation_runtime.router import TranslationRouter
 
 
-@dataclass(frozen=True)
-class WatchCycleContext:
-    generation_id: int
-    timestamp: float
-    target_language: str
-
-
 class GenerationTracker:
     """Thread-safe monotonic generation tracker for async OCR and translation cycles.
 
     Guarantees:
     - next_generation(): Monotonically increments and returns new active generation ID.
+    - next_generation_if_active(expected): Advances only if `expected` is still active.
     - is_active(gen_id): Returns True if gen_id matches current active generation.
     - reset(): Advances the active generation to invalidate all in-flight generations.
-    - dispatch_if_active(): Invokes callback only if generation ID is still active.
     """
 
     def __init__(self, initial_generation: int = 0):
@@ -70,19 +62,6 @@ class GenerationTracker:
     def current_generation(self) -> int:
         with self._lock:
             return self._current_gen
-
-    def dispatch_if_active(
-        self, gen_id: int, callback: Callable[..., Any], *args: Any, **kwargs: Any
-    ) -> bool:
-        """Execute callback only if gen_id matches current active generation.
-        Returns True if executed, False if dropped.
-        """
-        if self.is_active(gen_id):
-            callback(*args, **kwargs)
-            return True
-        return False
-
-
 
 @dataclass(frozen=True)
 class OneShotResult:
@@ -139,43 +118,3 @@ class OneShotPipeline:
         return OneShotResult(source, translation, lines)
 
 
-@dataclass
-class LiveTranslationState:
-    """持续 OCR 的纯状态机：变化判定、空帧清除和逐行译文缓存。"""
-
-    last_text: str = ""
-    empty_frames: int = 0
-    line_cache: dict[str, str] = field(default_factory=dict)
-
-    def reset(self, *, clear_cache: bool = True) -> None:
-        self.last_text = ""
-        self.empty_frames = 0
-        if clear_cache:
-            self.line_cache.clear()
-
-    def observe(self, lines: list[OcrLine], threshold: float) -> tuple[str, str]:
-        text = "\n".join(line.text for line in lines).strip()
-        if not text:
-            self.empty_frames += 1
-            if self.empty_frames >= 2 and self.last_text:
-                self.last_text = ""
-                return "clear", ""
-            return "none", ""
-        self.empty_frames = 0
-        if text == self.last_text:
-            return "none", text
-        l1, l2 = len(self.last_text), len(text)
-        # 数学理论上限短路：ratio <= 2 * min(l1, l2) / (l1 + l2)。
-        # 当理论上限小于阈值时，必定不满足匹配，跳过昂贵的 LCS 动态规划
-        if (l1 + l2 > 0) and (2.0 * min(l1, l2) / (l1 + l2) < threshold):
-            self.last_text = text
-            return "change", text
-        if SequenceMatcher(None, self.last_text, text).ratio() >= threshold:
-            return "none", text
-        self.last_text = text
-        return "change", text
-
-    def prune_cache(self, active_lines: list[str], limit: int = 400) -> None:
-        if len(self.line_cache) > limit:
-            active = set(active_lines)
-            self.line_cache = {key: value for key, value in self.line_cache.items() if key in active}

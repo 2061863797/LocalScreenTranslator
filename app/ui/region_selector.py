@@ -16,7 +16,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QWidget
 
-from .overlays import _exclude_from_capture
+from .overlay_base import _exclude_from_capture
 from .topmost import raise_to_front
 
 

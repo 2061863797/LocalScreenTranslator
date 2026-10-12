@@ -22,7 +22,7 @@ from PySide6.QtWidgets import QApplication, QScrollBar, QWidget
 # If the production SubtitleBar implements PR1/PR10 contracts, test it.
 # Otherwise, provide a contract-compliant reference stub matching PROJECT.md.
 try:
-    from app.ui.overlays import SubtitleBar as _ProdSubtitleBar
+    from app.ui.subtitle_bar import SubtitleBar as _ProdSubtitleBar
 
     # Check if production SubtitleBar already has PR1/PR10 contracts
     _has_pr1 = hasattr(_ProdSubtitleBar, "prepare_layout") or hasattr(_ProdSubtitleBar, "_reflow_text")
@@ -355,7 +355,7 @@ class TestProductionSubtitleBar(unittest.TestCase):
         cls.qapp = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        from app.ui.overlays import SubtitleBar
+        from app.ui.subtitle_bar import SubtitleBar
         self.bar = SubtitleBar()
 
     def tearDown(self):
@@ -428,7 +428,7 @@ class TestProductionSubtitleBar(unittest.TestCase):
     def test_production_apply_watch_display_eliminates_startup_placeholder(self):
         """App._apply_watch_display must not set placeholder text or show subtitle."""
         from app.main import App
-        from app.ui.overlays import SubtitleBar
+        from app.ui.subtitle_bar import SubtitleBar
 
         app = MagicMock()
         app.cfg = {"subtitle_mode": "follow"}
@@ -500,7 +500,7 @@ class TestProductionSubtitleBar(unittest.TestCase):
     def test_default_follow_mode_reset_on_watch_display(self):
         """持续翻译的字幕模式每次默认跟随翻译框，重置自定义尺寸以保证窗口比例一致。"""
         from app.main import App
-        from app.ui.overlays import SubtitleBar
+        from app.ui.subtitle_bar import SubtitleBar
 
         app = MagicMock()
         app.cfg = {"subtitle_mode": "free"}
@@ -631,7 +631,8 @@ class TestProductionSubtitleBar(unittest.TestCase):
 
     def test_annotation_region_and_subtitle_status_bars_share_height(self):
         """备注、区域和字幕模式的状态栏保持同一高度。"""
-        from app.ui.overlays import AnnotateCtrl, RegionWatchFrame
+        from app.ui.annotation_overlay import AnnotateCtrl
+        from app.ui.region_frame import RegionWatchFrame
 
         annotation = AnnotateCtrl()
         region = RegionWatchFrame()
@@ -658,7 +659,8 @@ class TestProductionSubtitleBar(unittest.TestCase):
 
     def test_region_mode_status_bars_are_single_ordered_rows(self):
         """字幕模式翻译框控制栏加拖动手柄和固定；备注模式控制栏合并为一个条不分开。"""
-        from app.ui.overlays import AnnotateCtrl, RegionWatchFrame
+        from app.ui.annotation_overlay import AnnotateCtrl
+        from app.ui.region_frame import RegionWatchFrame
 
         annotation = AnnotateCtrl()
         region = RegionWatchFrame()
@@ -749,7 +751,7 @@ class TestProductionAnnotationOverlay(unittest.TestCase):
         cls.qapp = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        from app.ui.overlays import AnnotationOverlay
+        from app.ui.annotation_overlay import AnnotationOverlay
 
         self.overlay = AnnotationOverlay()
 

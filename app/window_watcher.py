@@ -8,7 +8,7 @@
 - AdaptivePollingController: 动态自适应轮询状态机
 - OcrService: ROI 局部识别与全图 OCR 回退兜底
 - TextChangeDetector: OCR 文本变化判定与空帧清空状态机
-- TranslationManager: 字幕行级增量翻译与逐行标注翻译
+- TranslationRouter: 逐行调用本地模型翻译（翻完一行显示一行）
 - ResultManager: 世代校验与信号派发（防乱序覆盖）
 """
 
@@ -35,29 +35,9 @@ from .pipelines import GenerationTracker
 from .result_manager import ResultManager
 from .scene_text_state import SceneTextState, _boxes_intersect
 from .text_change_detector import TextChangeDetector
-from .translation_manager import TranslationManager
 from .translation_runtime.router import TranslationRouter
 
 _log = get_logger("watch")
-
-# 兼容常量与辅助函数
-_FRAME_SAMPLE_STEP = 4
-_FRAME_DIFF_TOLERANCE = 12
-
-
-def _frame_changed(previous: np.ndarray, current: np.ndarray) -> bool:
-    """当前帧相对上一帧是否有实质变化（尺寸不同一律算有变化）。"""
-    if previous.shape != current.shape:
-        return True
-    step = _FRAME_SAMPLE_STEP
-    before = previous[::step, ::step]
-    after = current[::step, ::step]
-    if before.size == 0:
-        return True
-    # int16 避免 uint8 相减回绕把小差当成大差
-    diff = np.abs(before.astype(np.int16) - after).max()
-    return bool(diff > _FRAME_DIFF_TOLERANCE)
-
 
 class WindowWatcher(QThread):
     """持续翻译监视管线编排线程 (PR 9 & PR 11).
@@ -122,7 +102,6 @@ class WindowWatcher(QThread):
         self._ocr_service = OcrService(ocr_engine=self._ocr)
         self._ocr_stabilizer = OcrStabilizer()
         self._text_change_detector = TextChangeDetector(empty_clear_delay_s=self._CLEAR_GRACE_SECONDS)
-        self._translation_manager = TranslationManager(translator=self._translator)
         self._result_manager = ResultManager(generation_tracker=self._generation_tracker, parent=self)
 
         # 连接 ResultManager 内部信号至 WindowWatcher 公共信号（支持元数据多重重载透传）
@@ -193,10 +172,6 @@ class WindowWatcher(QThread):
         return self._result_manager
 
     @property
-    def translation_manager(self) -> TranslationManager:
-        return self._translation_manager
-
-    @property
     def ocr_service(self) -> OcrService:
         return self._ocr_service
 
@@ -253,7 +228,6 @@ class WindowWatcher(QThread):
         self._frame_buffer.clear()
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=True)
-        self._translation_manager.clear_cache()
         self._ocr_stabilizer.reset()
         self._last_frame = None
         self._skipped_frames = 0
@@ -305,7 +279,6 @@ class WindowWatcher(QThread):
         self._rotate_translation_session()
         with self._state_lock:
             self._text_change_detector.reset(clear_cache=True)
-        self._translation_manager.clear_cache()
         self._ocr_stabilizer.reset()
         self._last_frame = None
         self._last_captured_frame = None
@@ -659,19 +632,12 @@ class WindowWatcher(QThread):
                         break
                     continue
 
-                if isinstance(pulled, FramePacket):
-                    img = pulled.frame
-                    packet_epoch = pulled.content_revision or pulled.epoch
-                    packet_work_rev = pulled.work_revision
-                    packet_roi = pulled.roi_box
-                    has_visual_change = pulled.has_changed
-                    packet_diff_ratio = pulled.changed_ratio
-                else:
-                    img, packet_epoch = pulled
-                    packet_work_rev = packet_epoch
-                    packet_roi = None
-                    has_visual_change = True
-                    packet_diff_ratio = 1.0
+                img = pulled.frame
+                packet_epoch = pulled.content_revision or pulled.epoch
+                packet_work_rev = pulled.work_revision
+                packet_roi = pulled.roi_box
+                has_visual_change = pulled.has_changed
+                packet_diff_ratio = pulled.changed_ratio
 
                 # 2. 记录当前世代；静止帧和无文本变化的 OCR 不应使排队中的译文过期。
                 frame_gen_id = self._generation_tracker.current_generation
