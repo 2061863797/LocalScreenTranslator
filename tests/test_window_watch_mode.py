@@ -72,5 +72,33 @@ class WindowWatchModeTests(unittest.TestCase):
                 picker.deleteLater()
 
 
+class RegionFrameMoveTests(unittest.TestCase):
+    def _app(self, paused: bool):
+        app = app_main.App.__new__(app_main.App)
+        app._watch_region = (0, 0, 100, 50)
+        app._watch_annotate = True
+        app._watch_paused = paused
+        app._watcher = Mock()
+        app._watcher.isRunning.return_value = True
+        app.annotation = Mock()
+        app.subtitle = Mock(mode="free")
+        app.annotate_ctrl = Mock()
+        app.annotate_ctrl.isVisible.return_value = False
+        app.log = Mock()
+        return app
+
+    def test_paused_annotation_survives_region_drag(self):
+        app = self._app(paused=True)
+        app._on_region_frame_moved(30, 40, 100, 50)
+        app.annotation.set_items.assert_not_called()
+        app.annotation.update_geometry.assert_called_once_with((30, 40, 100, 50))
+        app._watcher.set_region.assert_called_once_with((30, 40, 100, 50))
+
+    def test_running_annotation_is_cleared_on_region_drag(self):
+        app = self._app(paused=False)
+        app._on_region_frame_moved(30, 40, 100, 50)
+        app.annotation.set_items.assert_called_once_with([])
+
+
 if __name__ == "__main__":
     unittest.main()

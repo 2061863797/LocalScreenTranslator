@@ -103,11 +103,28 @@ class TranslationRouter:
                 old.set()
             self._versions.pop(tag, None)
 
+    @staticmethod
+    def _clean_source(text: str) -> str:
+        return "".join(c for c in text if c in "\n\r\t" or ord(c) >= 32).strip()
+
+    def _cache_enabled(self) -> bool:
+        return bool(self._cfg.get("translation_cache_enabled", True))
+
+    def cached(self, text: str, target_language: str = "简体中文",
+               *, source_language: str | None = None) -> str | None:
+        """只查缓存、不调用模型；未命中或关闭缓存时返回 None。"""
+        text = self._clean_source(text)
+        if not text or not self._cache_enabled():
+            return None
+        model_id, prompt_version = self.cache_scope()
+        scoped_model = f"{model_id}:source={source_language or '自动'}"
+        return self.cache.get(text, target_language, scoped_model, prompt_version)
+
     def translate(
         self, text: str, target_language: str = "简体中文", session_tag: str = "default",
         *, source_language: str | None = None,
     ) -> str:
-        text = "".join(c for c in text if c in "\n\r\t" or ord(c) >= 32).strip()
+        text = self._clean_source(text)
         if not text:
             return ""
         cancelled, version = self._session(session_tag)
@@ -118,9 +135,9 @@ class TranslationRouter:
         mode = "ai"
         model_id, prompt_version = self.cache_scope()
         scoped_model = f"{model_id}:source={source}"
-        cache_enabled = bool(self._cfg.get("translation_cache_enabled", True))
+        cache_enabled = self._cache_enabled()
         if cache_enabled:
-            cached = self.cache.get(text, target_language, scoped_model, prompt_version)
+            cached = self.cached(text, target_language, source_language=source_language)
             if cached is not None:
                 return cached if not cancelled.is_set() else ""
         with self._lock:

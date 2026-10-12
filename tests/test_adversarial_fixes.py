@@ -190,6 +190,41 @@ class LiveCompletenessTests(_RouterTestCase):
                 history.assert_called_once()
                 self.assertEqual(history.call_args.args[:2], ("Hello\nWorld", "你好\nWorld"))
 
+    def test_changed_line_only_retranslates_that_line_and_keeps_others_visible(self):
+        words = {"A": "甲", "B": "乙", "C": "丙", "X": "叉"}
+        for mode in ("annotate", "subtitle"):
+            with self.subTest(mode=mode):
+                self.router.clear_cache()
+                seen = []
+
+                def infer(request):
+                    seen.append(request.text)
+                    return self.result(request, words[request.text])
+
+                self.router._ai.translate = Mock(side_effect=infer)
+                watcher = self.run_frames(mode, [("A\nB\nC", 1)] * 3 + [("A\nX\nC", 2)] * 3)
+                # 第二屏只有中间一行变化：模型只翻译这一行
+                self.assertEqual(seen, ["A", "B", "C", "X"])
+                shown = [c.args[0] for c in self.dispatcher(watcher, mode).call_args_list][-2:]
+                box = lambda i: (0, i * 12, 20, i * 12 + 10)
+                if mode == "annotate":
+                    # 先立即显示缓存命中的第 1、3 行，再补上翻译好的第 2 行
+                    self.assertEqual(shown, [[(box(0), "甲"), (box(2), "丙")],
+                                             [(box(0), "甲"), (box(1), "叉"), (box(2), "丙")]])
+                else:
+                    self.assertEqual(shown, ["甲\n丙", "甲\n叉\n丙"])
+
+    def test_fully_cached_screen_is_shown_in_one_dispatch_without_model(self):
+        self.router._ai.translate = Mock(side_effect=lambda request: self.result(
+            request, {"Hello": "你好", "World": "世界"}[request.text]
+        ))
+        watcher = self.run_frames("subtitle", [("Hello\nWorld", 1)] * 3 + [("World", 2)] * 3
+                                  + [("Hello\nWorld", 3)] * 3)
+        self.assertEqual(self.router._ai.translate.call_count, 2)
+        shown = [c.args[0] for c in watcher._result_manager.dispatch_subtitle.call_args_list]
+        # 回到已翻译过的画面时一次显示完整译文，不再逐行重建
+        self.assertEqual(shown[-2:], ["世界", "你好\n世界"])
+
     def test_untranslated_frame_shows_source_without_history(self):
         self.router._ai.translate = Mock(side_effect=lambda request: self.result(
             request, "旧译文" if request.text == "Previous" else ""

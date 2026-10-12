@@ -1053,8 +1053,9 @@ class App:
         self._watch_rect = rect
         if self._watcher and self._watcher.isRunning():
             self._watcher.set_region(rect)
-        if self._watch_annotate is True:
+        if self._watch_annotate is True and not self._watch_paused:
             # 移动/缩放后旧译文坐标已失效；先清空，确保下一帧是干净底图。
+            # 暂停时没有下一帧，保留译文随框移动，恢复后再按新位置重新识别。
             self.annotation.set_items([])
         self.annotation.update_geometry(rect)
         # 跟随模式才重贴；保持用户手动单独缩放好的翻译框尺寸
