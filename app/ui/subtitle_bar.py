@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (
@@ -19,7 +18,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
-    QLabel,
     QPushButton,
     QScrollBar,
     QSizePolicy,
@@ -35,18 +33,17 @@ from .overlay_base import (
     _allow_capture,
     _exclude_from_capture,
     _CaptureAllowedMixin,
+    _DragHandle,
     _move_if_changed,
     _set_geo_if_changed,
     _show_once,
     MSG,
 )
 from .theme import (
-    BORDER_QCOLOR,
     CTRL_STYLE,
     PANEL_QCOLOR,
     SCROLLBAR_STYLE,
     TEXT_QCOLOR,
-    paint_size_grip,
 )
 from .overlay_base import dispatch_set_overlay_layer as set_overlay_layer
 from .topmost import restack_above_owner
@@ -186,53 +183,33 @@ class _SubtitleResizeGrip(QWidget):
 
 
 
-class _SubtitleDragHandle(QLabel):
+class _SubtitleDragHandle(_DragHandle):
     """字幕条最左侧的六点拖动手柄，按住拖动移动翻译框自身。"""
 
     def __init__(self, bar, parent=None):
-        super().__init__("⠿", parent or bar)
+        super().__init__(parent or bar)
         self._bar = bar
-        self._drag_offset = None
-        self.setObjectName("dragHandle")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setFixedSize(20, 26)
-        self.setCursor(Qt.CursorShape.SizeAllCursor)
-        self.setStyleSheet(
-            "QLabel#dragHandle{background:transparent;border:none;color:rgba(255,255,255,180);font-size:15px;padding:0;}"
-            "QLabel#dragHandle:hover{color:#ffffff;}"
-        )
         self.apply_ui_language()
 
     def apply_ui_language(self):
         self.setToolTip(_t("sub_drag_tip"))
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            if self._bar.mode == "follow" or self._bar.mode == "pinned":
-                self._bar.set_mode("free", emit=True)
-            self._drag_offset = event.globalPosition().toPoint() - self._bar.pos()
-            self.grabMouse()
-            event.accept()
+    def _can_start_drag(self) -> bool:
+        return True
 
-    def mouseMoveEvent(self, event):
-        if (
-            self._drag_offset is not None
-            and event.buttons() & Qt.MouseButton.LeftButton
-        ):
-            if self._bar.mode == "free":
-                p = event.globalPosition().toPoint() - self._drag_offset
-                self._bar.move_to(p.x(), p.y())
-            event.accept()
+    def _drag_started(self) -> None:
+        # 跟随或固定模式下一拖动即切换为自由模式
+        if self._bar.mode in ("follow", "pinned"):
+            self._bar.set_mode("free", emit=True)
 
-    def mouseReleaseEvent(self, event):
-        if self._drag_offset is not None:
-            self._drag_offset = None
-            try:
-                self.releaseMouse()
-            except Exception:
-                pass
-            event.accept()
+    def _can_drag(self) -> bool:
+        return self._bar.mode == "free"
+
+    def _drag_origin(self) -> QPoint:
+        return self._bar.pos()
+
+    def _drag_to(self, point: QPoint) -> None:
+        self._bar.move_to(point.x(), point.y())
 
 
 

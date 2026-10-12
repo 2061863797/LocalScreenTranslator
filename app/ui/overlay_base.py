@@ -6,9 +6,9 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QShowEvent
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QLabel, QWidget
 
 from ..capture import set_window_capture_excluded
 
@@ -112,6 +112,71 @@ class _DraggableMixin:
     def mouseReleaseEvent(self, event):
         self._drag_offset = None
         super().mouseReleaseEvent(event)
+
+
+class _DragHandle(QLabel):
+    """“⠿”拖动手柄：按住左键拖动目标，子类决定拖谁、何时可拖、松开后做什么。"""
+
+    def __init__(self, parent=None, height: int = 26):
+        super().__init__("⠿", parent)
+        self._drag_offset: QPoint | None = None
+        self.setObjectName("dragHandle")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedSize(20, height)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setStyleSheet(
+            "QLabel#dragHandle{background:transparent;border:none;color:rgba(255,255,255,180);font-size:15px;padding:0;}"
+            "QLabel#dragHandle:hover{color:#ffffff;}"
+        )
+
+    # 子类覆盖的钩子
+    def _can_drag(self) -> bool:
+        """拖动过程中是否跟随移动。"""
+        return True
+
+    def _can_start_drag(self) -> bool:
+        """按下时能否开始拖动；默认与 _can_drag 相同。"""
+        return self._can_drag()
+
+    def _drag_origin(self) -> QPoint:
+        """被拖目标当前左上角（全局坐标）。"""
+        raise NotImplementedError
+
+    def _drag_to(self, point: QPoint) -> None:
+        raise NotImplementedError
+
+    def _drag_started(self) -> None:
+        pass
+
+    def _drag_finished(self) -> None:
+        pass
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._can_start_drag():
+            self._drag_started()
+            self._drag_offset = event.globalPosition().toPoint() - self._drag_origin()
+            self.grabMouse()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._drag_offset is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            if self._can_drag():
+                self._drag_to(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_offset is not None:
+            self._drag_offset = None
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+            self._drag_finished()
+            event.accept()
 
 
 def dispatch_set_overlay_layer(widget: QWidget, owner_hwnd: int | None = None) -> None:

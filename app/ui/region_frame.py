@@ -3,14 +3,12 @@
 
 from __future__ import annotations
 
-import ctypes
 
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QPainter, QPen, QRegion
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
-    QLabel,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -22,6 +20,7 @@ from .overlay_base import (
     _STATUS_BAR_HEIGHT,
     _allow_capture,
     _CaptureAllowedMixin,
+    _DragHandle,
     _move_if_changed,
     _set_geo_if_changed,
     _show_once,
@@ -31,50 +30,26 @@ from .theme import BORDER_QCOLOR, CTRL_STYLE, paint_size_grip
 from .topmost import restack_above_owner
 
 
-class _RegionFrameDragHandle(QLabel):
+class _RegionFrameDragHandle(_DragHandle):
     """识别框最左侧的六点拖动手柄。"""
 
     def __init__(self, frame: RegionWatchFrame, parent=None):
-        super().__init__("⠿", parent)
+        super().__init__(parent)
         self._frame = frame
-        self._drag_offset = None
-        self.setObjectName("dragHandle")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setFixedSize(20, 26)
-        self.setCursor(Qt.CursorShape.SizeAllCursor)
-        self.setStyleSheet(
-            "QLabel#dragHandle{background:transparent;border:none;color:rgba(255,255,255,180);font-size:15px;padding:0;}"
-            "QLabel#dragHandle:hover{color:#ffffff;}"
-        )
         self.setToolTip(_t("frame_drag"))
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and not self._frame.pinned:
-            cr = self._frame.content_rect()
-            self._drag_offset = event.globalPosition().toPoint() - QPoint(cr[0], cr[1])
-            self.grabMouse()
-            event.accept()
+    def _can_drag(self) -> bool:
+        return not self._frame.pinned
 
-    def mouseMoveEvent(self, event):
-        if (
-            self._drag_offset is not None
-            and not self._frame.pinned
-            and event.buttons() & Qt.MouseButton.LeftButton
-        ):
-            p = event.globalPosition().toPoint() - self._drag_offset
-            self._frame.move_content_to(p.x(), p.y())
-            event.accept()
+    def _drag_origin(self) -> QPoint:
+        x, y, _, _ = self._frame.content_rect()
+        return QPoint(x, y)
 
-    def mouseReleaseEvent(self, event):
-        if self._drag_offset is not None:
-            self._drag_offset = None
-            try:
-                self.releaseMouse()
-            except Exception:
-                pass
-            self._frame._emit_moved()
-            event.accept()
+    def _drag_to(self, point: QPoint) -> None:
+        self._frame.move_content_to(point.x(), point.y())
+
+    def _drag_finished(self) -> None:
+        self._frame._emit_moved()
 
 
 class _RegionCtrl(_CaptureAllowedMixin, QWidget):
