@@ -58,10 +58,9 @@ class QualityOfLifeTests(unittest.TestCase):
         app.subtitle = Mock()
         app.subtitle.mode = "follow"
         app.subtitle.isVisible.return_value = True
-        app.annotation = Mock()
-        app.annotation.isVisible.return_value = True
-        app.annotate_ctrl = Mock()
-        app.annotate_ctrl.isVisible.return_value = True
+        app.overlay_ctrl = Mock()
+        app.overlay_ctrl.isVisible.return_value = True
+        app.replacement = Mock()
 
         moved = (5, 6, 100, 100)
         with (
@@ -70,18 +69,18 @@ class QualityOfLifeTests(unittest.TestCase):
         ):
             app._follow_target_window()
         self.assertEqual(app._watch_rect, moved)
-        app.annotation.update_geometry.assert_called_once_with(moved)
+        app.replacement.update_geometry.assert_called_once_with(moved)
         app.subtitle.attach_below.assert_called_once_with(moved, outside=True)
         app._window_follow_timer.stop.assert_not_called()
 
         # 位置没变不做任何事；目标消失时定时器自行停止
-        app.annotation.update_geometry.reset_mock()
+        app.replacement.update_geometry.reset_mock()
         with (
             patch("app.main.capture.get_window_rect", return_value=moved),
             patch.object(App, "_restack_watch_layer"),
         ):
             app._follow_target_window()
-        app.annotation.update_geometry.assert_not_called()
+        app.replacement.update_geometry.assert_not_called()
         app._watch_hwnd = None
         app._follow_target_window()
         app._window_follow_timer.stop.assert_called_once_with()

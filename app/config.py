@@ -13,7 +13,7 @@ from .paths import (
 )
 
 # 再导出，兼容 from app.config import CONFIG_PATH
-__all__ = ["CONFIG_PATH", "DEFAULTS", "load", "save"]
+__all__ = ["CONFIG_PATH", "DEFAULTS", "load", "save", "watch_display_mode"]
 
 _log = logging.getLogger("st.config")
 
@@ -44,6 +44,11 @@ DEFAULTS = {
     "subtitle_geometry": [],
     "subtitle_mode": "follow",
 
+    # 显示方式：区域 replace=原位替换 / subtitle=字幕条；截屏 replace / window=结果窗口
+    # 窗口持续翻译固定原位替换
+    "region_watch_display_mode": "replace",
+    "screenshot_display_mode": "window",
+
     # OCR
     "ocr_provider": "auto",         # auto = DirectML 优先，失败时回退 CPU
     "ocr_device_id": 0,
@@ -67,11 +72,21 @@ DEFAULTS = {
     "region_watch_interval_ms": 800,
     "region_watch_font_size": 0,
     "region_watch_diff_threshold": 0.9,
-    "region_watch_annotate": True,    # 区域默认备注更直观
-
-    # 备注模式译文颜色（窗口/区域共用，#RRGGBB）
-    "annotate_text_color": "#00F0FF",
 }
+
+# 已删除的备注模式等旧配置：读取时迁移，保存时不再写回
+_LEGACY_KEYS = (
+    "region_watch_annotate", "watch_annotate", "window_watch_display_mode",
+    "annotate_text_color",
+)
+
+
+
+def watch_display_mode(cfg: dict, profile: str) -> str:
+    """持续翻译的显示方式：窗口固定原位替换；区域为 replace 或 subtitle。"""
+    if profile == "region" and cfg.get("region_watch_display_mode") == "subtitle":
+        return "subtitle"
+    return "replace"
 
 
 def _migrate_legacy(cfg: dict, raw: dict) -> None:
@@ -94,10 +109,16 @@ def _migrate_legacy(cfg: dict, raw: dict) -> None:
             cfg["window_watch_diff_threshold"] = v
         if "region_watch_diff_threshold" not in raw:
             cfg["region_watch_diff_threshold"] = v
-    if "watch_annotate" in raw:
-        v = bool(raw["watch_annotate"])
-        if "region_watch_annotate" not in raw:
-            cfg["region_watch_annotate"] = v
+    # 备注模式已删除：旧的“备注”一律改为原位替换，旧的“字幕”保持字幕条
+    mode = raw.get("region_watch_display_mode")
+    if mode not in ("subtitle", "replace"):
+        legacy = raw.get("region_watch_annotate", raw.get("watch_annotate"))
+        subtitle = mode is None and legacy is False
+        cfg["region_watch_display_mode"] = "subtitle" if subtitle else "replace"
+    for key in _LEGACY_KEYS:
+        cfg.pop(key, None)
+
+
 def _validated_values(raw: object) -> dict:
     """只接收对象配置；已知键类型不合法时回退默认值。"""
     if not isinstance(raw, dict):
@@ -152,6 +173,11 @@ def _validated_values(raw: object) -> dict:
         out.pop("llama_device")
     if "subtitle_mode" in out and out["subtitle_mode"] not in ("follow", "free", "pinned"):
         out.pop("subtitle_mode")
+    if "region_watch_display_mode" in out and out["region_watch_display_mode"] not in ("subtitle", "replace"):
+        out.pop("region_watch_display_mode")
+    if "screenshot_display_mode" in out and out["screenshot_display_mode"] not in ("window", "replace"):
+        out.pop("screenshot_display_mode")
+
     if "ocr_max_side" in out and not 0 <= out["ocr_max_side"] <= 10000:
         out.pop("ocr_max_side")
     for key in ("window_watch_interval_ms", "region_watch_interval_ms"):
@@ -217,6 +243,7 @@ def save(cfg: dict) -> None:
         "server_host", "server_port", "n_gpu_layers", "ubatch_size",
         "parallel_slots", "flash_attn", "mlock", "cache_type_k", "cache_type_v",
         "translation_mode", "nllb_model_path", "nllb_device",
+        *_LEGACY_KEYS,
     }
     data = {k: v for k, v in cfg.items() if k not in obsolete}
     for key in ("llama_library_dir", "model_path"):

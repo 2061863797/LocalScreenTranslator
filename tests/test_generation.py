@@ -297,7 +297,7 @@ class TestProductionWindowWatcherGeneration(unittest.TestCase):
         g1 = watcher.generation_tracker.next_generation()
         self.assertTrue(watcher.generation_tracker.is_active(g1))
 
-        watcher.set_display_mode("annotate")
+        watcher.set_display_mode("subtitle")
         self.assertFalse(watcher.generation_tracker.is_active(g1))
 
     def test_window_watcher_resets_generation_on_region_change(self):
@@ -442,14 +442,14 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
         rm = _ProdResultManager(tracker)
 
         emitted_sub = []
-        emitted_ann = []
+        emitted_rep = []
         emitted_hist = []
         emitted_cleared = []
         emitted_moved = []
         emitted_stopped = []
 
         rm.subtitle_ready.connect(emitted_sub.append)
-        rm.annotations_ready.connect(emitted_ann.append)
+        rm.replacement_ready.connect(emitted_rep.append)
         rm.history_ready.connect(lambda s, t, m: emitted_hist.append((s, t, m)))
         rm.content_cleared.connect(lambda: emitted_cleared.append(True))
         rm.window_moved.connect(lambda x, y, w, h: emitted_moved.append((x, y, w, h)))
@@ -457,22 +457,22 @@ class TestDecoupledPipelineAndLatestFrameBuffer(unittest.TestCase):
 
         # 1. Stale generation (gen=9, active=10) should be dropped
         self.assertFalse(rm.dispatch_subtitle("Stale sub", gen_id=9))
-        self.assertFalse(rm.dispatch_annotations([((0, 0, 10, 10), "Stale ann")], gen_id=9))
+        self.assertFalse(rm.dispatch_replacement("stale payload", gen_id=9))
         self.assertFalse(rm.dispatch_history("src", "tr", "mode", gen_id=9))
         self.assertFalse(rm.dispatch_cleared(gen_id=9))
         self.assertEqual(rm.dropped_stale_count, 2)
         self.assertEqual(len(emitted_sub), 0)
-        self.assertEqual(len(emitted_ann), 0)
+        self.assertEqual(len(emitted_rep), 0)
         self.assertEqual(len(emitted_hist), 0)
         self.assertEqual(len(emitted_cleared), 0)
 
         # 2. Active generation (gen=10) should succeed and emit
         self.assertTrue(rm.dispatch_subtitle("Active sub", gen_id=10))
-        self.assertTrue(rm.dispatch_annotations([((0, 0, 10, 10), "Active ann")], gen_id=10))
+        self.assertTrue(rm.dispatch_replacement("active payload", gen_id=10))
         self.assertTrue(rm.dispatch_history("src", "Active tr", "mode", gen_id=10))
         self.assertTrue(rm.dispatch_cleared(gen_id=10))
         self.assertEqual(len(emitted_sub), 1)
-        self.assertEqual(len(emitted_ann), 1)
+        self.assertEqual(len(emitted_rep), 1)
         self.assertEqual(len(emitted_hist), 1)
         self.assertEqual(len(emitted_cleared), 1)
 

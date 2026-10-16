@@ -316,11 +316,11 @@ class TestProductionSubtitleBar(unittest.TestCase):
         app.cfg = {"subtitle_mode": "follow"}
         app.subtitle = SubtitleBar()
         app._watch_paused = False
-        app._watch_region = None
-        app._watch_profile = "window"
+        app._watch_region = (100, 100, 400, 200)
+        app._watch_profile = "region"
 
         try:
-            App._apply_watch_display(app, annotate=False, rect=(100, 100, 400, 200), announce=True)
+            App._apply_watch_display(app, "subtitle", rect=(100, 100, 400, 200), announce=True)
             self.assertFalse(
                 app.subtitle.isVisible(),
                 "Subtitle overlay must remain strictly hidden during watch initialization",
@@ -397,7 +397,7 @@ class TestProductionSubtitleBar(unittest.TestCase):
             app.subtitle._user_size = (300, 80)
 
             # 启动持续翻译 / 切换至字幕模式
-            App._apply_watch_display(app, annotate=False, rect=(100, 100, 450, 150), announce=True)
+            App._apply_watch_display(app, "subtitle", rect=(100, 100, 450, 150), announce=True)
 
             # 必须重置为跟随模式，清除旧尺寸
             self.assertEqual(app.subtitle.mode, "follow")
@@ -468,25 +468,23 @@ class TestProductionSubtitleBar(unittest.TestCase):
         # 执行绘制事件不抛出任何异常
         self.bar.paintEvent(ev)
 
-    def test_window_watch_forces_annotation_instead_of_subtitle(self):
-        """窗口模式固定备注，即使调用方请求字幕也不能显示字幕条。"""
+    def test_window_watch_forces_overlay_instead_of_subtitle(self):
+        """窗口模式固定原位替换，即使调用方请求字幕也不能显示字幕条。"""
         from app.main import App
         app = MagicMock()
         app.cfg = {}
         app.subtitle = MagicMock()
-        app.annotation = MagicMock()
-        app.annotate_ctrl = MagicMock()
+        app.overlay_ctrl = MagicMock()
         app._watch_paused = False
         app._watch_region = None
         app._watch_profile = "window"
 
-        App._apply_watch_display(
-            app, annotate=False, rect=(50, 50, 400, 150), announce=False
-        )
+        App._apply_watch_display(app, "subtitle", rect=(50, 50, 400, 150), announce=False)
 
+        self.assertEqual(app._watch_display_mode, "replace")
         app.subtitle.attach_below.assert_not_called()
         app.subtitle.hide.assert_called_once()
-        app.annotate_ctrl.set_subtitle_button_visible.assert_called_once_with(False)
+        app.overlay_ctrl.set_switch_visible.assert_called_once_with(False)
 
     def test_compact_control_bar_prevents_overflow_and_occlusion(self):
         """缩小翻译框时，状态栏按钮与文字保持稳定不变（不变成单字缩写），且保留完整文本垂直空间。"""
@@ -505,18 +503,18 @@ class TestProductionSubtitleBar(unittest.TestCase):
         ]
         self.assertEqual(
             btn_texts,
-            ["⠿", "固定", "跟随", "自由", "简体中文", "备注", "暂停", "关闭"],
+            ["⠿", "固定", "跟随", "自由", "简体中文", "原位替换", "暂停", "关闭"],
         )
         # 3. 高度 60px 时，pad_y 紧凑优化为 2px，可用正文高度 >= 24px，保证 16px 字号文本（行高 20~22px）下边缘不被裁切
         text_rect = self.bar._text_rect_size()
         self.assertGreaterEqual(text_rect.height(), 24)
 
-    def test_annotation_region_and_subtitle_status_bars_share_height(self):
-        """备注、区域和字幕模式的状态栏保持同一高度。"""
-        from app.ui.annotation_overlay import AnnotateCtrl
+    def test_overlay_region_and_subtitle_status_bars_share_height(self):
+        """原位替换、区域和字幕模式的状态栏保持同一高度。"""
+        from app.ui.overlay_ctrl import OverlayCtrl
         from app.ui.region_frame import RegionWatchFrame
 
-        annotation = AnnotateCtrl()
+        annotation = OverlayCtrl()
         region = RegionWatchFrame()
         try:
             self.bar._place_chrome()
@@ -529,7 +527,8 @@ class TestProductionSubtitleBar(unittest.TestCase):
             self.assertEqual(region._ctrl.height(), expected)
             for button in (
                 annotation._btn_region_pin,
-                annotation._btn_sub,
+                annotation._btn_switch,
+                annotation._btn_compare,
                 annotation._btn_pause,
                 annotation._btn_close,
             ):
@@ -540,11 +539,11 @@ class TestProductionSubtitleBar(unittest.TestCase):
             region.close()
 
     def test_region_mode_status_bars_are_single_ordered_rows(self):
-        """字幕模式翻译框控制栏加拖动手柄和固定；备注模式控制栏合并为一个条不分开。"""
-        from app.ui.annotation_overlay import AnnotateCtrl
+        """字幕模式翻译框控制栏加拖动手柄和固定；原位替换控制栏合并为一个条不分开。"""
+        from app.ui.overlay_ctrl import OverlayCtrl
         from app.ui.region_frame import RegionWatchFrame
 
-        annotation = AnnotateCtrl()
+        annotation = OverlayCtrl()
         region = RegionWatchFrame()
         try:
             self.bar.resize_to(700, 150)
@@ -563,15 +562,17 @@ class TestProductionSubtitleBar(unittest.TestCase):
                 for i in range(region_layout.count())
             ]
             annotate_layout = annotation.layout().itemAt(0).widget().layout()
+            # 只统计未隐藏的按钮（复制、保存只在截屏控制条显示）
             annotate_labels = [
                 annotate_layout.itemAt(i).widget().text()
                 for i in range(annotate_layout.count())
+                if not annotate_layout.itemAt(i).widget().isHidden()
             ]
 
-            # 1. 翻译框控制栏：拖动手柄 + 固定在最前，随后是跟随、自由、语言、备注、暂停、关闭
+            # 1. 翻译框控制栏：拖动手柄 + 固定在最前，随后是跟随、自由、语言、原位替换、暂停、关闭
             self.assertEqual(
                 subtitle_labels,
-                ["⠿", "固定", "跟随", "自由", "简体中文", "备注", "暂停", "关闭"],
+                ["⠿", "固定", "跟随", "自由", "简体中文", "原位替换", "暂停", "关闭"],
             )
             self.assertEqual(self.bar._ctrl._lay.count(), 8)
 
@@ -582,14 +583,13 @@ class TestProductionSubtitleBar(unittest.TestCase):
             )
             self.assertEqual(region_layout.count(), 2)
 
-            # 3. 备注模式控制栏合并为一个条（不分开）：手柄 + 固定 + 语言 + 字幕 + 暂停 + 关闭
+            # 3. 原位替换控制栏合并为一个条（不分开）：手柄 + 固定 + 语言 + 字幕条 + 对比 + 暂停 + 关闭
             self.assertEqual(
                 annotate_labels,
-                ["⠿", "固定", "简体中文", "字幕", "暂停", "关闭"],
+                ["⠿", "固定", "简体中文", "字幕条", "对比", "暂停", "关闭"],
             )
-            self.assertEqual(annotate_layout.count(), 6)
 
-            # 4. 验证备注模式状态栏靠左定位
+            # 4. 验证原位替换状态栏靠左定位
             annotation.place_above((100, 200, 400, 200))
             self.assertEqual(annotation.x(), 100)
         finally:
@@ -625,69 +625,48 @@ class TestProductionSubtitleBar(unittest.TestCase):
         self.assertEqual(self.bar.content_height(), 90)
 
 
-class TestProductionAnnotationOverlay(unittest.TestCase):
-    """区域备注跨会话只在首条译文就绪时显示。"""
+class TestProductionReplacementOverlay(unittest.TestCase):
+    """区域原位替换跨会话只在首条译文就绪时显示。"""
 
     @classmethod
     def setUpClass(cls):
         cls.qapp = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        from app.ui.annotation_overlay import AnnotationOverlay
+        from app.ui.replacement_overlay import ReplacementOverlay
 
-        self.overlay = AnnotationOverlay()
+        self.overlay = ReplacementOverlay()
 
     def tearDown(self):
         self.overlay.close()
         self.overlay.deleteLater()
         self.qapp.processEvents()
 
-    def test_region_restart_keeps_annotation_hidden_until_translation(self):
+    def test_region_restart_keeps_overlay_hidden_until_translation(self):
+        import numpy as np
+
         from app.main import App
+        from app.ocr_engine import OcrLine
+        from app.replacement import build_payload
 
         app = MagicMock()
-        app.annotation = self.overlay
+        app.replacement = self.overlay
         app.cfg = {}
         app._watch_paused = False
+        app._watch_profile = "region"
         rect = (100, 100, 300, 180)
-        item = ((10, 10, 80, 28), "译文")
+        frame = np.full((180, 300, 3), 30, dtype=np.uint8)
+        payload = build_payload(frame, [([OcrLine("Hello", 0.99, (10, 10, 80, 28))], "译文")])
 
         for _ in range(2):
-            App._apply_watch_display(app, annotate=True, rect=rect)
+            App._apply_watch_display(app, "replace", rect=rect)
             self.assertFalse(self.overlay.isVisible())
-            self.overlay.set_items([])
+            self.overlay.set_payload(None)
             self.assertFalse(self.overlay.isVisible())
-            self.overlay.set_items([item])
+            self.overlay.set_payload(payload)
             self.assertTrue(self.overlay.isVisible())
             self.overlay.clear()
             self.assertFalse(self.overlay.isVisible())
-
-    def test_empty_update_keeps_existing_window_without_old_text(self):
-        def has_visible_pixels():
-            self.qapp.processEvents()
-            image = self.overlay.grab().toImage().convertToFormat(
-                QImage.Format.Format_RGBA8888
-            )
-            return any(bytes(image.constBits())[3::4])
-
-        item = ((10, 10, 80, 28), "初次译文")
-        self.overlay.update_geometry((100, 100, 300, 180))
-        self.overlay.set_items([item])
-        self.assertTrue(self.overlay.isVisible())
-        self.assertTrue(has_visible_pixels())
-
-        self.overlay.set_items([])
-        self.assertTrue(self.overlay.isVisible())
-        self.assertFalse(has_visible_pixels())
-        self.assertEqual(self.overlay._items, [])
-
-        self.overlay.set_items([((10, 10, 80, 28), "再次译文")])
-        self.assertTrue(self.overlay.isVisible())
-        self.overlay.clear()
-        self.assertFalse(self.overlay.isVisible())
-        self.overlay.set_items([((10, 10, 80, 28), "")])
-        self.assertFalse(self.overlay.isVisible())
-
 
 if __name__ == "__main__":
     unittest.main()

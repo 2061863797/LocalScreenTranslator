@@ -216,11 +216,11 @@ class LanguagePairButton(QPushButton):
             screen = QGuiApplication.primaryScreen()
         avail = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
 
-        # 识别是否处于识别区上方控制栏（如 AnnotateCtrl / _RegionCtrl）
+        # 识别是否处于识别区上方控制栏（如 OverlayCtrl / _RegionCtrl）
         is_above_ctrl = False
         p = self.parent()
         while p is not None:
-            if type(p).__name__ in ("AnnotateCtrl", "_RegionCtrl") or p.objectName() in ("annCtrl", "regCtrl"):
+            if type(p).__name__ in ("OverlayCtrl", "_RegionCtrl") or p.objectName() in ("overlayCtrl", "regCtrl"):
                 is_above_ctrl = True
                 break
             p = p.parent()
@@ -232,7 +232,7 @@ class LanguagePairButton(QPushButton):
         y_down = btn_pos.y() + btn_h - 10
 
         if is_above_ctrl:
-            # 备注控制栏贴在识别框正上方，优先向上弹以完全避开识别框；若上方空间不足则向下弹
+            # 原位替换控制栏贴在识别框正上方，优先向上弹以完全避开识别框；若上方空间不足则向下弹
             if space_above >= (pop_h - 20) or space_above >= space_below:
                 y = y_up
             else:

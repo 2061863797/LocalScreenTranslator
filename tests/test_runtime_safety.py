@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication
 
 from app import capture
 from app.main import App, _PreloadSignals, _SHUTDOWN_ABORT_SECONDS, _SHUTDOWN_HARD_LIMIT_SECONDS
-from app.ui.annotation_overlay import AnnotationOverlay
+from app.ui.replacement_overlay import ReplacementOverlay
 from app.window_watcher import WindowWatcher
 
 
@@ -205,38 +205,45 @@ class RuntimeSafetyTests(unittest.TestCase):
         # 第 1 帧识别；第 2、3 帧画面未变被跳过；第 4 帧出现文字立即识别
         self.assertEqual(ocr.recognize.call_count, 2)
 
-    def test_annotation_overlay_is_always_excluded_from_capture(self):
-        overlay = Mock()
-        with (
-            patch("app.ui.annotation_overlay._exclude_from_capture") as exclude,
-            patch("app.ui.overlay_base._allow_capture") as allow,
-        ):
-            AnnotationOverlay._apply_capture_affinity(overlay)
-            exclude.assert_called_once_with(overlay)
-            allow.assert_not_called()
+    def test_replacement_overlay_is_always_excluded_from_capture(self):
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.instance() or QApplication([])
+        overlay = ReplacementOverlay()
+        try:
+            with (
+                patch("app.ui.replacement_overlay._exclude_from_capture") as exclude,
+                patch("app.ui.overlay_base._allow_capture") as allow,
+            ):
+                overlay.show()
+                exclude.assert_called_with(overlay)
+                allow.assert_not_called()
+        finally:
+            overlay.close()
+            overlay.deleteLater()
 
     def test_region_watch_restacks_every_visible_layer(self):
         app = App.__new__(App)
         app._watch_hwnd = None
         app._watch_region = (10, 20, 300, 180)
         app.subtitle = Mock()
-        app.annotation = Mock()
-        app.annotate_ctrl = Mock()
+        app.replacement = Mock()
+        app.overlay_ctrl = Mock()
         app.region_frame = Mock()
 
         app._restack_watch_layer()
 
         app.subtitle.restack_layer.assert_called_once_with()
-        app.annotation.restack_layer.assert_called_once_with()
-        app.annotate_ctrl.restack_layer.assert_called_once_with()
+        app.replacement.restack_layer.assert_called_once_with()
+        app.overlay_ctrl.restack_layer.assert_called_once_with()
         app.region_frame.restack_layer.assert_called_once_with()
 
-    def test_ownerless_annotation_reasserts_topmost_without_focus(self):
+    def test_ownerless_overlay_reasserts_topmost_without_focus(self):
         overlay = Mock()
         overlay._layer_owner = None
         overlay.isVisible.return_value = True
         with patch("app.ui.topmost.set_overlay_layer") as set_layer:
-            AnnotationOverlay.restack_layer(overlay)
+            ReplacementOverlay.restack_layer(overlay)
         set_layer.assert_called_once_with(overlay, None)
 
     def test_window_overlay_is_stacked_above_target_not_below(self):
@@ -368,8 +375,11 @@ class RuntimeSafetyTests(unittest.TestCase):
         app.qapp.screens.return_value = []
         app.log = Mock()
         app._show_error = Mock()
+        app._clear_screenshot_overlay = Mock()
         with patch("app.main.capture.configure_qt_screens"):
             app._start_select("region_watch")
+        # 框选前先撤下上一次截屏的覆盖层，避免挡住新的框选
+        app._clear_screenshot_overlay.assert_called_once_with()
         self.assertIsNone(app._pending_mode)
         app._show_error.assert_called_once_with("capture unavailable")
 

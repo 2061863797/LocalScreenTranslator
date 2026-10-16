@@ -4,12 +4,15 @@
 import sys
 import threading
 import time
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QEventLoop, QObject, QSharedMemory, QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QMenu,
     QSystemTrayIcon,
 )
@@ -21,7 +24,8 @@ from .hotkeys import HotkeyManager
 from .i18n import get_language, set_language, t as _t
 from .runtime_resources import RuntimeResources
 from .paths import ICON_ICO
-from .ui.annotation_overlay import AnnotateCtrl, AnnotationOverlay
+from .ui.replacement_overlay import ReplacementOverlay
+from .ui.overlay_ctrl import OverlayCtrl
 from .ui.region_frame import RegionWatchFrame
 from .ui.subtitle_bar import SubtitleBar
 from .ui.region_selector import RegionSelector
@@ -32,7 +36,8 @@ from .ui.windows import (
     InputTranslateWindow,
     SettingsWindow,
 )
-from .pipelines import GenerationTracker
+from .pipelines import GenerationTracker, OneShotResult
+from .replacement import build_payload
 from .window_watcher import WindowWatcher
 from .workers import OcrTranslateWorker
 
@@ -63,8 +68,20 @@ def _hotkey_text(pynput_str: str) -> str:
     return HotkeyEdit._display(pynput_str)
 
 
+@dataclass(frozen=True)
+class ScreenshotJob:
+    """最近一次截屏：区域、原图、识别翻译结果与所用目标语言。"""
+
+    region: tuple[int, int, int, int]
+    image: Any
+    result: OneShotResult
+    target: str
+
+
 class App:
     _AUTOSTART_PRELOAD_DELAY_MS = 30_000
+    # 持续翻译显示方式：replace=原位替换 / subtitle=字幕条；None 表示未在运行
+    _watch_display_mode: str | None = None
 
     def __init__(self):
         setup_logging()
@@ -91,17 +108,20 @@ class App:
         self._translation_load_lock = threading.Lock()
         self.generation_tracker = GenerationTracker()
 
-        # UI 组件（窗口固定备注；区域支持字幕条和备注，并有可拖/固定识别框）
+        # UI 组件：持续翻译用原位替换或字幕条（区域另有可拖/固定识别框）；
+        # 截屏用原位替换（冻结底图）或结果窗口。两种原位替换共用同款控制条。
         self.selector = RegionSelector()
         self.subtitle = SubtitleBar()
-        self.annotation = AnnotationOverlay()
-        self.annotation.set_text_color(
-            self.cfg.get("annotate_text_color", "#00F0FF")
-        )
-        self.annotate_ctrl = AnnotateCtrl()
+        self.replacement = ReplacementOverlay()
+        self.overlay_ctrl = OverlayCtrl("watch")
+        self.screenshot_replacement = ReplacementOverlay()
+        self.screenshot_ctrl = OverlayCtrl("screenshot")
+        self._screenshot_request_id = 0
+        # 最近一次截屏的结果；切换显示方式、换语言时复用原图
+        self._screenshot_job: ScreenshotJob | None = None
         self.region_frame = RegionWatchFrame()
         self.subtitle.set_region_frame(self.region_frame)
-        self.annotate_ctrl.set_region_frame(self.region_frame)
+        self.overlay_ctrl.set_region_frame(self.region_frame)
         self._region_topmost_timer = QTimer()
         self._region_topmost_timer.setInterval(500)
         self._region_topmost_timer.timeout.connect(self._restack_watch_layer)
@@ -115,35 +135,43 @@ class App:
         self.subtitle.stop_requested.connect(
             lambda: self._stop_continuous_translate("已从字幕条关闭")
         )
-        self.subtitle.switch_to_annotate.connect(
-            lambda: self._switch_watch_display(True)
+        self.subtitle.switch_to_replace.connect(
+            lambda: self._switch_watch_display("replace")
         )
-        self.annotate_ctrl.stop_requested.connect(
-            lambda: self._stop_continuous_translate("已从备注条关闭")
+        self.overlay_ctrl.stop_requested.connect(
+            lambda: self._stop_continuous_translate("已从原位替换控制条关闭")
         )
-        self.annotate_ctrl.switch_to_subtitle.connect(
-            lambda: self._switch_watch_display(False)
+        self.overlay_ctrl.switch_requested.connect(
+            lambda: self._switch_watch_display("subtitle")
         )
+        self.overlay_ctrl.compare_changed.connect(self.replacement.set_comparing)
+        self.screenshot_ctrl.language_changed.connect(self._on_screenshot_language_changed)
+        self.screenshot_ctrl.switch_requested.connect(
+            lambda: self._switch_screenshot_display("window")
+        )
+        self.screenshot_ctrl.compare_changed.connect(self.screenshot_replacement.set_comparing)
+        self.screenshot_ctrl.copy_requested.connect(self._copy_screenshot_text)
+        self.screenshot_ctrl.set_drag_target(self.screenshot_replacement)
+        self.screenshot_ctrl.target_moved.connect(self._on_screenshot_moved)
+        self.screenshot_ctrl.save_requested.connect(self._save_screenshot_image)
+        self.screenshot_ctrl.stop_requested.connect(self._clear_screenshot_overlay)
         self.subtitle.pause_changed.connect(self._set_watch_paused)
-        self.annotate_ctrl.pause_changed.connect(self._set_watch_paused)
+        self.overlay_ctrl.pause_changed.connect(self._set_watch_paused)
         self.subtitle.language_changed.connect(self._on_language_pair_changed)
-        self.annotate_ctrl.language_changed.connect(self._on_language_pair_changed)
+        self.overlay_ctrl.language_changed.connect(self._on_language_pair_changed)
         self.subtitle.sync_languages(
             "自动",
             str(self.cfg.get("target_language", "简体中文")),
         )
-        self.annotate_ctrl.sync_languages(
-            "自动",
-            str(self.cfg.get("target_language", "简体中文")),
-        )
+        for ctrl in (self.overlay_ctrl, self.screenshot_ctrl):
+            ctrl.sync_languages("自动", str(self.cfg.get("target_language", "简体中文")))
         self.region_frame.region_moved.connect(self._on_region_frame_moved)
-        # 当前会话是否备注模式（与 cfg 同步，便于运行中切换）
-        self._watch_annotate: bool | None = None
         self._watch_paused = False
         self._last_target_language = str(self.cfg.get("target_language", "简体中文"))
 
         # 热键先于设置窗：录入热键时需 pause 全局监听
         self.hotkeys = HotkeyManager(self.cfg)
+        self.hotkeys.escape_pressed.connect(self._clear_screenshot_overlay)
 
         self._preload_status = {"llama": "pending", "ocr": "pending"}
         self._preload_errors = {"llama": "", "ocr": ""}
@@ -160,6 +188,9 @@ class App:
             self.cfg,
             ensure_ready=self._ensure_translation_ready,
             on_target_language_changed=self._on_target_language_changed,
+        )
+        self.translate_win.inplace_requested.connect(
+            lambda: self._switch_screenshot_display("replace")
         )
         self.history_win = HistoryWindow(
             self.storage,
@@ -303,7 +334,8 @@ class App:
             self.history_win,
             self.translate_win,
             self.subtitle,
-            self.annotate_ctrl,
+            self.overlay_ctrl,
+            self.screenshot_ctrl,
             self.region_frame,
         ):
             try:
@@ -472,6 +504,8 @@ class App:
             return
         if mode == "screenshot" and not self._ensure_translation_ready():
             return
+        # 上一次截屏的覆盖层和控制条置顶，会挡住新的框选
+        self._clear_screenshot_overlay()
         capture.configure_qt_screens(self.qapp.screens())
         self.log.info("开始框选 mode=%s", mode)
         self._pending_mode = mode
@@ -493,33 +527,142 @@ class App:
             self.log.warning("忽略未知框选结果 mode=%s", mode)
             return
         region = (x, y, w, h)
+        self._clear_screenshot_overlay()
         # 优先用框选时已截好的静态底图裁切（无二次截屏、减轻闪一下）
         img = self.selector.take_crop()
         if img is None:
             img = capture.grab_region(x, y, w, h)
         if not self._ensure_translation_ready():
             return
+        self._translate_screenshot(region, img, self.translate_win.target_language)
+
+    def _translate_screenshot(self, region: tuple[int, int, int, int], img, target: str) -> None:
+        """识别并按段落翻译截屏原图；过期结果丢弃。"""
+        self._screenshot_request_id += 1
+        request_id = self._screenshot_request_id
         worker = OcrTranslateWorker(
             self.ocr, self.translator, self.cfg,
-            image=img, do_translate=True,
-            target_language=self.translate_win.target_language,
+            image=img, do_translate=True, target_language=target,
+            replacement=self.cfg.get("screenshot_display_mode") == "replace",
         )
-        worker.finished_ok.connect(
-            lambda source, translation, r=region:
-                self._show_screenshot_result(r, source, translation)
+        worker.finished_detail.connect(
+            lambda result, _frame, r=region, i=img, token=request_id, lang=target:
+                self._show_screenshot_result(r, result, i, token, lang)
         )
-        worker.failed.connect(self._show_error)
+        worker.failed.connect(
+            lambda message, token=request_id: self._on_screenshot_failed(message, token)
+        )
         self._run_worker(worker)
 
+    def _on_screenshot_failed(self, message: str, request_id: int) -> None:
+        """已被新截屏或换语言作废的请求出错时不再弹窗。"""
+        if request_id == self._screenshot_request_id:
+            self._show_error(message)
+
     def _show_screenshot_result(
-        self, region: tuple[int, int, int, int], source: str, translation: str
+        self, region: tuple[int, int, int, int], result: OneShotResult, img,
+        request_id: int, target: str,
     ):
-        if self._quitting:
+        if self._quitting or request_id != self._screenshot_request_id:
             return
-        x, y, w, h = region
         if self.cfg.get("history_enabled", True):
-            self.storage.add_history(source, translation, "screenshot")
-        self.translate_win.show_result(source, translation, x, y + h + 8)
+            self.storage.add_history(result.source, result.translation, "screenshot")
+        self._screenshot_job = ScreenshotJob(region, img, result, target)
+        self._present_screenshot(str(self.cfg.get("screenshot_display_mode", "window")))
+
+    def _present_screenshot(self, mode: str) -> None:
+        """按显示方式呈现最近一次截屏；没识别到文字时原位替换退回结果窗口给出反馈。"""
+        job = self._screenshot_job
+        if job is None:
+            return
+        can_overlay = bool(job.result.blocks)
+        if mode == "replace" and can_overlay:
+            payload = self._screenshot_payload()
+            self.translate_win.hide()
+            self.screenshot_replacement.update_geometry(job.region)
+            self.screenshot_replacement.set_payload(payload)
+            self.screenshot_replacement.set_comparing(False)
+            self.screenshot_ctrl.set_comparing(False)
+            self.screenshot_ctrl.place_above(job.region)
+            self.hotkeys.set_escape_enabled(True)
+            return
+        self._hide_screenshot_overlay()
+        x, y, w, h = job.region
+        self.translate_win.show_result(
+            job.result.source, job.result.translation, x, y + h + 8, inplace=can_overlay,
+        )
+
+    def _screenshot_payload(self):
+        """最近一次截屏的原位替换数据；结果窗口模式下没生成过，第一次切换时补建。"""
+        job = self._screenshot_job
+        if job.result.replacement is None:
+            payload = build_payload(
+                job.image,
+                list(zip(job.result.blocks, job.result.block_translations)),
+                frozen=True,
+            )
+            self._screenshot_job = job = replace(job, result=replace(job.result, replacement=payload))
+        return job.result.replacement
+
+    def _switch_screenshot_display(self, mode: str) -> None:
+        """截屏的结果窗口 ↔ 原位替换快捷切换，并记住选择。"""
+        self.cfg["screenshot_display_mode"] = mode
+        try:
+            config.save(self.cfg)
+        except Exception:
+            self.log.exception("保存截屏显示方式失败")
+        job = self._screenshot_job
+        if job is None:
+            return
+        target = self.translate_win.target_language
+        if mode == "replace" and target != job.target:
+            # 结果窗口里换过目标语言：用原图重新翻译后再覆盖，不显示旧语言
+            self._translate_screenshot(job.region, job.image, target)
+            return
+        self._present_screenshot(mode)
+
+    def _hide_screenshot_overlay(self) -> None:
+        self.screenshot_replacement.clear()
+        self.screenshot_ctrl.hide()
+        self.hotkeys.set_escape_enabled(False)
+
+    def _clear_screenshot_overlay(self) -> None:
+        """关闭截屏覆盖并作废在途的截屏结果。"""
+        self._screenshot_request_id += 1
+        self._screenshot_job = None
+        self._hide_screenshot_overlay()
+
+    def _on_screenshot_language_changed(self, source: str, target: str) -> None:
+        """控制条换目标语言：同步全局语言，再用原图重新翻译（旧译文保留到新结果到达）。"""
+        job = self._screenshot_job
+        self._on_language_pair_changed(source, target)
+        if job is not None:
+            self._translate_screenshot(job.region, job.image, target)
+
+    def _copy_screenshot_text(self) -> None:
+        """复制当前看到的内容：“对比”显示原图时复制原文，否则复制译文。"""
+        job = self._screenshot_job
+        if job is None:
+            return
+        comparing = self.screenshot_replacement.comparing
+        QApplication.clipboard().setText(job.result.source if comparing else job.result.translation)
+
+    def _on_screenshot_moved(self, x: int, y: int, w: int, h: int) -> None:
+        """拖动截屏覆盖层后记下新位置，切到结果窗口或重新翻译时按新位置摆放。"""
+        if self._screenshot_job is not None:
+            self._screenshot_job = replace(self._screenshot_job, region=(x, y, w, h))
+
+    def _save_screenshot_image(self) -> None:
+        image = self.screenshot_replacement.snapshot()
+        if image is None:
+            return
+        default = Path.home() / "Pictures" / time.strftime("translate_%Y%m%d_%H%M%S.png")
+        # 以置顶工具条为父窗口，保存对话框不会被覆盖层挡住
+        path, _ = QFileDialog.getSaveFileName(
+            self.screenshot_ctrl, _t("shot_save_title"), str(default), "PNG (*.png)"
+        )
+        if path and not image.save(path, "PNG"):
+            self._show_error(_t("shot_save_failed", path=path))
 
     # ---------- 划词翻译 ----------
     @property
@@ -599,7 +742,7 @@ class App:
         """是否已有持续翻译会话：监视线程在跑，或任一浮层仍显示。"""
         if self._watcher is not None and self._watcher.isRunning():
             return True
-        for name in ("subtitle", "annotation", "annotate_ctrl", "region_frame"):
+        for name in ("subtitle", "replacement", "overlay_ctrl", "region_frame"):
             try:
                 if getattr(self, name).isVisible():
                     return True
@@ -663,14 +806,14 @@ class App:
             lambda: self.subtitle.set_interactive(False),
             lambda: self.subtitle.hide(),
             lambda: self.subtitle.set_capture_visible(True),
-            lambda: self.annotation.hide(),
-            lambda: self.annotation.clear(),
-            lambda: self.annotate_ctrl.set_paused(False),
-            lambda: self.annotate_ctrl.hide(),
+            lambda: self.replacement.clear(),
+            lambda: self.overlay_ctrl.set_paused(False),
+            lambda: self.overlay_ctrl.set_comparing(False),
+            lambda: self.overlay_ctrl.hide(),
             lambda: self.region_frame.hide_frame(),
             lambda: self.region_frame.set_control_bar_external(False),
             lambda: self.subtitle.set_region_controls_visible(False),
-            lambda: self.annotate_ctrl.set_region_controls_visible(False),
+            lambda: self.overlay_ctrl.set_region_controls_visible(False),
             # 隐藏后再解绑，恢复默认置顶（供区域翻译）；避免改 flag 时闪一下
             lambda: self._set_watch_layer_owner(None),
         )
@@ -681,8 +824,8 @@ class App:
                 pass
 
     def _set_watch_layer_owner(self, owner_hwnd: int | None) -> None:
-        """窗口备注层跟目标窗同层；None=不绑定（区域翻译仍置顶）。"""
-        for w in (self.subtitle, self.annotation, self.annotate_ctrl):
+        """窗口覆盖层跟目标窗同层；None=不绑定（区域翻译仍置顶）。"""
+        for w in (self.subtitle, self.replacement, self.overlay_ctrl):
             try:
                 w.set_layer_owner(owner_hwnd)
             except Exception:
@@ -694,7 +837,7 @@ class App:
             return
         if QApplication.activePopupWidget() is not None:
             return
-        for w in (self.subtitle, self.annotation, self.annotate_ctrl):
+        for w in (self.subtitle, self.replacement, self.overlay_ctrl):
             try:
                 w.restack_layer()
             except Exception:
@@ -712,7 +855,7 @@ class App:
         for sig in (
             w.stopped,
             w.subtitle_ready,
-            w.annotations_ready,
+            w.replacement_ready,
             w.history_ready,
             w.window_moved,
             w.content_cleared,
@@ -724,7 +867,7 @@ class App:
 
         for sig, signature in (
             (w.subtitle_ready, (str, int)),
-            (w.annotations_ready, (list, int)),
+            (w.replacement_ready, (object, int)),
             (w.history_ready, (str, str, str, int)),
         ):
             try:
@@ -801,7 +944,7 @@ class App:
         self._watch_region = None
         self._watch_rect = None
         self._watch_profile = None
-        self._watch_annotate = None
+        self._watch_display_mode = None
         self._join_watcher(w, label="监视线程")
         # 不弹托盘气泡，写日志即可
 
@@ -837,11 +980,7 @@ class App:
         if self._stopping_watch:
             return
         rect = capture.get_window_rect(hwnd)
-        # 窗口持续翻译固定使用备注模式。
-        annotate = True
-        self._launch_watcher(
-            hwnd=hwnd, rect=rect, annotate=annotate, profile="window"
-        )
+        self._launch_watcher(hwnd=hwnd, rect=rect, profile="window")
 
     def _toggle_region_watch(self):
         """框选屏幕区域持续翻译（显示/间隔在设置里单独配置）。"""
@@ -868,14 +1007,11 @@ class App:
             self._stop_continuous_translate("切换为区域持续翻译")
         if self._stopping_watch:
             return
-        annotate = bool(self.cfg.get("region_watch_annotate"))
-        self._launch_watcher(
-            region=region, rect=region, annotate=annotate, profile="region"
-        )
+        self._launch_watcher(region=region, rect=region, profile="region")
 
-    def _launch_watcher(self, rect, annotate: bool,
-                        hwnd: int | None = None, region=None,
-                        profile: str = "window"):
+    def _launch_watcher(self, rect, hwnd: int | None = None, region=None,
+                        profile: str = "window", display: str | None = None):
+        """display 缺省按设置：窗口固定原位替换，区域为原位替换或字幕条。"""
         if self._stopping_watch:
             self.log.info("停止过程中拒绝启动持续翻译 profile=%s", profile)
             return
@@ -925,33 +1061,30 @@ class App:
         self._watch_rect = rect
         self._watch_profile = profile
         self._subtitle_geometry_valid = True
-        # 窗口持续翻译固定使用备注模式；区域模式仍支持字幕与备注两种显示。
-        annotate = True if profile == "window" else bool(annotate)
-        self._watch_annotate = annotate
+        if display not in ("replace", "subtitle") or profile == "window":
+            display = config.watch_display_mode(self.cfg, profile)
+        self._watch_display_mode = display
         self._watch_paused = False
         self.subtitle.set_paused(False)
-        self.annotate_ctrl.set_paused(False)
-        # 区域模式保留设置值；窗口模式固定为备注模式。
-        if profile == "region":
-            self.cfg["region_watch_annotate"] = annotate
+        self.overlay_ctrl.set_paused(False)
         self.log.info(
-            "启动持续翻译 profile=%s annotate=%s hwnd=%s region=%s rect=%s",
-            profile, annotate, hwnd, region, rect,
+            "启动持续翻译 profile=%s display=%s hwnd=%s region=%s rect=%s",
+            profile, display, hwnd, region, rect,
         )
         # 区域翻译：单独识别框，可拖动 / 固定
         if region is not None:
-            self.region_frame.set_control_bar_external(annotate)
+            self.region_frame.set_control_bar_external(display == "replace")
             self.region_frame.show_region(region)
             # 区域无目标窗：浮层保持全局置顶
             self._set_watch_layer_owner(None)
         else:
             self.region_frame.set_control_bar_external(False)
             self.region_frame.hide_frame()
-            # 窗口备注层与被译窗口同层，不压在其它应用上
+            # 窗口覆盖层与被译窗口同层，不压在其它应用上
             self._set_watch_layer_owner(hwnd)
-        # 窗口固定使用备注；区域备注贴原文旁，区域字幕条放在目标外侧
+        # 原位替换贴在目标上；区域字幕条放在目标外侧
         self._apply_watch_font_size(profile)
-        self._apply_watch_display(annotate, rect, announce=True)
+        self._apply_watch_display(display, rect, announce=True)
         # 显示后再应用一次（setWindowFlags / 首次 show 可能重建 HWND）
         self._set_watch_layer_owner(hwnd)
         if region is not None:
@@ -961,7 +1094,6 @@ class App:
         else:
             self._region_topmost_timer.stop()
             self._window_follow_timer.start()
-        display = "annotate" if annotate else "subtitle"
         self.generation_tracker.reset()
         self._watch_session_id += 1
         current_session = self._watch_session_id
@@ -979,9 +1111,9 @@ class App:
             lambda text, gen_id, s=current_session, w=watcher:
                 self._on_watch_subtitle_guarded(text, s, w, gen_id)
         )
-        watcher.annotations_ready[list, int].connect(
-            lambda items, gen_id, s=current_session, w=watcher:
-                self._on_watch_annotations_guarded(items, s, w, gen_id)
+        watcher.replacement_ready[object, int].connect(
+            lambda payload, gen_id, s=current_session, w=watcher:
+                self._on_watch_replacement_guarded(payload, s, w, gen_id)
         )
         watcher.history_ready[str, str, str, int].connect(
             lambda src, tr, m, gen_id, s=current_session, w=watcher:
@@ -1005,13 +1137,13 @@ class App:
         self._watch_paused = bool(paused)
         watcher.set_paused(self._watch_paused)
         self.subtitle.set_paused(self._watch_paused)
-        self.annotate_ctrl.set_paused(self._watch_paused)
-        if self.annotate_ctrl.isVisible() and self._watch_rect is not None:
-            self.annotate_ctrl.place_above(self._watch_rect)
+        self.overlay_ctrl.set_paused(self._watch_paused)
+        if self.overlay_ctrl.isVisible() and self._watch_rect is not None:
+            self.overlay_ctrl.place_above(self._watch_rect)
         self.log.info("持续翻译%s", "已暂停" if self._watch_paused else "已继续")
 
     def _on_region_frame_moved(self, x: int, y: int, w: int, h: int):
-        """区域识别框被拖动/缩放：同步 OCR 选区与字幕/备注位置。"""
+        """区域识别框被拖动/缩放：同步 OCR 选区与字幕/原位替换位置。"""
         if self._watch_region is None:
             return
         rect = (x, y, w, h)
@@ -1019,16 +1151,16 @@ class App:
         self._watch_rect = rect
         if self._watcher and self._watcher.isRunning():
             self._watcher.set_region(rect)
-        if self._watch_annotate is True and not self._watch_paused:
+        if not self._watch_paused:
             # 移动/缩放后旧译文坐标已失效；先清空，确保下一帧是干净底图。
             # 暂停时没有下一帧，保留译文随框移动，恢复后再按新位置重新识别。
-            self.annotation.set_items([])
-        self.annotation.update_geometry(rect)
+            self.replacement.set_payload(None)
+        self.replacement.update_geometry(rect)
         # 跟随模式才重贴；保持用户手动单独缩放好的翻译框尺寸
         if self.subtitle.mode == "follow":
             self.subtitle.attach_below(rect, outside=True, match_target_size=False)
-        if self.annotate_ctrl.isVisible():
-            self.annotate_ctrl.place_above(rect)
+        if self.overlay_ctrl.isVisible():
+            self.overlay_ctrl.place_above(rect)
         self.log.info("区域识别框更新 %s", rect)
 
     def _is_active_watch_session(self, session_id: int, watcher: Any) -> bool:
@@ -1054,20 +1186,28 @@ class App:
     def _on_watch_subtitle_guarded(
         self, text: str, session_id: int, watcher: Any, gen_id: int | None = None,
     ) -> None:
+        if self._current_display_mode() != "subtitle":
+            return
         if self._accept_watch_result(session_id, watcher, gen_id, "字幕刷新"):
             self.subtitle.set_text(text)
-
-    def _on_watch_annotations_guarded(
-        self, items: list, session_id: int, watcher: Any, gen_id: int | None = None,
-    ) -> None:
-        if self._accept_watch_result(session_id, watcher, gen_id, "逐行备注"):
-            self._on_watch_annotations(items)
 
     def _on_watch_history_guarded(
         self, src: str, tr: str, mode: str, session_id: int, watcher: Any, gen_id: int | None = None,
     ) -> None:
         if self._accept_watch_result(session_id, watcher, gen_id, "历史记录"):
             self._on_watch_history(src, tr, mode)
+
+    def _on_watch_replacement_guarded(
+        self, payload: Any, session_id: int, watcher: Any, gen_id: int | None = None,
+    ) -> None:
+        if self._current_display_mode() != "replace":
+            return
+        if not self._accept_watch_result(session_id, watcher, gen_id, "原位替换"):
+            return
+        # 文字已变但还没有任何译文：先撤下上一屏的旧译文，露出原文
+        if self._watch_rect is not None:
+            self.replacement.update_geometry(self._watch_rect)
+        self.replacement.set_payload(payload)
 
     def _on_target_window_moved_guarded(self, x: int, y: int, w: int, h: int, session_id: int, watcher: Any) -> None:
         if not self._is_active_watch_session(session_id, watcher):
@@ -1085,20 +1225,18 @@ class App:
             return
         self._on_watch_stopped(reason)
 
-    def _on_watch_annotations(self, items: list) -> None:
-        """在主线程绘制备注译文。"""
-        if not self._watcher or self._watch_annotate is not True:
-            return
-        self.annotation.set_items(items)
-
     def _on_watch_content_cleared(self) -> None:
         """源文字连续消失时同步清空译文，不保留上一条过期内容。"""
         if not self._watcher:
             return
-        if self._watch_annotate is True:
-            self.annotation.set_items([])
+        if self._current_display_mode() == "replace":
+            self.replacement.set_payload(None)
         else:
             self.subtitle.set_text("")
+
+    def _current_display_mode(self) -> str:
+        """当前持续翻译的显示方式；未记录时按原位替换处理。"""
+        return self._watch_display_mode or "replace"
 
     def _on_watch_history(self, source: str, translation: str, mode: str):
         """持续翻译有实质新译文时异步写入历史，避免磁盘 I/O 阻塞 UI 渲染循环 (PR 12)。"""
@@ -1115,7 +1253,7 @@ class App:
     _on_window_translated = _on_watch_history
 
     def _apply_watch_font_size(self, profile: str | None = None) -> None:
-        """把当前窗口或区域翻译的独立字号应用到两种显示模式。"""
+        """把当前窗口或区域翻译的独立字号应用到字幕条（原位替换沿用原文字号）。"""
         profile = profile or self._watch_profile
         if profile not in ("window", "region"):
             return
@@ -1124,94 +1262,69 @@ class App:
         except (TypeError, ValueError):
             size = 0
         self.subtitle.set_font_size(size)
-        self.annotation.set_font_size(size)
 
-    def _apply_watch_display(self, annotate: bool, rect, *, announce: bool = False):
-        """窗口固定备注；区域支持备注或显示在目标外侧的字幕条。"""
-        if getattr(self, "_watch_profile", None) == "window":
-            annotate = True
-        is_region = getattr(self, "_watch_profile", None) == "region"
-        self.region_frame.set_control_bar_external(is_region and annotate)
+    def _apply_watch_display(self, mode: str, rect, *, announce: bool = False):
+        """应用显示方式：原位替换贴在目标上，字幕条放在目标外侧；窗口模式没有字幕条。"""
+        is_region = self._watch_profile == "region"
+        if not is_region:
+            mode = "replace"
+        self._watch_display_mode = mode
+        on_target = mode == "replace"
+        self.region_frame.set_control_bar_external(is_region and on_target)
         self.subtitle.set_region_controls_visible(False)
-        self.annotate_ctrl.set_region_controls_visible(is_region and annotate)
-        if annotate:
-            self.annotate_ctrl.set_paused(self._watch_paused)
-            self.annotate_ctrl.set_subtitle_button_visible(is_region)
+        self.overlay_ctrl.set_region_controls_visible(is_region and on_target)
+        self.overlay_ctrl.set_comparing(False)
+        self.replacement.clear()
+        self.replacement.update_geometry(rect)
+        if on_target:
+            self.overlay_ctrl.set_paused(self._watch_paused)
+            # “字幕条”切换只在区域持续翻译提供
+            self.overlay_ctrl.set_switch_visible(is_region)
             self.subtitle.set_interactive(False)
             self.subtitle.hide()
-            self.annotation.update_geometry(rect)
-            # 首条有效译文到达前保持隐藏，避免空备注层闪现。
-            self.annotate_ctrl.place_above(rect)
+            # 首条有效译文到达前覆盖层保持隐藏，避免空浮层闪现。
+            self.overlay_ctrl.place_above(rect)
         else:
             self.subtitle.set_paused(self._watch_paused)
-            self.annotation.clear()
-            try:
-                self.annotate_ctrl.hide()
-            except Exception:
-                pass
+            self.overlay_ctrl.hide()
             # 外置字幕可缩放；outside=True 永远不盖住目标窗/识别区
             self.subtitle.set_interactive(True)
             self.subtitle.reset_follow_mode()
             self.cfg["subtitle_mode"] = "follow"
-            is_region = self._watch_region is not None or self._watch_profile == "region"
-            self.subtitle.set_capture_visible(not is_region)
-            if is_region:
-                self.subtitle.attach_below(rect, outside=True, match_target_size=True)
-            else:
-                self.subtitle.attach_below(rect, outside=True, match_target_size=False)
+            self.subtitle.set_capture_visible(False)
+            self.subtitle.attach_below(rect, outside=True, match_target_size=True)
             # PR 1 零闪烁：不在启动时注入占位文本，保持隐藏直到第一帧有效翻译到达
             self.subtitle.hide()
 
-    def _switch_watch_display(self, annotate: bool):
-        """区域运行中切换字幕与备注；窗口模式固定为备注。"""
+    def _switch_watch_display(self, requested: str):
+        """区域持续翻译运行中切换原位替换 / 字幕条，并记住选择。"""
         if self._stopping_watch:
             return
         if self._watcher is None or not self._watcher.isRunning():
             self.log.info("无进行中的持续翻译，忽略显示模式切换")
             return
-        annotate = bool(annotate)
-        profile = self._watch_profile
-        if profile not in ("window", "region"):
-            profile = "region" if self._watch_region is not None else "window"
-        if profile == "window" and not annotate:
-            self.log.info("窗口持续翻译固定为备注模式，忽略字幕切换")
+        if self._watch_profile != "region" or requested not in ("replace", "subtitle"):
+            self.log.info("只有区域持续翻译可切换显示方式，忽略 %s", requested)
             return
-        if self._watch_annotate is not None and bool(self._watch_annotate) == annotate:
+        if requested == self._current_display_mode():
             return  # 已是目标模式
-        rect = self._watch_rect
-        if rect is None:
-            if self._watch_region is not None:
-                rect = self._watch_region
-            elif self._watch_hwnd is not None:
-                rect = capture.get_window_rect(self._watch_hwnd)
+        rect = self._watch_rect or self._watch_region
         if rect is None:
             self.log.warning("切换显示模式失败：无目标区域")
             return
-        self._watch_annotate = annotate
-        # 区域模式保留用户选择；窗口模式不会进入字幕切换分支。
-        if profile == "region":
-            self.cfg["region_watch_annotate"] = annotate
-            try:
-                config.save(self.cfg)
-            except Exception:
-                pass
-        mode = "annotate" if annotate else "subtitle"
+        self.cfg["region_watch_display_mode"] = requested
+        try:
+            config.save(self.cfg)
+        except Exception:
+            self.log.exception("保存显示模式失败")
         self.generation_tracker.reset()
         try:
-            self._watcher.set_display_mode(mode)
+            self._watcher.set_display_mode(requested)
         except Exception:
             self.log.exception("set_display_mode 失败")
             return
-        self._apply_watch_display(annotate, rect, announce=False)
-        # 切换模式后 HWND 可能重建，重新挂层
-        if self._watch_hwnd is not None:
-            self._set_watch_layer_owner(self._watch_hwnd)
-        if annotate:
-            # 清空旧结果，下一轮收到有效译文时才显示备注层。
-            self.annotation.set_items([])
-            self.log.info("已切换为备注模式 profile=%s", profile)
-        else:
-            self.log.info("已切换为字幕条模式 profile=%s", profile)
+        self._apply_watch_display(requested, rect, announce=False)
+        self.log.info("已切换显示模式 mode=%s", requested)
 
     def _on_subtitle_user_resized(self):
         """用户通过右下角把手单独缩放翻译框完成后，持久化其独立尺寸。"""
@@ -1267,11 +1380,10 @@ class App:
         # 跟随模式才重贴；自由/固定保持用户位置
         if self.subtitle.mode == "follow":
             self.subtitle.attach_below(rect, outside=True)
-        if self.annotation.isVisible():
-            self.annotation.update_geometry(rect)
-        if self.annotate_ctrl.isVisible():
-            self.annotate_ctrl.place_above(rect)
-        # 目标窗 z 序可能变了：窗口备注层贴回目标正上方（仍非全局置顶）
+        self.replacement.update_geometry(rect)
+        if self.overlay_ctrl.isVisible():
+            self.overlay_ctrl.place_above(rect)
+        # 目标窗 z 序可能变了：窗口覆盖层贴回目标正上方（仍非全局置顶）
         self._restack_watch_layer()
 
     def _on_watch_stopped(self, reason: str):
@@ -1285,7 +1397,7 @@ class App:
         self._watch_region = None
         self._watch_rect = None
         self._watch_profile = None
-        self._watch_annotate = None
+        self._watch_display_mode = None
 
     # ---------- 公共 ----------
     def _show_window(self, win):
@@ -1330,15 +1442,9 @@ class App:
         target = str(self.cfg.get("target_language", "简体中文"))
         if hasattr(self, "subtitle"):
             self.subtitle.sync_languages("自动", target)
-        self.annotate_ctrl.sync_languages("自动", target)
+        self.overlay_ctrl.sync_languages("自动", target)
+        self.screenshot_ctrl.sync_languages("自动", target)
         self.translate_win.sync_font_size_from_cfg()
-        # 备注译文颜色
-        try:
-            self.annotation.set_text_color(
-                self.cfg.get("annotate_text_color", "#00F0FF")
-            )
-        except Exception:
-            pass
         # 目标语言热切换检测：通知 watcher 重置并强制重新翻译当前帧
         new_target = str(self.cfg.get("target_language", "简体中文"))
         target_changed = new_target != getattr(self, "_last_target_language", None)
@@ -1378,11 +1484,12 @@ class App:
             and self._watch_profile
         ):
             self._apply_watch_font_size(self._watch_profile)
-            if self._watch_profile == "region":
-                annotate = bool(self.cfg.get("region_watch_annotate"))
-                cur = self._watch_annotate
-                if cur is None or bool(cur) != annotate:
-                    self._switch_watch_display(annotate)
+            desired = config.watch_display_mode(self.cfg, self._watch_profile)
+            if desired != self._current_display_mode():
+                self._switch_watch_display(desired)
+        # 截屏改回结果窗口时关掉残留的原位替换
+        if self.cfg.get("screenshot_display_mode") != "replace":
+            self._hide_screenshot_overlay()
 
     def _on_target_language_changed(self, new_lang: str):
         self._on_language_pair_changed("自动", new_lang)
@@ -1400,7 +1507,8 @@ class App:
         config.save(self.cfg)
         self.translate_win.sync_language_from_cfg()
         self.subtitle.sync_languages("自动", target)
-        self.annotate_ctrl.sync_languages("自动", target)
+        self.overlay_ctrl.sync_languages("自动", target)
+        self.screenshot_ctrl.sync_languages("自动", target)
         if self.translate_win.isVisible():
             self.translate_win._go()
         if self._watcher and self._watcher.isRunning():
@@ -1455,6 +1563,7 @@ class App:
         if self._quitting:
             return
         self._quitting = True
+        self._clear_screenshot_overlay()
         self._shutdown_started_at = time.monotonic()
         self._word_selection_service.set_quitting(True)
         self.log.info("退出程序")

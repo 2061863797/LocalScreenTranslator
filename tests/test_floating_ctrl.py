@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from app.ui.annotation_overlay import AnnotateCtrl
+from app.ui.overlay_ctrl import OverlayCtrl
 from app.ui.region_frame import _RegionCtrl
 
 
@@ -26,7 +26,7 @@ class FloatingCtrlTests(unittest.TestCase):
 
     def ctrls(self):
         frame = Mock(pinned=False)
-        for ctrl in (AnnotateCtrl(), _RegionCtrl(frame)):
+        for ctrl in (OverlayCtrl(), _RegionCtrl(frame)):
             self.addCleanup(ctrl.deleteLater)
             yield ctrl
 

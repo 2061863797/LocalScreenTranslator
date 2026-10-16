@@ -30,6 +30,14 @@ class OcrLine:
     text: str
     score: float
     box: tuple[int, int, int, int]
+    # Optional detector quadrilateral; the first three fields keep the old
+    # constructor compatible with existing callers.
+    quad: tuple[
+        tuple[float, float],
+        tuple[float, float],
+        tuple[float, float],
+        tuple[float, float],
+    ] | None = None
 
 
 class OcrResourceError(RuntimeError):
@@ -450,7 +458,17 @@ class OcrEngine:
                 continue
             x1, y1 = box.min(axis=0).astype(int)
             x2, y2 = box.max(axis=0).astype(int)
-            lines.append(OcrLine(text, score, (int(x1), int(y1), int(x2), int(y2))))
+            quad = tuple(
+                (float(point[0]), float(point[1])) for point in box.tolist()
+            )
+            lines.append(
+                OcrLine(
+                    text,
+                    score,
+                    (int(x1), int(y1), int(x2), int(y2)),
+                    quad,  # type: ignore[arg-type]
+                )
+            )
         return lines
 
     def recognize(self, image: np.ndarray) -> list[OcrLine]:
@@ -466,7 +484,17 @@ class OcrEngine:
                 lines = self._recognize_impl(work)
         if inv == 1.0:
             return lines
-        return [OcrLine(line.text, line.score, tuple(int(value * inv) for value in line.box)) for line in lines]
+        return [
+            OcrLine(
+                line.text,
+                line.score,
+                tuple(int(value * inv) for value in line.box),
+                tuple((float(x * inv), float(y * inv)) for x, y in line.quad)
+                if line.quad
+                else None,
+            )
+            for line in lines
+        ]
 
     @staticmethod
     def lines_to_text(lines: list[OcrLine]) -> str:

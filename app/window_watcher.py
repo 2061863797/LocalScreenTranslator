@@ -34,6 +34,13 @@ from .ocr_service import OcrService
 from .ocr_stabilizer import OcrStabilizer
 from .pipelines import GenerationTracker
 from .result_manager import ResultManager
+from .replacement import (
+    ReplacementBlock,
+    ReplacementPayload,
+    build_payload,
+    group_blocks,
+    join_block_text,
+)
 from .scene_text_state import SceneTextState, _boxes_intersect
 from .text_change_detector import TextChangeDetector
 from .translation_runtime.router import TranslationRouter
@@ -47,7 +54,7 @@ class WindowWatcher(QThread):
 
     保留全部既有公共信号：
     - subtitle_ready(translation)                译文更新（字幕条模式）
-    - annotations_ready(items)                   逐行 [(box, 译文), ...]（备注模式）
+    - replacement_ready(payload)                 原位替换的段落、底色与译文
     - history_ready(source, translation, mode)   有实质新译文时写入历史
     - window_moved(x, y, w, h)                   目标位置变化
     - content_cleared()                          连续无文字时清空
@@ -55,7 +62,7 @@ class WindowWatcher(QThread):
     """
 
     subtitle_ready = Signal((str,), (str, int))
-    annotations_ready = Signal((list,), (list, int))
+    replacement_ready = Signal((object,), (object, int))
     history_ready = Signal((str, str, str), (str, str, str, int))
     window_moved = Signal(int, int, int, int)
     content_cleared = Signal()
@@ -72,7 +79,7 @@ class WindowWatcher(QThread):
         cfg: dict,
         hwnd: int | None = None,
         region: tuple[int, int, int, int] | None = None,
-        display_mode: str = "subtitle",
+        display_mode: str = "replace",
         profile: str = "window",
         generation_tracker: GenerationTracker | None = None,
     ):
@@ -89,6 +96,8 @@ class WindowWatcher(QThread):
         self._cfg = cfg
         self._display_mode = display_mode
         self._profile = profile
+        # 原位替换最近一次派发时各行的 (文字, 位置)；没变就不重新取色排版
+        self._replacement_layout_key: tuple | None = None
 
         # 1. 世代追踪器
         self._generation_tracker = (
@@ -109,8 +118,10 @@ class WindowWatcher(QThread):
         rm = self._result_manager
         rm.subtitle_ready[str, int].connect(lambda t, g: self.subtitle_ready[str, int].emit(t, g))
         rm.subtitle_ready.connect(self.subtitle_ready.emit)
-        rm.annotations_ready[list, int].connect(lambda i, g: self.annotations_ready[list, int].emit(i, g))
-        rm.annotations_ready.connect(self.annotations_ready.emit)
+        rm.replacement_ready[object, int].connect(
+            lambda payload, g: self.replacement_ready[object, int].emit(payload, g)
+        )
+        rm.replacement_ready.connect(self.replacement_ready.emit)
         rm.history_ready[str, str, str, int].connect(
             lambda s, t, m, g: self.history_ready[str, str, str, int].emit(s, t, m, g)
         )
@@ -200,8 +211,8 @@ class WindowWatcher(QThread):
     # ==========================================
 
     def set_display_mode(self, mode: str) -> None:
-        """运行中切换字幕模式与逐行标注模式。"""
-        if mode not in ("subtitle", "annotate"):
+        """运行中切换字幕条与原位替换。"""
+        if mode not in ("subtitle", "replace"):
             return
         self._display_mode = mode
         self._reset_revisions()
@@ -317,31 +328,56 @@ class WindowWatcher(QThread):
             return None
         return value.strip() if isinstance(value, str) and value.strip() else None
 
-    def _translate_and_show(self, lines: list[Any], text: str, gen_id: int) -> None:
-        """增量显示一批文字行。
+    def _translate_and_show(
+        self,
+        lines: list[Any],
+        text: str,
+        gen_id: int,
+        frame: np.ndarray | None = None,
+    ) -> None:
+        """增量显示一批文字。
 
-        先一次性显示缓存里已有译文的行，再只把未命中的行交给模型，翻完一行补上一行；
-        尚未翻完的行暂不显示，空译文或出错的行显示原文。
+        先一次性显示缓存里已有译文的部分，再只把未命中的交给模型，翻完一条补上一条；
+        尚未翻完的暂不显示，空译文或出错的显示原文。
+        原位替换以段落为单位翻译（需要 frame 取背景色），字幕条逐行翻译。
         """
         target = str(self._cfg.get("target_language", "zh"))
-        annotate = self._display_mode == "annotate"
+        replace = self._display_mode == "replace" and frame is not None
         session_tag = self._translation_session_tag
-        entries = [(line, line.text.strip()) for line in lines if line.text.strip()]
-        results: list[str | None] = [self._cached_translation(src, target) for _, src in entries]
+        if replace:
+            units = [(block, join_block_text(line.text for line in block))
+                     for block in group_blocks(lines, frame)]
+        else:
+            units = [([line], line.text.strip()) for line in lines if line.text.strip()]
+        results: list[str | None] = [self._cached_translation(src, target) for _, src in units]
+        # 每段的取色与修补只做一次，后续增量显示直接复用
+        prepared: dict[int, ReplacementBlock] = {}
 
         def show() -> bool:
-            ready = [(line, tr) for (line, _), tr in zip(entries, results) if tr is not None]
-            if annotate:
-                return self._result_manager.dispatch_annotations(
-                    [(line.box, tr) for line, tr in ready], gen_id
+            if replace:
+                for index, ((block, _), tr) in enumerate(zip(units, results)):
+                    if tr is not None and index not in prepared:
+                        built = build_payload(frame, [(block, tr)]).blocks
+                        if built:
+                            prepared[index] = built[0]
+                payload = ReplacementPayload(
+                    (0, 0),
+                    (int(frame.shape[1]), int(frame.shape[0])),
+                    tuple(prepared[index] for index in sorted(prepared)),
                 )
+                return self._result_manager.dispatch_replacement(payload, gen_id)
             return self._result_manager.dispatch_subtitle(
-                "\n".join(tr for _, tr in ready), gen_id
+                "\n".join(tr for tr in results if tr is not None), gen_id
             )
 
-        completed = not any(tr is not None for tr in results) or show()
+        if replace:
+            self._replacement_layout_key = self._layout_key(lines)
+            # 文字已变：即使还没有任何译文也立即派发，让界面先撤下上一屏的旧译文
+            completed = show()
+        else:
+            completed = not any(tr is not None for tr in results) or show()
         failed = False
-        for index, (_, source) in enumerate(entries):
+        for index, (_, source) in enumerate(units):
             if not completed:
                 break
             if results[index] is not None:
@@ -374,8 +410,8 @@ class WindowWatcher(QThread):
         if completed and not failed:
             self._last_translate_error = ""
             # 全是原文时不记历史
-            if any(tr != src for (_, src), tr in zip(entries, results)):
-                mode_tag = f"{self._profile}_{'annotate' if annotate else 'subtitle'}"
+            if any(tr != src for (_, src), tr in zip(units, results)):
+                mode_tag = f"{self._profile}_{self._display_mode}"
                 self._result_manager.dispatch_history(
                     text, "\n".join(tr for tr in results if tr is not None), mode_tag,
                     gen_id,
@@ -386,9 +422,36 @@ class WindowWatcher(QThread):
                 self._text_change_detector.rollback(text)
             self._ocr_stabilizer.reset()
 
+    @staticmethod
+    def _layout_key(lines: list[Any]) -> tuple:
+        return tuple((line.text, tuple(line.box)) for line in lines)
+
+    def _refresh_cached_replacement(
+        self, lines: list[Any], frame: np.ndarray, gen_id: int
+    ) -> None:
+        """文字没变但位置变了（滚动、重排）：用缓存译文按新位置重新取色排版，不调用模型。
+
+        只有背景在动（如视频）而文字位置没变时不重复计算。
+        """
+        key = self._layout_key(lines)
+        if key == self._replacement_layout_key:
+            return
+        target = str(self._cfg.get("target_language", "zh"))
+        ready = []
+        for block in group_blocks(lines, frame):
+            translated = self._cached_translation(
+                join_block_text(line.text for line in block), target
+            )
+            if translated is None:
+                return  # 有段落未翻译过，交给下一次文字变化处理
+            ready.append((block, translated))
+        if self._result_manager.dispatch_replacement(build_payload(frame, ready), gen_id):
+            self._replacement_layout_key = key
+
     def _reset_revisions(self) -> None:
         """作废所有在途世代与已截取的帧（停止、暂停、移动选区、切换语言或显示模式时调用）。"""
         self._generation_tracker.reset()
+        self._replacement_layout_key = None
         with self._revision_lock:
             self._content_revision += 1
             self._reset_revision = self._content_revision
@@ -779,7 +842,7 @@ class WindowWatcher(QThread):
 
                 # 8. 文本变化检测与空帧清空判定
                 with self._state_lock:
-                    # 字幕及已由 OCR 连续帧确认的微变，直接派发；备注模式的其它小变化仍保留二次确认。
+                    # 字幕及已由 OCR 连续帧确认的微变，直接派发；原位替换的其它小变化仍保留二次确认。
                     is_sub = (self._display_mode == "subtitle")
                     confirmed = self._ocr_stabilizer.last_change_was_debounced is True
                     sim_threshold = 1.0 if is_sub else threshold
@@ -802,7 +865,16 @@ class WindowWatcher(QThread):
                     self._scene_text_state.clear()
                     self._result_manager.dispatch_cleared(frame_gen_id)
                 elif event == "change":
-                    self._translate_and_show(lines, text, frame_gen_id)
+                    self._translate_and_show(lines, text, frame_gen_id, img)
+                elif (
+                    self._display_mode == "replace"
+                    and lines
+                    and diff_has_changed
+                    and not self._ocr_stabilizer.has_pending_candidate
+                    and not self._text_change_detector.has_pending_candidate
+                    and "\n".join(line.text for line in lines).strip() == text
+                ):
+                    self._refresh_cached_replacement(lines, img, frame_gen_id)
 
                 # 10. 检查退出条件（用于同步单测：捕获循环已结束且缓冲已排空）
                 if not self._running and self._frame_buffer.is_empty:

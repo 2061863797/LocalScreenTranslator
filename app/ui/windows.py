@@ -5,13 +5,12 @@ from pathlib import Path
 import os
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QIcon, QPixmap
+from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QButtonGroup,
     QCheckBox,
-    QColorDialog,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -49,7 +48,7 @@ from .theme import (
     SETTINGS_STYLE,
     apply_frameless_float,
 )
-from ..i18n import get_language, set_qt_language, t as _ti
+from ..i18n import t as _ti
 from ..i18n import t_lang
 from .topmost import ensure_stays_on_top, raise_to_front, show_toast, topmost_message
 
@@ -449,27 +448,18 @@ class SettingsWindow(_DraggableMixin, QWidget):
             self._win_interval_custom,
             self._win_interval_widget,
         ) = _monitor_interval_controls()
-        self._win_font_size = _font_size_combo()
         (
             self._reg_interval,
             self._reg_interval_custom,
             self._reg_interval_widget,
         ) = _monitor_interval_controls()
         self._reg_font_size = _font_size_combo()
-        self._reg_annotate = QComboBox()
-        self._reg_annotate.addItem("", False)
-        self._reg_annotate.addItem("", True)
-
-        self._ann_color = QLineEdit()
-        self._ann_color.setPlaceholderText("#00F0FF")
-        self._ann_color.setMaxLength(9)
-        self._ann_color.setFixedWidth(100)
-        self._ann_color_btn = QPushButton()
-        self._ann_color_btn.setFixedWidth(52)
-        self._ann_color_btn.clicked.connect(self._pick_annotate_color)
-        self._ann_color_swatch = QLabel()
-        self._ann_color_swatch.setFixedSize(22, 22)
-        self._ann_color.textChanged.connect(self._refresh_color_swatch)
+        self._reg_display_mode = QComboBox()
+        self._reg_display_mode.addItem("", "replace")
+        self._reg_display_mode.addItem("", "subtitle")
+        self._shot_display_mode = QComboBox()
+        self._shot_display_mode.addItem("", "window")
+        self._shot_display_mode.addItem("", "replace")
 
         self._max_tokens = _max_tokens_combo()
         self._max_tokens_custom = QSpinBox()
@@ -638,6 +628,11 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._lab_translation_font_size.setText(tr("translate_font_size"))
         self._translation_font_size.setItemText(0, tr("font_size_default"))
         self._translation_font_size.setToolTip(tr("translate_font_size_tip"))
+        self._lab_shot_mode.setText(tr("screenshot_display_mode"))
+        self._shot_display_mode.setItemText(0, tr("mode_result_window"))
+        self._shot_display_mode.setItemText(1, tr("mode_replace"))
+        self._shot_display_mode.setToolTip(tr("tip_screenshot_mode"))
+
         self._history_enabled.setText(tr("history_enabled"))
         self._translation_cache_enabled.setText(tr("translation_cache_enabled"))
         self._history_privacy_tip.setText(tr("history_privacy_tip"))
@@ -648,11 +643,6 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._runtime_title.setText(tr("runtime_status"))
         self._runtime_retry.setText(tr("runtime_retry"))
         self._refresh_runtime_status()
-        self._lab_ann_color.setText(tr("ann_color"))
-        self._ann_color.setToolTip(tr("ann_color_tip"))
-        self._ann_color_btn.setText(tr("ann_color_pick"))
-        self._ann_color_swatch.setToolTip(tr("ann_color_preview"))
-        self._ann_color_note.setText(tr("ann_color_note"))
 
         self._card_hk_title.setText(tr("card_hotkeys"))
         self._card_hk_hint.setText(tr("card_hotkeys_hint"))
@@ -664,9 +654,6 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._card_win_title.setText(tr("card_window"))
         self._card_win_hint.setText(tr("card_window_hint"))
         self._lab_win_interval.setText(tr("interval"))
-        self._lab_win_font_size.setText(tr("watch_font_size"))
-        self._win_font_size.setItemText(0, tr("font_size_default"))
-        self._win_font_size.setToolTip(tr("watch_font_size_tip"))
         self._apply_interval_i18n(self._win_interval, self._win_interval_custom)
         self._card_reg_title.setText(tr("card_region"))
         self._card_reg_hint.setText(tr("card_region_hint"))
@@ -676,11 +663,9 @@ class SettingsWindow(_DraggableMixin, QWidget):
         self._reg_font_size.setToolTip(tr("watch_font_size_tip"))
         self._lab_reg_mode.setText(tr("display_mode"))
         self._apply_interval_i18n(self._reg_interval, self._reg_interval_custom)
-        ri = self._reg_annotate.currentIndex()
-        self._reg_annotate.setItemText(0, tr("mode_sub_reg"))
-        self._reg_annotate.setItemText(1, tr("mode_ann_reg"))
-        self._reg_annotate.setCurrentIndex(ri)
-        self._reg_annotate.setToolTip(tr("tip_reg_mode"))
+        self._reg_display_mode.setItemText(0, tr("mode_replace"))
+        self._reg_display_mode.setItemText(1, tr("mode_sub_reg"))
+        self._reg_display_mode.setToolTip(tr("tip_reg_mode"))
         self._card_adv_title.setText(tr("card_advanced"))
         self._card_adv_hint.setText(tr("card_advanced_hint"))
         self._lab_model_file.setText(tr("model_file"))
@@ -751,76 +736,6 @@ class SettingsWindow(_DraggableMixin, QWidget):
             )
         custom.setSuffix(suffix)
 
-    def _annotate_color_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self._lab_ann_color = QLabel()
-        self._lab_ann_color.setFixedWidth(100)
-        row.addWidget(self._lab_ann_color)
-        row.addWidget(self._ann_color_swatch)
-        row.addWidget(self._ann_color)
-        row.addWidget(self._ann_color_btn)
-
-        # 5 个常用高对比/荧光色快选
-        presets = [
-            ("#00F0FF", "青蓝"),
-            ("#FFD700", "金黄"),
-            ("#FF4081", "亮粉"),
-            ("#00E676", "亮绿"),
-            ("#FFFFFF", "纯白"),
-        ]
-        row.addSpacing(4)
-        for hex_code, color_name in presets:
-            dot = QPushButton()
-            dot.setFixedSize(20, 20)
-            dot.setCursor(Qt.CursorShape.PointingHandCursor)
-            dot.setToolTip(f"{color_name} {hex_code}")
-            dot.setStyleSheet(
-                f"QPushButton{{background:{hex_code};border:1px solid rgba(255,255,255,100);"
-                f"border-radius:10px;padding:0;}}"
-                f"QPushButton:hover{{border:2px solid #ffffff;}}"
-            )
-            dot.clicked.connect(lambda _, c=hex_code: self._ann_color.setText(c))
-            row.addWidget(dot)
-
-        row.addStretch(1)
-        return row
-
-    def _normalize_hex_color(self, text: str) -> str:
-        s = (text or "").strip()
-        if not s:
-            return "#00F0FF"
-        if not s.startswith("#"):
-            s = "#" + s
-        c = QColor(s)
-        if not c.isValid():
-            return "#00F0FF"
-        return c.name(QColor.NameFormat.HexRgb).upper()
-
-    def _refresh_color_swatch(self, _text: str = ""):
-        hex_c = self._normalize_hex_color(self._ann_color.text())
-        self._ann_color_swatch.setStyleSheet(
-            f"background:{hex_c};border:1px solid #888;border-radius:3px;"
-        )
-
-    def _pick_annotate_color(self):
-        cur = QColor(self._normalize_hex_color(self._ann_color.text()))
-        set_qt_language(self._lang)
-        dialog = QColorDialog(cur, self)
-        dialog.setWindowTitle(self._tr("ann_color_dlg"))
-        dialog.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
-        blank_icon = QPixmap(1, 1)
-        blank_icon.fill(Qt.GlobalColor.transparent)
-        dialog.setWindowIcon(QIcon(blank_icon))
-        try:
-            accepted = dialog.exec() == QColorDialog.DialogCode.Accepted
-        finally:
-            set_qt_language(get_language())
-        if accepted:
-            c = dialog.currentColor()
-            self._ann_color.setText(c.name(QColor.NameFormat.HexRgb).upper())
-        dialog.deleteLater()
-
     def _page_general(self) -> QWidget:
         # 卡片 0：系统运行状态（置前）
         card_runtime, lay_runtime, self._card_runtime_title, self._card_runtime_hint = _settings_card(
@@ -846,11 +761,8 @@ class SettingsWindow(_DraggableMixin, QWidget):
             "", self._translation_font_size
         )
         lay1.addLayout(r3)
-        lay1.addLayout(self._annotate_color_row())
-        self._ann_color_note = QLabel()
-        self._ann_color_note.setWordWrap(True)
-        self._ann_color_note.setStyleSheet("color:rgba(255,255,255,120);font-size:11px;")
-        lay1.addWidget(self._ann_color_note)
+        r4, self._lab_shot_mode = _form_row("", self._shot_display_mode)
+        lay1.addLayout(r4)
 
         # 卡片：启动
         card_start, lay_start, self._card_start_title, self._card_start_hint = _settings_card("", "")
@@ -915,13 +827,11 @@ class SettingsWindow(_DraggableMixin, QWidget):
         """持续翻译：窗口与区域两张卡片合为一页。"""
         card_win, lay_win, self._card_win_title, self._card_win_hint = _settings_card("", "")
         r1, self._lab_win_interval = _form_row("", self._win_interval_widget)
-        r2, self._lab_win_font_size = _form_row("", self._win_font_size)
         lay_win.addLayout(r1)
-        lay_win.addLayout(r2)
         card_reg, lay_reg, self._card_reg_title, self._card_reg_hint = _settings_card("", "")
         r3, self._lab_reg_interval = _form_row("", self._reg_interval_widget)
         r4, self._lab_reg_font_size = _form_row("", self._reg_font_size)
-        r5, self._lab_reg_mode = _form_row("", self._reg_annotate)
+        r5, self._lab_reg_mode = _form_row("", self._reg_display_mode)
         for row in (r3, r4, r5):
             lay_reg.addLayout(row)
         return self._wrap_scroll(self._watch_interval_hint, card_win, card_reg)
@@ -1049,20 +959,18 @@ class SettingsWindow(_DraggableMixin, QWidget):
             self._win_interval_custom,
             cfg.get("window_watch_interval_ms", 800),
         )
-        _set_combo_data(self._win_font_size, cfg.get("window_watch_font_size", 0))
+
         _set_monitor_interval(
             self._reg_interval,
             self._reg_interval_custom,
             cfg.get("region_watch_interval_ms", 800),
         )
         _set_combo_data(self._reg_font_size, cfg.get("region_watch_font_size", 0))
-        self._reg_annotate.setCurrentIndex(
-            1 if cfg.get("region_watch_annotate") else 0
+        _set_combo_data(self._reg_display_mode, config.watch_display_mode(cfg, "region"))
+        _set_combo_data(
+            self._shot_display_mode,
+            cfg.get("screenshot_display_mode", "window"),
         )
-        self._ann_color.setText(
-            self._normalize_hex_color(str(cfg.get("annotate_text_color", "#00F0FF")))
-        )
-        self._refresh_color_swatch()
         self._reload_model_choices()
         _set_combo_data(self._llama_device, cfg.get("llama_device", "auto"))
         max_tokens = int(cfg.get("max_tokens", 512))
@@ -1298,13 +1206,17 @@ class SettingsWindow(_DraggableMixin, QWidget):
             "window_watch_interval_ms": _monitor_interval_value(
                 self._win_interval, self._win_interval_custom
             ),
-            "window_watch_font_size": int(self._win_font_size.currentData() or 0),
+
             "region_watch_interval_ms": _monitor_interval_value(
                 self._reg_interval, self._reg_interval_custom
             ),
             "region_watch_font_size": int(self._reg_font_size.currentData() or 0),
-            "region_watch_annotate": self._reg_annotate.currentData(),
-            "annotate_text_color": self._normalize_hex_color(self._ann_color.text()),
+            "region_watch_display_mode": str(
+                self._reg_display_mode.currentData() or "replace"
+            ),
+            "screenshot_display_mode": str(
+                self._shot_display_mode.currentData() or "window"
+            ),
             "max_tokens": max_tokens,
             "llama_device": selected_device,
         }
@@ -1605,7 +1517,11 @@ class InputTranslateWindow(_DraggableMixin, QWidget):
 
     翻译模型自动判断原文语言；目标语言切换后自动重翻。
     无边框半透明（与实时字幕同款），可拖动；点"固定"锁定位置防误拖。
+    截屏结果额外显示“原位替换”按钮，可切回把译文盖在截图上。
     """
+
+    # 截屏结果改用原位替换显示
+    inplace_requested = Signal()
 
     def __init__(self, translator, cfg: dict, ensure_ready=None,
                  on_target_language_changed=None):
@@ -1646,6 +1562,10 @@ class InputTranslateWindow(_DraggableMixin, QWidget):
         self._btn_go = QPushButton()
         self._btn_go.setObjectName("primaryBtn")
         self._btn_go.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_inplace = QPushButton()
+        self._btn_inplace.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_inplace.clicked.connect(self.inplace_requested.emit)
+        self._btn_inplace.setVisible(False)
         self._lab_source = QLabel()
         self._lab_source.setStyleSheet("font-weight:600;font-size:12px;color:rgba(255,255,255,220);")
         self._lab_source_count = QLabel()
@@ -1663,9 +1583,8 @@ class InputTranslateWindow(_DraggableMixin, QWidget):
         self._btn_copy_source.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_copy_translation = QPushButton()
         self._btn_copy_translation.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_close = QPushButton("×")
-        btn_close.setObjectName("closeBtn")
-        btn_close.setFixedSize(28, 26)
+        self._btn_close = btn_close = QPushButton()
+        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_close.clicked.connect(self.hide)
 
         self._btn_go.clicked.connect(self._go)
@@ -1678,6 +1597,7 @@ class InputTranslateWindow(_DraggableMixin, QWidget):
         bar.setSpacing(8)
         bar.addWidget(self._lang)
         bar.addStretch()
+        bar.addWidget(self._btn_inplace)
         bar.addWidget(self._btn_go)
         bar.addWidget(self._btn_pin)
         bar.addWidget(btn_close)
@@ -1754,6 +1674,9 @@ class InputTranslateWindow(_DraggableMixin, QWidget):
         self._lab_translation.setText(_ti("tw_translation"))
         self._btn_go.setText(_ti("tw_translate"))
         self._btn_go.setToolTip(_ti("tw_shortcut_hint"))
+        self._btn_close.setText(_ti("tw_close"))
+        self._btn_inplace.setText(_ti("tw_inplace"))
+        self._btn_inplace.setToolTip(_ti("tw_inplace_tip"))
         self._btn_clear_source.setText(_ti("tw_clear"))
         self._btn_copy_source.setText(_ti("tw_copy"))
         self._btn_copy_translation.setText(_ti("tw_copy"))
@@ -1821,8 +1744,12 @@ class InputTranslateWindow(_DraggableMixin, QWidget):
         return self._lang.currentText()
 
     def show_result(self, source: str, translation: str, near_x: int = None,
-                    near_y: int = None):
-        """划词/截屏结果送入本窗口。未固定时移动到触发位置附近（支持多屏）。"""
+                    near_y: int = None, *, inplace: bool = False):
+        """划词/截屏结果送入本窗口。未固定时移动到触发位置附近（支持多屏）。
+
+        inplace=True 表示来自截屏且可改为原位替换，显示切换按钮。
+        """
+        self._btn_inplace.setVisible(bool(inplace))
         self._input.setPlainText(source)
         self._output.setPlainText(translation)
         self._remembered_geometry = True

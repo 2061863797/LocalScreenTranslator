@@ -7,7 +7,7 @@ from app import main as app_main
 
 
 class WindowWatchModeTests(unittest.TestCase):
-    def test_new_window_watch_session_always_starts_in_annotation_mode(self):
+    def test_new_window_watch_session_uses_in_place_overlay(self):
         app = app_main.App.__new__(app_main.App)
         app._quitting = False
         app._stopping_watch = False
@@ -16,7 +16,7 @@ class WindowWatchModeTests(unittest.TestCase):
         app._ensure_translation_ready = Mock(return_value=True)
         app.qapp = Mock()
         app.qapp.screens.return_value = []
-        app.cfg = {"window_watch_annotate": False}
+        app.cfg = {"region_watch_display_mode": "subtitle"}
         app._launch_watcher = Mock()
 
         picker = Mock()
@@ -33,10 +33,7 @@ class WindowWatchModeTests(unittest.TestCase):
             app._toggle_window_watch()
 
         app._launch_watcher.assert_called_once_with(
-            hwnd=42,
-            rect=(10, 20, 300, 200),
-            annotate=True,
-            profile="window",
+            hwnd=42, rect=(10, 20, 300, 200), profile="window",
         )
 
     def test_window_watch_ignores_runtime_switch_to_subtitle(self):
@@ -46,8 +43,11 @@ class WindowWatchModeTests(unittest.TestCase):
         app._watcher.isRunning.return_value = True
         app._watch_profile = "window"
         app._watch_region = None
-        app._watch_annotate = True
+        app._watch_display_mode = "replace"
         app.log = Mock()
+        app._switch_watch_display("subtitle")
+        app._watcher.set_display_mode.assert_not_called()
+        self.assertEqual(app._watch_display_mode, "replace")
 
     def test_window_picker_instantiation_and_filtering(self):
         from PySide6.QtWidgets import QApplication
@@ -76,42 +76,42 @@ class RegionFrameMoveTests(unittest.TestCase):
     def _app(self, paused: bool):
         app = app_main.App.__new__(app_main.App)
         app._watch_region = (0, 0, 100, 50)
-        app._watch_annotate = True
+        app._watch_display_mode = "replace"
         app._watch_paused = paused
         app._watcher = Mock()
         app._watcher.isRunning.return_value = True
-        app.annotation = Mock()
+        app.replacement = Mock()
         app.subtitle = Mock(mode="free")
-        app.annotate_ctrl = Mock()
-        app.annotate_ctrl.isVisible.return_value = False
+        app.overlay_ctrl = Mock()
+        app.overlay_ctrl.isVisible.return_value = False
         app.log = Mock()
         return app
 
-    def test_paused_annotation_survives_region_drag(self):
+    def test_paused_overlay_survives_region_drag(self):
         app = self._app(paused=True)
         app._on_region_frame_moved(30, 40, 100, 50)
-        app.annotation.set_items.assert_not_called()
-        app.annotation.update_geometry.assert_called_once_with((30, 40, 100, 50))
+        app.replacement.set_payload.assert_not_called()
+        app.replacement.update_geometry.assert_called_once_with((30, 40, 100, 50))
         app._watcher.set_region.assert_called_once_with((30, 40, 100, 50))
 
-    def test_running_annotation_is_cleared_on_region_drag(self):
+    def test_running_overlay_is_cleared_on_region_drag(self):
         app = self._app(paused=False)
         app._on_region_frame_moved(30, 40, 100, 50)
-        app.annotation.set_items.assert_called_once_with([])
+        app.replacement.set_payload.assert_called_once_with(None)
 
 
 class HideWatchUiTests(unittest.TestCase):
     def test_one_failing_step_does_not_stop_hiding_others(self):
         app = app_main.App.__new__(app_main.App)
         for name in ("_region_topmost_timer", "_window_follow_timer", "subtitle",
-                     "annotation", "annotate_ctrl", "region_frame"):
+                     "replacement", "overlay_ctrl", "region_frame"):
             setattr(app, name, Mock())
         app._set_watch_layer_owner = Mock()
         app.subtitle.set_paused.side_effect = RuntimeError("已销毁")
         app._hide_watch_ui()
         app.subtitle.hide.assert_called_once_with()
-        app.annotation.hide.assert_called_once_with()
-        app.annotate_ctrl.hide.assert_called_once_with()
+        app.replacement.clear.assert_called_once_with()
+        app.overlay_ctrl.hide.assert_called_once_with()
         app.region_frame.hide_frame.assert_called_once_with()
         app._set_watch_layer_owner.assert_called_once_with(None)
 

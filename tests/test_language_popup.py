@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
-from app.ui.annotation_overlay import AnnotateCtrl
+from app.ui.overlay_ctrl import OverlayCtrl
 from app.ui.language_popup import LanguagePairButton, LanguageSelectPopup
 from app.ui.region_frame import RegionWatchFrame
 from app.ui.subtitle_bar import SubtitleBar
@@ -54,7 +54,7 @@ class TestLanguageSelectPopup(unittest.TestCase):
 
     def test_language_pair_button_popup_direction(self):
         # 1. 备注控制栏中（置于识别框上方），空间充足时优先向上弹出
-        ann_ctrl = AnnotateCtrl()
+        ann_ctrl = OverlayCtrl()
         btn = ann_ctrl._language_button
         btn.resize(60, 26)
         btn.move(100, 300)
@@ -91,7 +91,7 @@ class TestLanguageSelectPopup(unittest.TestCase):
                 frame.close()
 
             with patch("app.ui.topmost._set_window_pos") as mock_swp:
-                ctrl = AnnotateCtrl()
+                ctrl = OverlayCtrl()
                 ctrl.show()
                 ctrl.restack_layer()
                 mock_swp.assert_not_called()

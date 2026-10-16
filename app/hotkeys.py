@@ -102,6 +102,7 @@ class HotkeyManager(QObject):
     word_triggered = Signal()
     window_triggered = Signal()
     region_watch_triggered = Signal()
+    escape_pressed = Signal()
 
     def __init__(self, cfg: dict):
         super().__init__()
@@ -115,6 +116,8 @@ class HotkeyManager(QObject):
         self._mods_down: set[str] = set()
         self._mods_lock = threading.Lock()
         self._mod_listener: keyboard.Listener | None = None
+        self._escape_listener: keyboard.Listener | None = None
+        self._escape_enabled = False
         # 设置页录入热键时暂停，避免抢键
         self._paused = False
 
@@ -196,7 +199,41 @@ class HotkeyManager(QObject):
 
     def stop(self):
         self._paused = False
+        self.set_escape_enabled(False)
         self._stop_listeners()
+
+    def set_escape_enabled(self, enabled: bool) -> None:
+        """截屏原位替换显示期间临时监听全局 Esc，用于关闭覆盖层。"""
+        enabled = bool(enabled)
+        if enabled == self._escape_enabled:
+            return
+        self._escape_enabled = enabled
+        if not enabled:
+            listener = self._escape_listener
+            self._escape_listener = None
+            if listener is not None:
+                try:
+                    listener.stop()
+                except Exception:
+                    pass
+            return
+        try:
+            listener = keyboard.Listener(on_press=self._on_escape)
+            listener.daemon = True
+            listener.start()
+            self._escape_listener = listener
+        except Exception:
+            self._escape_listener = None
+            _log.exception("Esc 监听启动失败")
+
+    def _on_escape(self, key):
+        if not self._escape_enabled:
+            return
+        try:
+            if key == keyboard.Key.esc:
+                self.escape_pressed.emit()
+        except Exception:
+            pass
 
     def _stop_listeners(self):
         if self._kb_listener:

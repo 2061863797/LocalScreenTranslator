@@ -23,15 +23,16 @@ class OneShotPipelineTests(unittest.TestCase):
     def _ocr(self, *texts):
         ocr = mock.Mock()
         ocr.recognize.return_value = [
-            OcrLine(text, 0.99, (0, i * 12, 20, i * 12 + 10)) for i, text in enumerate(texts)
+            # 行间距足够大，不会被合成同一段落
+            OcrLine(text, 0.99, (0, i * 30, 20, i * 30 + 10)) for i, text in enumerate(texts)
         ]
         return ocr
 
-    def test_image_path_translates_line_by_line_and_falls_back_to_source(self):
+    def test_image_path_translates_each_paragraph_and_falls_back_to_source(self):
         translator = mock.Mock()
         translator.translate.side_effect = lambda text, *a, **k: "你好" if text == "Hello" else ""
         result = OneShotPipeline(self._ocr("Hello", "World"), translator).run(
-            image=np.zeros((24, 20, 3), dtype=np.uint8), translate=True, target_language="简体中文"
+            image=np.zeros((64, 20, 3), dtype=np.uint8), translate=True, target_language="简体中文"
         )
         self.assertEqual(result.source, "Hello\nWorld")
         self.assertEqual(result.translation, "你好\nWorld")
@@ -47,7 +48,7 @@ class OneShotPipelineTests(unittest.TestCase):
 
         translator.translate.side_effect = translate
         result = OneShotPipeline(self._ocr("Hello", "World"), translator).run(
-            image=np.zeros((24, 20, 3), dtype=np.uint8), translate=True,
+            image=np.zeros((64, 20, 3), dtype=np.uint8), translate=True,
             target_language="简体中文", cancelled=lambda: state["cancel"],
         )
         self.assertIsNone(result)

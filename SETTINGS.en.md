@@ -20,12 +20,16 @@ Open Settings from the tray. Saving applies model and device settings within the
 | Local history | `history_enabled` | Disable future writes; clear old history in History |
 | UI language | `ui_language` | `zh` or `en` |
 | Translation window font | `translate_window_font_size` | 0=default or 12–20 px |
-| Annotation color | `annotate_text_color` | `#RRGGBB` |
 | Window/region interval | `window_watch_interval_ms` / `region_watch_interval_ms` | Default 800 ms each; check interval while the screen stays still (checks speed up immediately when it changes) |
-| Window/region font | `window_watch_font_size` / `region_watch_font_size` | 0=default or 12–20 px |
-| Region annotations | `region_watch_annotate` | Boolean |
+| Region subtitle font | `region_watch_font_size` | 0=default or 12–20 px (the in-place replacement follows the source size) |
+| Region live display | `region_watch_display_mode` | `replace` (in-place, default) or `subtitle`; switching while running is remembered |
+| Screenshot display | `screenshot_display_mode` | `window` (result window, default) or `replace`; switching with the buttons is remembered |
 | Hotkeys | `hotkey_screenshot`, `hotkey_word`, `hotkey_window`, `hotkey_region_watch` | Alt+Q/W/E/R by default |
 
-Place the OCR files `manifest.json`, `det.onnx`, `rec.onnx`, and `characters.txt` in `runtime/ocr/`. Download `ocr.zip` from the [GitHub release](https://github.com/2061863797/LocalScreenTranslator/releases/tag/2.0.0) and extract it into `runtime/`. Annotation overlays are always excluded from capture. Legacy WinRT OCR language fields and old translation settings are ignored on load and removed on the next save; history data is retained.
+Place the OCR files `manifest.json`, `det.onnx`, `rec.onnx`, and `characters.txt` in `runtime/ocr/`. Download `ocr.zip` from the [GitHub release](https://github.com/2061863797/LocalScreenTranslator/releases/tag/2.0.0) and extract it into `runtime/`. Translation overlays are always excluded from capture. Legacy WinRT OCR language fields and old translation settings are ignored on load and removed on the next save; history data is retained.
 
 [中文](./SETTINGS.md) · [Home](./README.en.md)
+
+## In-place replacement
+
+`replace` covers each source row with its sampled background color and draws the translation in the source text color and size, translating multi-line paragraphs as one unit. Colors are detected automatically. Window live translation always uses the overlay. Annotation mode was removed: old annotation settings load as the in-place replacement, and legacy fields such as `annotate_text_color` and `region_watch_annotate` are dropped on the next save.

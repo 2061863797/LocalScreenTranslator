@@ -99,9 +99,9 @@ QToolTip {
 }
 """
 
-# 浮层控制条（字幕 / 备注 / 识别框）
+# 浮层控制条（字幕 / 原位替换 / 识别框）
 CTRL_STYLE = f"""
-#ctrl,#annCtrl,#regCtrl {{
+#ctrl,#overlayCtrl,#regCtrl {{
   background: rgba(15, 18, 26, 235);
   border: 1px solid rgba(255, 255, 255, 25);
   border-radius: 6px;

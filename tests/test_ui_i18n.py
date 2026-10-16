@@ -39,40 +39,6 @@ class UiI18nTests(unittest.TestCase):
             dialog.deleteLater()
             self.qapp.processEvents()
 
-    def test_annotation_color_picker_forces_translatable_qt_dialog(self):
-        cfg = dict(DEFAULTS)
-        cfg["ui_language"] = "en"
-        set_language("en")
-        with (
-            patch("app.ui.windows.available_translation_models", return_value=[]),
-            patch.object(
-                QColorDialog,
-                "exec",
-                return_value=QColorDialog.DialogCode.Rejected,
-            ),
-        ):
-            window = SettingsWindow(cfg)
-            try:
-                window._ui_lang.setCurrentIndex(window._ui_lang.findData("zh"))
-                self.qapp.processEvents()
-                self.assertEqual(window._lab_ann_color.text(), "备注译文颜色")
-
-                window._pick_annotate_color()
-                dialog = window.findChild(QColorDialog)
-                self.assertIsNotNone(dialog)
-                self.assertTrue(
-                    dialog.testOption(
-                        QColorDialog.ColorDialogOption.DontUseNativeDialog
-                    )
-                )
-                icon_image = dialog.windowIcon().pixmap(16, 16).toImage()
-                self.assertEqual(icon_image.pixelColor(0, 0).alpha(), 0)
-                self.assertEqual(cfg["ui_language"], "en")
-            finally:
-                window.close()
-                window.deleteLater()
-                self.qapp.processEvents()
-
     def test_settings_show_local_product_name_in_both_languages(self):
         cfg = dict(DEFAULTS)
         with patch("app.ui.windows.available_translation_models", return_value=[]):

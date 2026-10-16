@@ -20,12 +20,16 @@
 | 本地历史 | `history_enabled` | 关闭后不再写入；旧历史可在历史窗口清除 |
 | 界面语言 | `ui_language` | `zh` 或 `en` |
 | 翻译窗口字号 | `translate_window_font_size` | 0=默认，或 12–20 px |
-| 备注译文颜色 | `annotate_text_color` | `#RRGGBB` |
 | 窗口/区域监视间隔 | `window_watch_interval_ms` / `region_watch_interval_ms` | 默认各 800 ms；画面长时间静止时的检查间隔，画面变化时仍会立即加快检查 |
-| 窗口/区域字号 | `window_watch_font_size` / `region_watch_font_size` | 0=默认，或 12–20 px |
-| 区域备注 | `region_watch_annotate` | 布尔值 |
+| 区域字幕条字号 | `region_watch_font_size` | 0=默认，或 12–20 px（原位替换自动沿用原文字号） |
+| 区域持续翻译显示 | `region_watch_display_mode` | `replace`（原位替换，默认）或 `subtitle`（字幕条）；运行中切换会自动记住 |
+| 截屏翻译显示 | `screenshot_display_mode` | `window`（结果窗口，默认）或 `replace`；用按钮切换会自动记住 |
 | 热键 | `hotkey_screenshot`、`hotkey_word`、`hotkey_window`、`hotkey_region_watch` | 默认 Alt+Q/W/E/R |
 
-OCR 模型文件应放在 `runtime/ocr/`，包含 `manifest.json`、`det.onnx`、`rec.onnx` 和 `characters.txt`。可从 [GitHub Release](https://github.com/2061863797/LocalScreenTranslator/releases/tag/2.0.0) 下载 `ocr.zip` 并解压到 `runtime/` 目录。备注浮层始终从捕获中排除。旧版 WinRT OCR 语言字段及旧翻译设置读取时忽略，下次保存会清除；历史数据库保留。
+OCR 模型文件应放在 `runtime/ocr/`，包含 `manifest.json`、`det.onnx`、`rec.onnx` 和 `characters.txt`。可从 [GitHub Release](https://github.com/2061863797/LocalScreenTranslator/releases/tag/2.0.0) 下载 `ocr.zip` 并解压到 `runtime/` 目录。原位替换浮层始终从捕获中排除，持续翻译不会识别到自己的译文。旧版 WinRT OCR 语言字段及旧翻译设置读取时忽略，下次保存会清除；历史数据库保留。
 
 [English](./SETTINGS.en.md) · [返回首页](./README.md)
+
+## 原位替换
+
+选 `replace` 后，每行原文位置铺上取样的背景色，再用原文的颜色和字号写译文；多行段落整段翻译后重新换行。文字颜色自动识别，无需设置。窗口持续翻译固定使用原位替换。备注模式已删除：旧配置里的备注设置读取时自动改为原位替换，`annotate_text_color`、`region_watch_annotate` 等旧字段下次保存时清除。效果说明见 [首页](./README.md#原位替换)。

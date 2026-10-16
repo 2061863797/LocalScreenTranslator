@@ -125,15 +125,38 @@ class OcrService:
                 max(0, min(h, int(by2 + py1))),
             )
             if dataclasses.is_dataclass(line) and not isinstance(line, type):
-                remapped_lines.append(dataclasses.replace(line, box=remapped_box))
+                changes = {"box": remapped_box}
+                quad = getattr(line, "quad", None)
+                if quad:
+                    try:
+                        changes["quad"] = tuple(
+                            (float(point[0] + px1), float(point[1] + py1))
+                            for point in quad
+                        )
+                    except (TypeError, ValueError, IndexError):
+                        changes["quad"] = None
+                remapped_lines.append(dataclasses.replace(line, **changes))
             elif hasattr(line, "__dict__"):
                 # Handle generic object with box attribute
                 try:
                     cls = type(line)
+                    quad = getattr(line, "quad", None)
+                    remapped_quad = None
+                    if quad:
+                        try:
+                            remapped_quad = tuple(
+                                (float(point[0] + px1), float(point[1] + py1))
+                                for point in quad
+                            )
+                        except (TypeError, ValueError, IndexError):
+                            remapped_quad = None
                     if hasattr(line, "confidence"):
                         remapped_lines.append(cls(line.text, remapped_box, line.confidence))
                     elif hasattr(line, "score"):
-                        remapped_lines.append(cls(line.text, line.score, remapped_box))
+                        value = cls(line.text, line.score, remapped_box)
+                        if hasattr(value, "quad"):
+                            value.quad = remapped_quad
+                        remapped_lines.append(value)
                     else:
                         remapped_lines.append(cls(line.text, remapped_box))
                 except Exception:

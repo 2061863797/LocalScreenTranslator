@@ -149,7 +149,7 @@ class RegionWatchFrame(_CaptureAllowedMixin, QWidget):
         self._ctrl = _RegionCtrl(self)
 
     def set_control_bar_external(self, enabled: bool) -> None:
-        """区域模式把识别框操作并入当前字幕/备注状态栏。"""
+        """区域模式把识别框操作并入当前字幕/原位替换状态栏。"""
         self._external_control_bar = bool(enabled)
         if self._external_control_bar:
             self._ctrl.hide()

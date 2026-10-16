@@ -54,13 +54,15 @@ class OcrTranslateWorker(QThread):
     """
 
     finished_ok = Signal(str, str)
+    finished_detail = Signal(object, object)
     failed = Signal(str)
 
     def __init__(self, ocr: OcrEngine, translator: TranslationRouter, cfg: dict,
                  image: np.ndarray | None = None,
                  text: str | None = None,
                  do_translate: bool = True,
-                 target_language: str | None = None):
+                 target_language: str | None = None,
+                 replacement: bool = False):
         super().__init__()
         self._ocr = ocr
         self._translator = translator
@@ -68,6 +70,7 @@ class OcrTranslateWorker(QThread):
         self._text = text
         self._do_translate = do_translate
         self._target = target_language or cfg["target_language"]
+        self._replacement = replacement
         self._pipeline = OneShotPipeline(ocr, translator)
 
     def run(self):
@@ -81,6 +84,7 @@ class OcrTranslateWorker(QThread):
                 translate=self._do_translate,
                 target_language=self._target,
                 cancelled=self.isInterruptionRequested,
+                replacement=self._replacement,
             )
             if result is None:
                 return
@@ -96,6 +100,7 @@ class OcrTranslateWorker(QThread):
             translation = result.translation
             _log.info("worker 完成 %.2fs", time.time() - t0)
             self.finished_ok.emit(source, translation)
+            self.finished_detail.emit(result, self._image)
         except Exception as e:
             _log.exception("worker 失败")
             self.failed.emit(friendly_error(e))

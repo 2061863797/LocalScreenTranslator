@@ -123,6 +123,56 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))["target_language"], "英语")
 
 
+    def test_display_modes_default_to_in_place_overlay(self):
+        loaded = config.load()
+        self.assertEqual(loaded["region_watch_display_mode"], "replace")
+        self.assertEqual(loaded["screenshot_display_mode"], "window")
+        self.assertEqual(config.watch_display_mode(loaded, "window"), "replace")
+        self.assertNotIn("window_watch_display_mode", loaded)
+
+    def test_removed_annotation_mode_migrates_to_overlay(self):
+        cases = (
+            ({"region_watch_annotate": True}, "replace"),
+            ({"region_watch_annotate": False}, "subtitle"),
+            ({"watch_annotate": False}, "subtitle"),
+            ({"region_watch_display_mode": "annotate", "region_watch_annotate": True}, "replace"),
+            ({"region_watch_display_mode": "subtitle"}, "subtitle"),
+        )
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                config.CONFIG_PATH.write_text(
+                    json.dumps({**raw, "annotate_text_color": "#FFFFFF",
+                                "window_watch_display_mode": "annotate"}),
+                    encoding="utf-8",
+                )
+                loaded = config.load()
+                self.assertEqual(loaded["region_watch_display_mode"], expected)
+                for key in ("region_watch_annotate", "watch_annotate",
+                            "annotate_text_color", "window_watch_display_mode"):
+                    self.assertNotIn(key, loaded)
+
+    def test_invalid_display_modes_use_defaults(self):
+        config.CONFIG_PATH.write_text(
+            json.dumps({
+                "region_watch_display_mode": "bad",
+                "screenshot_display_mode": "annotate",
+            }),
+            encoding="utf-8",
+        )
+        loaded = config.load()
+        self.assertEqual(loaded["region_watch_display_mode"], "replace")
+        self.assertEqual(loaded["screenshot_display_mode"], "window")
+
+    def test_save_drops_legacy_annotation_fields(self):
+        data = dict(config.DEFAULTS)
+        data.update({"region_watch_annotate": True, "annotate_text_color": "#00F0FF"})
+        config.save(data)
+        saved = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(saved["region_watch_display_mode"], "replace")
+        self.assertNotIn("region_watch_annotate", saved)
+        self.assertNotIn("annotate_text_color", saved)
+
+
 class StorageTests(unittest.TestCase):
     def test_legacy_table_is_preserved_and_history_can_be_cleared(self):
         with tempfile.TemporaryDirectory() as tmp:

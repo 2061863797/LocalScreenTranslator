@@ -23,7 +23,7 @@ class ResultManager(QObject):
 
     管理并派发以下信号：
     - subtitle_ready(translation[, gen_id])
-    - annotations_ready(items[, gen_id])
+    - replacement_ready(payload[, gen_id])
     - history_ready(source, translation, mode[, gen_id])
     - window_moved(x, y, w, h)
     - content_cleared()
@@ -33,7 +33,7 @@ class ResultManager(QObject):
     """
 
     subtitle_ready = Signal((str,), (str, int))
-    annotations_ready = Signal((list,), (list, int))
+    replacement_ready = Signal((object,), (object, int))
     history_ready = Signal((str, str, str), (str, str, str, int))
     window_moved = Signal(int, int, int, int)
     content_cleared = Signal()
@@ -63,12 +63,13 @@ class ResultManager(QObject):
         self.subtitle_ready.emit(text)
         return True
 
-    def dispatch_annotations(self, items: list[Any], gen_id: int) -> bool:
-        """派发逐行标注译文。若 gen_id 非当前活跃世代则丢弃。"""
-        if not self._accept(gen_id, "annotations"):
+
+    def dispatch_replacement(self, payload: Any, gen_id: int) -> bool:
+        """派发原位替换 payload。若 gen_id 非当前活跃世代则丢弃。"""
+        if not self._accept(gen_id, "replacement"):
             return False
-        self.annotations_ready[list, int].emit(items, gen_id)
-        self.annotations_ready.emit(items)
+        self.replacement_ready[object, int].emit(payload, gen_id)
+        self.replacement_ready.emit(payload)
         return True
 
     def dispatch_history(

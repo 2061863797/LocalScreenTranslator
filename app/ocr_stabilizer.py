@@ -174,6 +174,8 @@ class OcrStabilizer:
             # Immediate fast-path: identical text has zero jitter and requires no distance computation
             if curr_text == prev_text:
                 self._candidate_repeat_count = 0
+                # 文字相同也可能整体移动（滚动、重排），保留本帧坐标供原位替换使用
+                self._stable_lines = list(lines)
                 return False, self._stable_lines
 
             # Early length difference exit: difference exceeding jitter threshold is substantive

@@ -17,7 +17,7 @@ class TestRegionWatchStartup(unittest.TestCase):
         translator.translate.return_value = "你好"
         watcher = WindowWatcher(
             Mock(), translator, {"region_watch_diff_threshold": 0.9},
-            region=(0, 0, 64, 32), profile="region", display_mode="annotate",
+            region=(0, 0, 64, 32), profile="region", display_mode="replace",
         )
         watcher._content_revision = 1
         frame = np.zeros((32, 64, 3), dtype=np.uint8)
@@ -38,15 +38,17 @@ class TestRegionWatchStartup(unittest.TestCase):
         watcher._frame_buffer.get = next_packet
         line = OcrLine("Hello", 0.99, (4, 4, 30, 20))
         watcher._recognize_live_lines = Mock(return_value=[line])
-        items = [(line.box, "你好")]
-        watcher._result_manager.dispatch_annotations = Mock(return_value=True)
+        watcher._result_manager.dispatch_replacement = Mock(return_value=True)
         watcher._result_manager.dispatch_history = Mock()
 
         watcher._inference_loop()
 
-        watcher._result_manager.dispatch_annotations.assert_called_once()
-        self.assertEqual(watcher._result_manager.dispatch_annotations.call_args.args[0], items)
-        queued_gen = watcher._result_manager.dispatch_annotations.call_args.args[1]
+        dispatch = watcher._result_manager.dispatch_replacement
+        # 文字一出现先派发空数据撤下旧译文，翻完再派发译文
+        self.assertEqual(dispatch.call_count, 2)
+        self.assertEqual(dispatch.call_args_list[0].args[0].blocks, ())
+        payload, queued_gen = dispatch.call_args.args[:2]
+        self.assertEqual([block.text for block in payload.blocks], ["你好"])
         self.assertTrue(watcher.generation_tracker.is_active(queued_gen))
 
         app = App.__new__(App)
@@ -54,19 +56,20 @@ class TestRegionWatchStartup(unittest.TestCase):
         app._watch_session_id = 1
         app._watch_paused = False
         app._watch_region = (0, 0, 64, 32)
-        app._watch_annotate = True
+        app._watch_rect = None
+        app._watch_display_mode = "replace"
         app.cfg = {}
-        app.annotation = Mock()
+        app.replacement = Mock()
         app.log = Mock()
-        App._on_watch_annotations_guarded(app, items, 1, watcher, queued_gen)
-        app.annotation.set_items.assert_called_once_with(items)
+        App._on_watch_replacement_guarded(app, payload, 1, watcher, queued_gen)
+        app.replacement.set_payload.assert_called_once_with(payload)
 
     def test_blank_reply_shows_source_without_retry(self):
         translator = Mock()
         translator.translate.return_value = ""
         watcher = WindowWatcher(
             Mock(), translator, {"region_watch_diff_threshold": 0.9},
-            region=(0, 0, 64, 32), profile="region", display_mode="annotate",
+            region=(0, 0, 64, 32), profile="region", display_mode="replace",
         )
         watcher._content_revision = 1
         frame = np.zeros((32, 64, 3), dtype=np.uint8)
@@ -88,18 +91,16 @@ class TestRegionWatchStartup(unittest.TestCase):
         watcher._frame_buffer.get = next_packet
         line = OcrLine("Hello", 0.99, (4, 4, 30, 20))
         watcher._recognize_live_lines = Mock(return_value=[line])
-        watcher._result_manager.dispatch_annotations = Mock(return_value=True)
+        watcher._result_manager.dispatch_replacement = Mock(return_value=True)
         watcher._result_manager.dispatch_history = Mock()
 
         watcher._inference_loop()
 
         # 空译文是模型的确定结果：显示原文，不重试，不记历史
         self.assertEqual(translator.translate.call_count, 1)
-        watcher._result_manager.dispatch_annotations.assert_called_once()
-        self.assertEqual(
-            watcher._result_manager.dispatch_annotations.call_args.args[0],
-            [(line.box, "Hello")],
-        )
+        dispatch = watcher._result_manager.dispatch_replacement
+        self.assertEqual(dispatch.call_count, 2)
+        self.assertEqual([block.text for block in dispatch.call_args.args[0].blocks], ["Hello"])
         watcher._result_manager.dispatch_history.assert_not_called()
 
 if __name__ == "__main__":

@@ -258,7 +258,7 @@ class _SubtitleCtrl(QWidget):
         self._lay.addWidget(self._language_button)
         self._btn_ann = QPushButton()
         self._btn_ann.setFixedHeight(26)
-        self._btn_ann.clicked.connect(self._bar.switch_to_annotate.emit)
+        self._btn_ann.clicked.connect(self._bar.switch_to_replace.emit)
         self._lay.addWidget(self._btn_ann)
         self._btn_pause = QPushButton()
         self._btn_pause.setCheckable(True)
@@ -316,7 +316,7 @@ class _SubtitleCtrl(QWidget):
         self._btn_pin.setToolTip(_t("sub_pinned_tip"))
         self._btns["follow"].setText(_t("sub_follow"))
         self._btns["free"].setText(_t("sub_free"))
-        self._btn_ann.setText(_t("sub_annotate"))
+        self._btn_ann.setText(_t("sub_replace"))
         self._btn_pause.setText(
             _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
         )
@@ -338,7 +338,7 @@ class _SubtitleCtrl(QWidget):
 
         self._btns["follow"].setToolTip(_t("sub_follow"))
         self._btns["free"].setToolTip(_t("sub_free"))
-        self._btn_ann.setToolTip(_t("sub_annotate_tip"))
+        self._btn_ann.setToolTip(_t("sub_replace_tip"))
         self._btn_pause.setToolTip(
             _t("sub_resume") if self._btn_pause.isChecked() else _t("sub_pause")
         )
@@ -385,12 +385,12 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
     - 文字层：鼠标穿透，固定尺寸，长文在框内滚动（不随译文自动改大小）
     - 右侧滚动条：独立可点窗口
     - 右下角缩放把手：独立窗口，grabMouse 保证拖出后仍跟手
-    - 状态栏：区域固定 / 跟随 / 自由 / 目标语言 / 备注 / 暂停 / 关闭
+    - 状态栏：区域固定 / 跟随 / 自由 / 目标语言 / 原位替换 / 暂停 / 关闭
     """
 
     mode_changed = Signal(str)  # follow / free / pinned
     stop_requested = Signal()   # 用户点关闭，停止持续翻译
-    switch_to_annotate = Signal()  # 运行中切换到备注模式
+    switch_to_replace = Signal()  # 运行中切换到原位替换
     pause_changed = Signal(bool)
     language_changed = Signal(str, str)
     user_resized = Signal()     # 用户手动缩放完成通知

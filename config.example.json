@@ -16,6 +16,8 @@
   "translate_window_geometry": [],
   "subtitle_geometry": [],
   "subtitle_mode": "follow",
+  "region_watch_display_mode": "replace",
+  "screenshot_display_mode": "window",
   "ocr_provider": "auto",
   "ocr_device_id": 0,
   "ocr_max_side": 1600,
@@ -29,7 +31,5 @@
   "window_watch_diff_threshold": 0.9,
   "region_watch_interval_ms": 800,
   "region_watch_font_size": 0,
-  "region_watch_diff_threshold": 0.9,
-  "region_watch_annotate": true,
-  "annotate_text_color": "#00F0FF"
+  "region_watch_diff_threshold": 0.9
 }

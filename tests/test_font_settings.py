@@ -8,7 +8,6 @@ from PySide6.QtWidgets import QApplication
 
 from app.config import DEFAULTS
 from app.main import App
-from app.ui.annotation_overlay import AnnotationOverlay
 from app.ui.subtitle_bar import SubtitleBar
 from app.ui.windows import InputTranslateWindow, SettingsWindow
 
@@ -18,7 +17,7 @@ class FontSettingsTests(unittest.TestCase):
     def setUpClass(cls):
         cls.qapp = QApplication.instance() or QApplication([])
 
-    def test_settings_save_three_independent_font_sizes(self):
+    def test_settings_save_translate_and_region_font_sizes(self):
         cfg = dict(DEFAULTS)
         on_saved = Mock()
         with (
@@ -32,9 +31,6 @@ class FontSettingsTests(unittest.TestCase):
                 window._translation_font_size.setCurrentIndex(
                     window._translation_font_size.findData(15)
                 )
-                window._win_font_size.setCurrentIndex(
-                    window._win_font_size.findData(20)
-                )
                 window._reg_font_size.setCurrentIndex(
                     window._reg_font_size.findData(17)
                 )
@@ -45,7 +41,6 @@ class FontSettingsTests(unittest.TestCase):
                 self.qapp.processEvents()
 
         self.assertEqual(cfg["translate_window_font_size"], 15)
-        self.assertEqual(cfg["window_watch_font_size"], 20)
         self.assertEqual(cfg["region_watch_font_size"], 17)
         save_cfg.assert_called_once_with(cfg)
         on_saved.assert_called_once_with()
@@ -87,22 +82,14 @@ class FontSettingsTests(unittest.TestCase):
 
     def test_watch_overlays_apply_requested_and_default_sizes(self):
         subtitle = SubtitleBar()
-        annotation = AnnotationOverlay()
         try:
             subtitle.set_font_size(20)
-            annotation.set_font_size(20)
             self.assertEqual(subtitle._font.pixelSize(), 20)
-            self.assertEqual(annotation._font_size, 20)
-
             subtitle.set_font_size(0)
-            annotation.set_font_size(0)
             self.assertEqual(subtitle._font.pixelSize(), 16)
-            self.assertEqual(annotation._font_size, 13)
         finally:
             subtitle.close()
-            annotation.close()
             subtitle.deleteLater()
-            annotation.deleteLater()
             self.qapp.processEvents()
 
     def test_window_and_region_profiles_do_not_share_font_size(self):
@@ -113,44 +100,37 @@ class FontSettingsTests(unittest.TestCase):
         }
         app._watch_profile = None
         app.subtitle = Mock()
-        app.annotation = Mock()
 
         app._apply_watch_font_size("window")
         app.subtitle.set_font_size.assert_called_once_with(18)
-        app.annotation.set_font_size.assert_called_once_with(18)
 
         app.subtitle.reset_mock()
-        app.annotation.reset_mock()
         app._apply_watch_font_size("region")
         app.subtitle.set_font_size.assert_called_once_with(20)
-        app.annotation.set_font_size.assert_called_once_with(20)
 
     def test_saving_settings_updates_active_translation_displays_immediately(self):
         app = App.__new__(App)
-        app.cfg = {
-            "annotate_text_color": "#00F0FF",
-            "window_watch_font_size": 20,
-        }
+        app.cfg = {"window_watch_font_size": 20}
         app.hotkeys = Mock()
         app.hotkeys.start.return_value = []
         app.apply_ui_language = Mock()
         app.translate_win = Mock()
-        app.annotation = Mock()
         app.subtitle = Mock()
-        app.annotate_ctrl = Mock()
+        app.overlay_ctrl = Mock()
+        app.screenshot_ctrl = Mock()
+        app._hide_screenshot_overlay = Mock()
         app._watcher = Mock()
         app._watcher.isRunning.return_value = True
         app._watch_rect = (0, 0, 320, 180)
         app._watch_region = None
         app._watch_profile = "window"
-        app._watch_annotate = False
+        app._watch_display_mode = "replace"
         app._switch_watch_display = Mock()
 
         app._on_settings_saved()
 
         app.translate_win.sync_font_size_from_cfg.assert_called_once_with()
         app.subtitle.set_font_size.assert_called_once_with(20)
-        app.annotation.set_font_size.assert_called_once_with(20)
         app._switch_watch_display.assert_not_called()
 
 

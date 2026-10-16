@@ -10,7 +10,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
-from app.ui.annotation_overlay import _RegionDragHandle
+from app.ui.overlay_ctrl import _RegionDragHandle
 from app.ui.region_frame import _RegionFrameDragHandle
 from app.ui.subtitle_bar import _SubtitleDragHandle
 

@@ -11,6 +11,7 @@ import numpy as np
 
 from .ocr_engine import OcrEngine, OcrLine
 from .ocr_service import OcrService
+from .replacement import ReplacementPayload, build_payload, group_blocks, join_block_text
 from .translation_runtime.router import TranslationRouter
 
 
@@ -68,6 +69,11 @@ class OneShotResult:
     source: str
     translation: str
     lines: tuple[OcrLine, ...] = ()
+    # 图片输入时的原位替换 payload（含冻结底图）；未要求或纯文本输入时为 None
+    replacement: ReplacementPayload | None = None
+    # 图片输入的段落及其译文：结果窗口切到原位替换时据此补建 payload
+    blocks: tuple[tuple[OcrLine, ...], ...] = ()
+    block_translations: tuple[str, ...] = ()
 
 
 class OneShotPipeline:
@@ -86,7 +92,9 @@ class OneShotPipeline:
         translate: bool,
         target_language: str,
         cancelled: Callable[[], bool] = lambda: False,
+        replacement: bool = False,
     ) -> OneShotResult | None:
+        """replacement=True 时顺带生成原位替换 payload（取色、修补较耗时，按需才做）。"""
         if cancelled():
             return None
         lines: tuple[OcrLine, ...] = ()
@@ -98,20 +106,25 @@ class OneShotPipeline:
         if cancelled():
             return None
         translation = ""
+        payload = None
+        blocks: list[list[OcrLine]] = []
+        parts: list[str] = []
         if translate and source:
             if lines:
-                # 逐行翻译；空译文的行显示原文，与实时翻译一致
+                # 图片按段落翻译：结果窗口显示整段译文，也能随时切到原位替换
+                blocks = group_blocks(lines, image)
                 parts = []
-                for line in lines:
+                for block in blocks:
                     if cancelled():
                         return None
-                    text_line = line.text.strip()
-                    if text_line:
-                        value = self._translator.translate(
-                            text_line, target_language, session_tag="one_shot"
-                        )
-                        parts.append(str(value or "").strip() or text_line)
+                    block_source = join_block_text(line.text for line in block)
+                    value = self._translator.translate(
+                        block_source, target_language, session_tag="one_shot"
+                    )
+                    parts.append(str(value or "").strip() or block_source)
                 translation = "\n".join(parts)
+                if replacement:
+                    payload = build_payload(image, list(zip(blocks, parts)), frozen=True)
             else:
                 try:
                     translation = self._translator.translate(
@@ -121,6 +134,9 @@ class OneShotPipeline:
                     translation = self._translator.translate(source, target_language)
         if cancelled():
             return None
-        return OneShotResult(source, translation, lines)
+        return OneShotResult(
+            source, translation, lines, payload,
+            tuple(tuple(block) for block in blocks), tuple(parts),
+        )
 
 
