@@ -666,16 +666,12 @@ class SubtitleBar(_CaptureAllowedMixin, QWidget):
 
         try:
             if screen and avail and avail.contains(center_pt):
-                # 若 outside=True 且底部放不下，自动翻转吸附到目标选区上方（避开区域控制条）
-                if outside and (ny + nh > avail.bottom()):
-                    alt_y = y - nh - 36
-                    if alt_y >= avail.top():
-                        ny = alt_y
-                    else:
-                        ny = min(ny, avail.bottom() - nh)
-                # 限制在屏幕可见工作区内
+                # 水平方向限制在屏幕可见工作区内
                 nx = max(avail.left(), min(nx, avail.right() - nw))
-                ny = max(avail.top(), min(ny, avail.bottom() - nh))
+                # 外侧吸附始终贴在识别框下方，底部放不下时允许超出屏幕，
+                # 不翻到上方、也不上推压住识别框
+                if not outside:
+                    ny = max(avail.top(), min(ny, avail.bottom() - nh))
         except Exception:
             pass
 
